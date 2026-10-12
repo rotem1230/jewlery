@@ -1,0 +1,338 @@
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  DesignRequestMode,
+  DesignRequestStatus,
+  DesignStatus,
+  Prisma,
+  ProfilePublishStatus,
+  User,
+  UserRole,
+} from '@prisma/client';
+import { AppConfigService } from '../cms/app-config.service';
+import { OutboxService } from '../common/outbox/outbox.service';
+import { PrismaService } from '../database/prisma.service';
+import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
+import { PromotionsService } from '../promotions/promotions.service';
+import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAtelierJewelersDto } from './dto/atelier.dto';
+
+const PAGE_SIZE = 20;
+const BROADCAST_FANOUT_LIMIT = 50;
+const BANNER_PLACEMENT = 'atelier_banner';
+const DESIGNS_FEED_PLACEMENT = 'atelier_designs_feed';
+const MATCHING_FLAG = 'phase2_matching';
+const PROMOTION_RANKER_FLAG = 'phase2_promotion_ranker';
+const GEO_SEARCH_FLAG = 'phase3_postgis';
+const DEFAULT_MATCHING_WEIGHTS = { regionMatchWeight: 50, specialtyOverlapWeight: 10 };
+
+@Injectable()
+export class AtelierService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly outbox: OutboxService,
+    private readonly appConfig: AppConfigService,
+    private readonly featureFlags: FeatureFlagsService,
+    private readonly promotions: PromotionsService,
+  ) {}
+
+  private async getMatchingWeights(): Promise<typeof DEFAULT_MATCHING_WEIGHTS> {
+    const raw = await this.appConfig.get('matching_weights');
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const r = raw as Record<string, unknown>;
+      return {
+        regionMatchWeight:
+          typeof r.regionMatchWeight === 'number' ? r.regionMatchWeight : DEFAULT_MATCHING_WEIGHTS.regionMatchWeight,
+        specialtyOverlapWeight:
+          typeof r.specialtyOverlapWeight === 'number'
+            ? r.specialtyOverlapWeight
+            : DEFAULT_MATCHING_WEIGHTS.specialtyOverlapWeight,
+      };
+    }
+    return DEFAULT_MATCHING_WEIGHTS;
+  }
+
+  /**
+   * matchScore = (regionId matches the query's regionId ? regionMatchWeight : 0)
+   *            + (count of overlapping specialties * specialtyOverlapWeight)
+   * Purely additive vs. the existing response shape; stays 0 (Phase 1 stub behavior) unless
+   * `phase2_matching` is enabled, per docs/backend-contracts.md.
+   */
+  private async computeMatchScores<T extends { regionId: string; specialties: string[] }>(
+    rows: T[],
+    query: QueryAtelierJewelersDto,
+  ): Promise<number[]> {
+    const enabled = await this.featureFlags.isEnabled(MATCHING_FLAG);
+    if (!enabled) {
+      return rows.map(() => 0);
+    }
+
+    const weights = await this.getMatchingWeights();
+    const querySpecialties = query.specialties ?? [];
+
+    return rows.map((row) => {
+      const regionScore = query.regionId && row.regionId === query.regionId ? weights.regionMatchWeight : 0;
+      const overlapCount = row.specialties.filter((s) => querySpecialties.includes(s)).length;
+      return regionScore + overlapCount * weights.specialtyOverlapWeight;
+    });
+  }
+
+  private async activeBanners() {
+    const now = new Date();
+    return this.prisma.promotion.findMany({
+      where: { placement: BANNER_PLACEMENT, isActive: true, startAt: { lte: now }, endAt: { gte: now } },
+      orderBy: { priority: 'desc' },
+    });
+  }
+
+  async designs(query: QueryAtelierDesignsDto) {
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const where: Prisma.DesignWhereInput = { status: DesignStatus.PUBLISHED, deletedAt: null };
+    if (query.regionId) {
+      where.preferredRegionId = query.regionId;
+    }
+    if (query.q) {
+      where.OR = [
+        { title: { contains: query.q, mode: 'insensitive' } },
+        { description: { contains: query.q, mode: 'insensitive' } },
+      ];
+    }
+
+    const [rows, total, banners, rankerEnabled] = await Promise.all([
+      this.prisma.design.findMany({
+        where,
+        orderBy: { publishedAt: 'desc' },
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+        include: { itemType: true, preferredRegion: true },
+      }),
+      this.prisma.design.count({ where }),
+      this.activeBanners(),
+      this.featureFlags.isEnabled(PROMOTION_RANKER_FLAG),
+    ]);
+
+    // Sprint 11: when the ranker flag is on, blend sponsored Promotion rows into the page and tag
+    // each item `sponsored`; otherwise keep the Phase 1 behavior of only attaching page banners.
+    const items = rankerEnabled ? await this.promotions.rankDesignResults(rows, DESIGNS_FEED_PLACEMENT) : rows;
+
+    return {
+      items,
+      pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
+      banners,
+    };
+  }
+
+  async jewelers(query: QueryAtelierJewelersDto) {
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const where: Prisma.JewelerProfileWhereInput = { publishStatus: ProfilePublishStatus.PUBLISHED };
+    if (query.regionId) {
+      where.regionId = query.regionId;
+    }
+    if (query.q) {
+      where.OR = [
+        { businessName: { contains: query.q, mode: 'insensitive' } },
+        { bio: { contains: query.q, mode: 'insensitive' } },
+        { specialties: { has: query.q } },
+      ];
+    }
+
+    const matchingEnabled = await this.featureFlags.isEnabled(MATCHING_FLAG);
+    const orderBy: Prisma.JewelerProfileOrderByWithRelationInput =
+      query.sort === 'newest' ? { createdAt: 'desc' } : { ratingAvg: 'desc' };
+
+    if (matchingEnabled) {
+      const rows = await this.prisma.jewelerProfile.findMany({
+        where,
+        orderBy,
+        include: { region: true, portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 } },
+      });
+      const matchScores = await this.computeMatchScores(rows, query);
+      const ranked = rows
+        .map((row, i) => ({ ...row, matchScore: matchScores[i] }))
+        .sort((a, b) => b.matchScore - a.matchScore || Number(b.ratingAvg) - Number(a.ratingAvg));
+      const total = ranked.length;
+      const items = ranked.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+      return {
+        items,
+        pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
+      };
+    }
+
+    const [rows, total] = await Promise.all([
+      this.prisma.jewelerProfile.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+        include: { region: true, portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 } },
+      }),
+      this.prisma.jewelerProfile.count({ where }),
+    ]);
+
+    const matchScores = await this.computeMatchScores(rows, query);
+    const items = rows.map((row, i) => ({ ...row, matchScore: matchScores[i] }));
+
+    return {
+      items,
+      pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
+    };
+  }
+
+  async banners() {
+    return this.activeBanners();
+  }
+
+  /**
+   * Radius search gated by `phase3_postgis`. Uses haversine on stored lat/lng
+   * (PostGIS-ready columns; ST_DWithin can replace this query when the extension is available).
+   */
+  async geoSearch(query: GeoSearchDto) {
+    const enabled = await this.featureFlags.isEnabled(GEO_SEARCH_FLAG);
+    if (!enabled) {
+      throw new ForbiddenException({
+        success: false,
+        message: 'Geo search is not enabled',
+        code: 'FEATURE_DISABLED',
+      });
+    }
+
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM jeweler_profiles
+      WHERE "publishStatus" = 'PUBLISHED'
+        AND latitude IS NOT NULL
+        AND longitude IS NOT NULL
+        AND (
+          6371 * acos(
+            LEAST(1.0, GREATEST(-1.0,
+              cos(radians(${query.lat})) * cos(radians(latitude::double precision))
+              * cos(radians(longitude::double precision) - radians(${query.lng}))
+              + sin(radians(${query.lat})) * sin(radians(latitude::double precision))
+            ))
+          )
+        ) <= ${query.radiusKm}
+    `;
+    const ids = rows.map((row) => row.id);
+    const total = ids.length;
+    const pageIds = ids.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    if (pageIds.length === 0) {
+      return {
+        items: [],
+        pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
+      };
+    }
+
+    const profiles = await this.prisma.jewelerProfile.findMany({
+      where: { id: { in: pageIds } },
+      include: { region: true, portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 } },
+    });
+    const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+    const ordered = pageIds.map((id) => byId.get(id)).filter((row): row is NonNullable<typeof row> => !!row);
+    const matchScores = await this.computeMatchScores(ordered, { page });
+    const items = ordered.map((row, i) => ({ ...row, matchScore: matchScores[i] }));
+
+    return {
+      items,
+      pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
+    };
+  }
+
+  async createRequest(user: User, dto: CreateAtelierRequestDto) {
+    const design = await this.prisma.design.findFirst({ where: { id: dto.designId, deletedAt: null } });
+    if (!design) {
+      throw new NotFoundException({ success: false, message: 'Design not found' });
+    }
+    if (design.ownerUserId !== user.id && !user.roles.includes(UserRole.ADMIN)) {
+      throw new ForbiddenException({ success: false, message: 'Not the design owner' });
+    }
+
+    let targetProfileIds: string[];
+    if (dto.mode === DesignRequestMode.TARGETED) {
+      if (!dto.targetJewelerProfileIds || dto.targetJewelerProfileIds.length === 0) {
+        throw new BadRequestException({
+          success: false,
+          message: 'targetJewelerProfileIds is required when mode is TARGETED',
+        });
+      }
+      const profiles = await this.prisma.jewelerProfile.findMany({
+        where: {
+          id: { in: dto.targetJewelerProfileIds },
+          publishStatus: ProfilePublishStatus.PUBLISHED,
+        },
+        select: { id: true },
+      });
+      if (profiles.length === 0) {
+        throw new BadRequestException({
+          success: false,
+          message: 'None of the provided jeweler profiles are published',
+        });
+      }
+      targetProfileIds = profiles.map((p) => p.id);
+    } else {
+      const matchingEnabled = await this.featureFlags.isEnabled(MATCHING_FLAG);
+      const profiles = await this.prisma.jewelerProfile.findMany({
+        where: {
+          publishStatus: ProfilePublishStatus.PUBLISHED,
+          ...(!matchingEnabled && design.preferredRegionId ? { regionId: design.preferredRegionId } : {}),
+        },
+        select: { id: true, regionId: true, specialties: true },
+        take: matchingEnabled ? 200 : BROADCAST_FANOUT_LIMIT,
+      });
+      if (matchingEnabled) {
+        const scores = await this.computeMatchScores(profiles, {
+          regionId: design.preferredRegionId ?? undefined,
+        });
+        targetProfileIds = profiles
+          .map((profile, i) => ({ id: profile.id, score: scores[i] }))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, BROADCAST_FANOUT_LIMIT)
+          .map((row) => row.id);
+      } else {
+        targetProfileIds = profiles.map((p) => p.id);
+      }
+    }
+
+    const request = await this.prisma.designRequest.create({
+      data: {
+        designId: dto.designId,
+        requesterId: user.id,
+        mode: dto.mode,
+        status: DesignRequestStatus.OPEN,
+        message: dto.message ?? null,
+        targets: {
+          create: targetProfileIds.map((jewelerProfileId) => ({ jewelerProfileId })),
+        },
+      },
+      include: { targets: true },
+    });
+
+    await this.outbox.enqueue('design_request.delivered', {
+      designRequestId: request.id,
+      designId: request.designId,
+      jewelerProfileIds: targetProfileIds,
+    });
+
+    return request;
+  }
+
+  async findRequest(id: string, user: User) {
+    const request = await this.prisma.designRequest.findUnique({
+      where: { id },
+      include: {
+        design: { select: { id: true, title: true, ownerUserId: true, thumbnailUploadId: true } },
+        targets: { include: { jewelerProfile: { select: { id: true, businessName: true, userId: true } } } },
+        quotes: true,
+      },
+    });
+    if (!request) {
+      throw new NotFoundException({ success: false, message: 'Design request not found' });
+    }
+
+    const isRequester = request.requesterId === user.id;
+    const isTargetedJeweler = request.targets.some((t) => t.jewelerProfile.userId === user.id);
+    const isAdmin = user.roles.includes(UserRole.ADMIN);
+    if (!isRequester && !isTargetedJeweler && !isAdmin) {
+      throw new ForbiddenException({ success: false, message: 'Not authorized to view this request' });
+    }
+
+    return request;
+  }
+}

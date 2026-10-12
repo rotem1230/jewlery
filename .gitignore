@@ -1,0 +1,62 @@
+# dependencies
+node_modules/
+
+# build
+dist/
+build/
+app/android/app/build/
+app/android/build/
+app/ios/build/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# test
+coverage/
+
+# prisma
+backend/prisma/*.db
+backend/prisma/*.db-journal
+
+# React Native
+app/.bundle/
+app/ios/Pods/
+app/vendor/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.orig.*
+*.hprof
+.cxx/
+
+# local dev uploads (device/simulator attachments, gitignored; seed art stays tracked)
+backend/uploads-local/
+
+# AI tooling (never ship to client)
+.claude/
+.cursor/
+.windsurf/
+.aider*
+.copilot/
+.codeium/
+.continue/
+CLAUDE.md
+AGENTS.md
+*.mdc

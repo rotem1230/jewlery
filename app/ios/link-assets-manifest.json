@@ -1,0 +1,17 @@
+{
+  "migIndex": 1,
+  "data": [
+    {
+      "path": "assets/fonts/Heebo-Bold.ttf",
+      "sha1": "7bcf43fc6696de48b77898db8305b2ea1998e09f"
+    },
+    {
+      "path": "assets/fonts/Heebo-Medium.ttf",
+      "sha1": "7bcf43fc6696de48b77898db8305b2ea1998e09f"
+    },
+    {
+      "path": "assets/fonts/Heebo-Regular.ttf",
+      "sha1": "f6e429c9071e768ec2c51f88129f9fb63b40e90e"
+    }
+  ]
+}

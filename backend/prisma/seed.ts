@@ -1,0 +1,1223 @@
+import { NestFactory } from '@nestjs/core';
+import { BillingCycle, ContentPageStatus, DesignStatus, Prisma, PrismaClient, ProfilePublishStatus, PromotionEntityType, PromotionSource, SubscriptionStatus, UserRole, UserStatus } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
+import { AppModule } from '../src/app.module';
+import { AppConfigService } from '../src/cms/app-config.service';
+
+const prisma = new PrismaClient();
+
+async function seedAppConfigDefaults() {
+  const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
+  try {
+    const appConfigService = app.get(AppConfigService);
+    await appConfigService.seedDefaults();
+    console.log('Seed complete: default AppConfig rows');
+  } finally {
+    await app.close();
+  }
+}
+
+async function seedUsers() {
+  const passwordHash = await bcrypt.hash('Designer123!', 12);
+
+  await prisma.user.upsert({
+    where: { email: 'designer@dev.mailnvosky.local' },
+    update: {},
+    create: {
+      email: 'designer@dev.mailnvosky.local',
+      passwordHash,
+      firstName: 'Keren',
+      lastName: 'Designer',
+      roles: [UserRole.DESIGNER],
+      activeRole: UserRole.DESIGNER,
+      status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { email: 'jeweler@dev.mailnvosky.local' },
+    update: {},
+    create: {
+      email: 'jeweler@dev.mailnvosky.local',
+      passwordHash: await bcrypt.hash('Jeweler123!', 12),
+      firstName: 'Michael',
+      lastName: 'Jeweler',
+      roles: [UserRole.JEWELER],
+      activeRole: UserRole.JEWELER,
+      status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
+    },
+  });
+
+  console.log('Seed complete: designer@dev.mailnvosky.local / Designer123!');
+  console.log('Seed complete: jeweler@dev.mailnvosky.local / Jeweler123!');
+}
+
+async function seedRegions() {
+  const regions: { code: string; labelHe: string; labelEn: string; sortOrder: number }[] = [
+    { code: 'TEL_AVIV', labelHe: 'תל אביב', labelEn: 'Tel Aviv', sortOrder: 1 },
+    { code: 'JERUSALEM', labelHe: 'ירושלים', labelEn: 'Jerusalem', sortOrder: 2 },
+    { code: 'HAIFA', labelHe: 'חיפה', labelEn: 'Haifa', sortOrder: 3 },
+    { code: 'NORTH', labelHe: 'צפון', labelEn: 'North', sortOrder: 4 },
+    { code: 'SOUTH', labelHe: 'דרום', labelEn: 'South', sortOrder: 5 },
+    { code: 'CENTER', labelHe: 'מרכז', labelEn: 'Center', sortOrder: 6 },
+  ];
+
+  for (const region of regions) {
+    await prisma.region.upsert({
+      where: { code: region.code },
+      update: {},
+      create: region,
+    });
+  }
+  console.log(`Seed complete: ${regions.length} regions`);
+}
+
+type ItemTypeSeed = {
+  code: string;
+  labelHe: string;
+  labelEn: string;
+  sortOrder: number;
+  steps: Prisma.InputJsonValue;
+  parametersSchema: Prisma.InputJsonValue;
+  lockFields: string[];
+  defaults: Prisma.InputJsonValue;
+};
+
+function ringItemType(): ItemTypeSeed {
+  return {
+    code: 'RING',
+    labelHe: 'טבעת',
+    labelEn: 'Ring',
+    sortOrder: 1,
+    steps: [
+      { key: 'size', order: 1, lockable: true },
+      { key: 'metal', order: 2, lockable: true },
+      { key: 'setting', order: 3, lockable: false },
+      { key: 'stones', order: 4, lockable: false },
+      { key: 'elements', order: 5, lockable: false },
+      { key: 'finish', order: 6, lockable: false },
+      { key: 'review', order: 7, lockable: false },
+    ],
+    parametersSchema: {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      required: ['size', 'metal'],
+      properties: {
+        size: {
+          type: 'object',
+          required: ['standard', 'sizeCode'],
+          properties: {
+            standard: { type: 'string', enum: ['US', 'EU', 'UK', 'IL'] },
+            sizeCode: { type: 'string' },
+            bandWidthMm: { type: 'number', minimum: 0.5, maximum: 15 },
+          },
+        },
+        metal: {
+          type: 'object',
+          required: ['metalCode'],
+          properties: {
+            metalCode: { type: 'string' },
+            purityCode: { type: 'string' },
+          },
+        },
+        setting: {
+          type: 'object',
+          properties: { settingCode: { type: 'string' } },
+        },
+        stoneHousing: { type: 'string' },
+        stones: { type: 'array', items: { type: 'object' } },
+        elements: { type: 'array', items: { type: 'object' } },
+        finishCode: { type: 'string' },
+        additionalStonesText: { type: 'string' },
+        personalNote: { type: 'string' },
+      },
+      additionalProperties: true,
+    },
+    lockFields: ['size', 'metal'],
+    defaults: { finishCode: 'POLISHED' },
+  };
+}
+
+function necklaceItemType(): ItemTypeSeed {
+  return {
+    code: 'NECKLACE',
+    labelHe: 'שרשרת',
+    labelEn: 'Necklace',
+    sortOrder: 2,
+    steps: [
+      { key: 'size', order: 1, lockable: true },
+      { key: 'metal', order: 2, lockable: true },
+      { key: 'elements', order: 3, lockable: false },
+      { key: 'stones', order: 4, lockable: false },
+      { key: 'finish', order: 5, lockable: false },
+      { key: 'review', order: 6, lockable: false },
+    ],
+    parametersSchema: {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      required: ['metal'],
+      properties: {
+        size: {
+          type: 'object',
+          properties: {
+            necklaceLengthCm: { type: 'number', minimum: 20, maximum: 100 },
+          },
+        },
+        metal: {
+          type: 'object',
+          required: ['metalCode'],
+          properties: {
+            metalCode: { type: 'string' },
+            purityCode: { type: 'string' },
+          },
+        },
+        stones: { type: 'array', items: { type: 'object' } },
+        elements: { type: 'array', items: { type: 'object' } },
+        finishCode: { type: 'string' },
+        additionalStonesText: { type: 'string' },
+        personalNote: { type: 'string' },
+      },
+      additionalProperties: true,
+    },
+    lockFields: ['metal'],
+    defaults: { finishCode: 'POLISHED' },
+  };
+}
+
+function braceletItemType(): ItemTypeSeed {
+  return {
+    code: 'BRACELET',
+    labelHe: 'צמיד',
+    labelEn: 'Bracelet',
+    sortOrder: 3,
+    steps: [
+      { key: 'size', order: 1, lockable: true },
+      { key: 'metal', order: 2, lockable: true },
+      { key: 'elements', order: 3, lockable: false },
+      { key: 'stones', order: 4, lockable: false },
+      { key: 'finish', order: 5, lockable: false },
+      { key: 'review', order: 6, lockable: false },
+    ],
+    parametersSchema: {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      required: ['metal'],
+      properties: {
+        size: {
+          type: 'object',
+          properties: {
+            wristCircumferenceCm: { type: 'number', minimum: 10, maximum: 30 },
+          },
+        },
+        metal: {
+          type: 'object',
+          required: ['metalCode'],
+          properties: {
+            metalCode: { type: 'string' },
+            purityCode: { type: 'string' },
+          },
+        },
+        stones: { type: 'array', items: { type: 'object' } },
+        elements: { type: 'array', items: { type: 'object' } },
+        finishCode: { type: 'string' },
+        additionalStonesText: { type: 'string' },
+        personalNote: { type: 'string' },
+      },
+      additionalProperties: true,
+    },
+    lockFields: ['metal'],
+    defaults: { finishCode: 'POLISHED' },
+  };
+}
+
+function earringsItemType(): ItemTypeSeed {
+  return {
+    code: 'EARRINGS',
+    labelHe: 'עגילים',
+    labelEn: 'Earrings',
+    sortOrder: 4,
+    steps: [
+      { key: 'style', order: 1, lockable: true },
+      { key: 'metal', order: 2, lockable: true },
+      { key: 'stones', order: 3, lockable: false },
+      { key: 'elements', order: 4, lockable: false },
+      { key: 'finish', order: 5, lockable: false },
+      { key: 'review', order: 6, lockable: false },
+    ],
+    parametersSchema: {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      required: ['metal'],
+      properties: {
+        size: {
+          type: 'object',
+          properties: {
+            earringStyleCode: { type: 'string' },
+          },
+        },
+        metal: {
+          type: 'object',
+          required: ['metalCode'],
+          properties: {
+            metalCode: { type: 'string' },
+            purityCode: { type: 'string' },
+          },
+        },
+        stones: { type: 'array', items: { type: 'object' } },
+        elements: { type: 'array', items: { type: 'object' } },
+        finishCode: { type: 'string' },
+        additionalStonesText: { type: 'string' },
+        personalNote: { type: 'string' },
+      },
+      additionalProperties: true,
+    },
+    lockFields: ['metal'],
+    defaults: { finishCode: 'POLISHED' },
+  };
+}
+
+async function seedItemTypes(): Promise<Record<string, string>> {
+  const seeds = [ringItemType(), necklaceItemType(), braceletItemType(), earringsItemType()];
+  const ids: Record<string, string> = {};
+
+  for (const seed of seeds) {
+    const itemType = await prisma.itemType.upsert({
+      where: { code: seed.code },
+      update: { labelHe: seed.labelHe, labelEn: seed.labelEn, sortOrder: seed.sortOrder },
+      create: {
+        code: seed.code,
+        labelHe: seed.labelHe,
+        labelEn: seed.labelEn,
+        sortOrder: seed.sortOrder,
+      },
+    });
+    ids[seed.code] = itemType.id;
+
+    await prisma.itemTypeConfig.upsert({
+      where: { itemTypeId: itemType.id },
+      update: {
+        steps: seed.steps,
+        parametersSchema: seed.parametersSchema,
+        lockFields: seed.lockFields,
+        defaults: seed.defaults,
+      },
+      create: {
+        itemTypeId: itemType.id,
+        steps: seed.steps,
+        parametersSchema: seed.parametersSchema,
+        lockFields: seed.lockFields,
+        compatibilityRules: [],
+        defaults: seed.defaults,
+      },
+    });
+  }
+
+  console.log(`Seed complete: ${seeds.length} item types with configs`);
+  return ids;
+}
+
+async function seedMetalsAndPurities() {
+  const metals: { code: string; labelHe: string; labelEn: string; sortOrder: number; purities: string[] }[] = [
+    { code: 'SILVER', labelHe: 'כסף', labelEn: 'Silver', sortOrder: 1, purities: ['925'] },
+    { code: 'YELLOW_GOLD', labelHe: 'זהב צהוב', labelEn: 'Yellow Gold', sortOrder: 2, purities: ['12K', '14K', '18K'] },
+    { code: 'ROSE_GOLD', labelHe: 'זהב ורוד', labelEn: 'Rose Gold', sortOrder: 3, purities: ['12K', '14K', '18K'] },
+    { code: 'WHITE_GOLD', labelHe: 'זהב לבן', labelEn: 'White Gold', sortOrder: 4, purities: ['12K', '14K', '18K'] },
+    { code: 'PLATINUM', labelHe: 'פלטינה', labelEn: 'Platinum', sortOrder: 5, purities: ['950'] },
+  ];
+
+  for (const metal of metals) {
+    const row = await prisma.metal.upsert({
+      where: { code: metal.code },
+      update: { labelHe: metal.labelHe, labelEn: metal.labelEn, sortOrder: metal.sortOrder },
+      create: {
+        code: metal.code,
+        labelHe: metal.labelHe,
+        labelEn: metal.labelEn,
+        sortOrder: metal.sortOrder,
+      },
+    });
+
+    for (const purityCode of metal.purities) {
+      await prisma.metalPurity.upsert({
+        where: { metalId_code: { metalId: row.id, code: purityCode } },
+        update: {},
+        create: { metalId: row.id, code: purityCode, labelHe: purityCode },
+      });
+    }
+  }
+
+  console.log(`Seed complete: ${metals.length} metals with purities`);
+}
+
+async function seedSettings(itemTypeIds: Record<string, string>) {
+  const settings: { code: string; labelHe: string; labelEn: string; minBandWidthMm: number; sortOrder: number }[] = [
+    { code: '4_PRONG', labelHe: 'משבצת 4 צבתות', labelEn: '4-Prong', minBandWidthMm: 1.5, sortOrder: 1 },
+    { code: '6_PRONG', labelHe: 'משבצת 6 צבתות', labelEn: '6-Prong', minBandWidthMm: 1.8, sortOrder: 2 },
+    { code: 'BEZEL', labelHe: 'משבצת סגורה', labelEn: 'Bezel', minBandWidthMm: 2.0, sortOrder: 3 },
+    { code: 'PAVE', labelHe: 'פאבה', labelEn: 'Pavé', minBandWidthMm: 1.2, sortOrder: 4 },
+  ];
+
+  const typeIds = Object.values(itemTypeIds);
+
+  for (const setting of settings) {
+    const row = await prisma.setting.upsert({
+      where: { code: setting.code },
+      update: {
+        labelHe: setting.labelHe,
+        labelEn: setting.labelEn,
+        minBandWidthMm: setting.minBandWidthMm,
+        sortOrder: setting.sortOrder,
+      },
+      create: {
+        code: setting.code,
+        labelHe: setting.labelHe,
+        labelEn: setting.labelEn,
+        minBandWidthMm: setting.minBandWidthMm,
+        sortOrder: setting.sortOrder,
+      },
+    });
+
+    for (const itemTypeId of typeIds) {
+      await prisma.settingItemType.upsert({
+        where: { settingId_itemTypeId: { settingId: row.id, itemTypeId } },
+        update: {},
+        create: { settingId: row.id, itemTypeId },
+      });
+    }
+  }
+
+  console.log(`Seed complete: ${settings.length} settings`);
+}
+
+async function seedStonesAndElements() {
+  const stones: Array<{
+    code: string
+    nameHe: string
+    nameEn: string
+    options: Array<{ kind: string; value: string; labelHe: string }>
+  }> = [
+    {
+      code: 'DIAMOND',
+      nameHe: 'יהלום',
+      nameEn: 'Diamond',
+      options: [
+        { kind: 'SHAPE', value: 'ROUND', labelHe: 'עגול' },
+        { kind: 'COLOR', value: 'D', labelHe: 'D' },
+        { kind: 'SIZE_MM', value: '1.0', labelHe: '1.0' },
+      ],
+    },
+    {
+      code: 'SAPPHIRE',
+      nameHe: 'ספיר',
+      nameEn: 'Sapphire',
+      options: [
+        { kind: 'SHAPE', value: 'OVAL', labelHe: 'אובלי' },
+        { kind: 'COLOR', value: 'BLUE', labelHe: 'כחול' },
+        { kind: 'SIZE_MM', value: '2.0', labelHe: '2.0' },
+      ],
+    },
+    {
+      code: 'RUBY',
+      nameHe: 'רובי',
+      nameEn: 'Ruby',
+      options: [
+        { kind: 'SHAPE', value: 'ROUND', labelHe: 'עגול' },
+        { kind: 'COLOR', value: 'RED', labelHe: 'אדום' },
+        { kind: 'SIZE_MM', value: '1.5', labelHe: '1.5' },
+      ],
+    },
+    {
+      code: 'EMERALD',
+      nameHe: 'ברקת',
+      nameEn: 'Emerald',
+      options: [
+        { kind: 'SHAPE', value: 'EMERALD', labelHe: 'אמרלד' },
+        { kind: 'COLOR', value: 'GREEN', labelHe: 'ירוק' },
+        { kind: 'SIZE_MM', value: '2.0', labelHe: '2.0' },
+      ],
+    },
+  ];
+
+  for (const stone of stones) {
+    const row = await prisma.stone.upsert({
+      where: { code: stone.code },
+      update: { nameHe: stone.nameHe, nameEn: stone.nameEn },
+      create: { code: stone.code, nameHe: stone.nameHe, nameEn: stone.nameEn, sortOrder: stones.indexOf(stone) },
+    });
+    for (const option of stone.options) {
+      await prisma.stoneOption.upsert({
+        where: { stoneId_kind_value: { stoneId: row.id, kind: option.kind, value: option.value } },
+        update: { labelHe: option.labelHe },
+        create: {
+          stoneId: row.id,
+          kind: option.kind,
+          value: option.value,
+          labelHe: option.labelHe,
+        },
+      });
+    }
+  }
+
+  const elements: Array<{ code: string; labelHe: string; labelEn: string }> = [
+    { code: 'HEART', labelHe: 'לב', labelEn: 'Heart' },
+    { code: 'STAR', labelHe: 'כוכב', labelEn: 'Star' },
+    { code: 'LEAF', labelHe: 'עלה', labelEn: 'Leaf' },
+    { code: 'INITIAL', labelHe: 'אות', labelEn: 'Initial' },
+  ];
+  for (const element of elements) {
+    await prisma.elementCatalog.upsert({
+      where: { code: element.code },
+      update: { labelHe: element.labelHe, labelEn: element.labelEn },
+      create: { code: element.code, labelHe: element.labelHe, labelEn: element.labelEn },
+    });
+  }
+
+  console.log(`Seed complete: ${stones.length} stones, ${elements.length} elements`);
+}
+
+async function seedSizeCharts(itemTypeIds: Record<string, string>) {
+  const ringId = itemTypeIds.RING;
+  if (!ringId) {
+    return;
+  }
+
+  const usRingSizes: { sizeCode: string; diameterMm: number }[] = [
+    { sizeCode: '5.00', diameterMm: 15.7 },
+    { sizeCode: '6.00', diameterMm: 16.5 },
+    { sizeCode: '7.00', diameterMm: 17.3 },
+    { sizeCode: '8.00', diameterMm: 18.1 },
+    { sizeCode: '9.00', diameterMm: 18.9 },
+  ];
+
+  for (let i = 0; i < usRingSizes.length; i += 1) {
+    const size = usRingSizes[i];
+    await prisma.sizeChart.upsert({
+      where: { itemTypeId_standard_sizeCode: { itemTypeId: ringId, standard: 'US', sizeCode: size.sizeCode } },
+      update: { diameterMinMm: size.diameterMm, diameterMaxMm: size.diameterMm, sortOrder: i },
+      create: {
+        itemTypeId: ringId,
+        standard: 'US',
+        sizeCode: size.sizeCode,
+        diameterMinMm: size.diameterMm,
+        diameterMaxMm: size.diameterMm,
+        sortOrder: i,
+      },
+    });
+  }
+
+  console.log(`Seed complete: ${usRingSizes.length} RING US size chart rows`);
+}
+
+async function seedMeasurementGuides(itemTypeIds: Record<string, string>) {
+  const ringId = itemTypeIds.RING;
+  if (!ringId) {
+    return;
+  }
+
+  await prisma.measurementGuide.upsert({
+    where: { itemTypeId_locale: { itemTypeId: ringId, locale: 'he' } },
+    update: {},
+    create: {
+      itemTypeId: ringId,
+      locale: 'he',
+      title: 'איך למדוד מידת טבעת',
+      body: {
+        tips: [
+          'מדדו את האצבע בסוף היום כשהיא בגודלה המקסימלי.',
+          'השתמשו בטבעת קיימת שמתאימה כדי להשוות קוטר.',
+        ],
+        table: [
+          { standard: 'US', sizeCode: '5.00', diameterMm: 15.7 },
+          { standard: 'US', sizeCode: '6.00', diameterMm: 16.5 },
+          { standard: 'US', sizeCode: '7.00', diameterMm: 17.3 },
+          { standard: 'US', sizeCode: '8.00', diameterMm: 18.1 },
+          { standard: 'US', sizeCode: '9.00', diameterMm: 18.9 },
+        ],
+      },
+    },
+  });
+
+  console.log('Seed complete: RING measurement guide (he)');
+}
+
+async function seedFeatureFlags() {
+  const flags: { key: string; enabled: boolean }[] = [
+    { key: 'phase2_visualization', enabled: true },
+    { key: 'phase2_promotion_ranker', enabled: true },
+    { key: 'phase2_matching', enabled: true },
+    { key: 'phase3_oauth', enabled: true },
+    { key: 'phase3_postgis', enabled: true },
+    { key: 'phase3_jewelry_pay', enabled: true },
+  ];
+
+  for (const flag of flags) {
+    await prisma.featureFlag.upsert({
+      where: { key: flag.key },
+      update: { enabled: flag.enabled, rolloutPct: 100 },
+      create: { key: flag.key, enabled: flag.enabled, rolloutPct: 100 },
+    });
+  }
+
+  console.log(`Seed complete: ${flags.length} feature flags (Phase 2/3 on for local)`);
+}
+
+async function seedEntitlementDefinitions(): Promise<Record<string, string>> {
+  const entitlements: { key: string; description: string }[] = [
+    { key: 'no_watermark', description: 'Export renders without the platform watermark' },
+    { key: 'hd_export', description: 'High-resolution PNG / production-file exports' },
+    { key: 'personal_visualization', description: 'Try-on visualization from a personal photo' },
+    { key: 'warm_leads', description: 'Receive targeted, ready-to-quote design requests' },
+    { key: 'verified_designer_badge', description: 'Verified badge shown on designer-authored designs' },
+    { key: 'priority_cloud_processing', description: 'Lower queue priority number for render/AI jobs' },
+    { key: 'priority_routing', description: 'Jeweler profile surfaces higher in matching/routing' },
+    { key: 'jeweler_crm', description: 'Access to the internal production-tracking CRM notes' },
+  ];
+
+  const ids: Record<string, string> = {};
+  for (const entitlement of entitlements) {
+    const row = await prisma.entitlementDefinition.upsert({
+      where: { key: entitlement.key },
+      update: { description: entitlement.description },
+      create: entitlement,
+    });
+    ids[entitlement.key] = row.id;
+  }
+
+  console.log(`Seed complete: ${entitlements.length} entitlement definitions`);
+  return ids;
+}
+
+async function seedPlanCatalog(entitlementIds: Record<string, string>) {
+  type PlanSeed = {
+    code: string;
+    role: UserRole;
+    nameHe: string;
+    nameEn: string;
+    billingCycle: BillingCycle;
+    price: number;
+    leadQuota: number;
+    extraLeadPrice?: number;
+    trialDays: number;
+    sortOrder: number;
+    inclusions: Prisma.InputJsonValue;
+    entitlementKeys: string[];
+  };
+
+  const plans: PlanSeed[] = [
+    {
+      code: 'DESIGNER_FREE',
+      role: UserRole.DESIGNER,
+      nameHe: 'מעצב/ת - חינם',
+      nameEn: 'Designer Free',
+      billingCycle: BillingCycle.MONTHLY,
+      price: 0,
+      leadQuota: 0,
+      trialDays: 0,
+      sortOrder: 1,
+      inclusions: { bullets: ['Unlimited draft designs', 'Standard export with watermark'] },
+      entitlementKeys: [],
+    },
+    {
+      code: 'DESIGNER_PRO',
+      role: UserRole.DESIGNER,
+      nameHe: 'מעצב/ת - פרו',
+      nameEn: 'Designer Pro',
+      billingCycle: BillingCycle.MONTHLY,
+      price: 49.9,
+      leadQuota: 0,
+      trialDays: 14,
+      sortOrder: 2,
+      inclusions: {
+        bullets: ['No watermark exports', 'HD export', 'Personal visualization', 'Verified badge'],
+      },
+      entitlementKeys: ['no_watermark', 'hd_export', 'personal_visualization', 'verified_designer_badge'],
+    },
+    {
+      code: 'JEWELER_BASIC',
+      role: UserRole.JEWELER,
+      nameHe: 'צורף/ת - בסיסי',
+      nameEn: 'Jeweler Basic',
+      billingCycle: BillingCycle.MONTHLY,
+      price: 0,
+      leadQuota: 3,
+      trialDays: 0,
+      sortOrder: 1,
+      inclusions: { bullets: ['3 design requests / month', 'Standard profile listing'] },
+      entitlementKeys: [],
+    },
+    {
+      code: 'JEWELER_ACTIVE',
+      role: UserRole.JEWELER,
+      nameHe: 'צורף/ת - אקטיבי',
+      nameEn: 'Jeweler Active',
+      billingCycle: BillingCycle.MONTHLY,
+      price: 199,
+      leadQuota: 15,
+      extraLeadPrice: 25,
+      trialDays: 14,
+      sortOrder: 2,
+      inclusions: {
+        bullets: ['15 leads / month', 'Warm, targeted leads', 'Priority routing', 'Internal CRM'],
+      },
+      entitlementKeys: ['warm_leads', 'priority_routing', 'jeweler_crm', 'priority_cloud_processing'],
+    },
+  ];
+
+  for (const plan of plans) {
+    const row = await prisma.planCatalog.upsert({
+      where: { code: plan.code },
+      update: {
+        nameHe: plan.nameHe,
+        nameEn: plan.nameEn,
+        billingCycle: plan.billingCycle,
+        price: plan.price,
+        leadQuota: plan.leadQuota,
+        extraLeadPrice: plan.extraLeadPrice,
+        trialDays: plan.trialDays,
+        sortOrder: plan.sortOrder,
+        inclusions: plan.inclusions,
+      },
+      create: {
+        code: plan.code,
+        role: plan.role,
+        nameHe: plan.nameHe,
+        nameEn: plan.nameEn,
+        billingCycle: plan.billingCycle,
+        price: plan.price,
+        currency: 'ILS',
+        leadQuota: plan.leadQuota,
+        extraLeadPrice: plan.extraLeadPrice,
+        trialDays: plan.trialDays,
+        sortOrder: plan.sortOrder,
+        inclusions: plan.inclusions,
+      },
+    });
+
+    for (const key of plan.entitlementKeys) {
+      const entitlementId = entitlementIds[key];
+      if (!entitlementId) {
+        continue;
+      }
+      await prisma.planEntitlement.upsert({
+        where: { planId_entitlementId: { planId: row.id, entitlementId } },
+        update: {},
+        create: { planId: row.id, entitlementId },
+      });
+    }
+  }
+
+  console.log(`Seed complete: ${plans.length} plan catalog rows`);
+}
+
+/** Local designer can hit try-on (`personal_visualization`) without buying a plan. */
+async function seedDesignerProTrial() {
+  const designer = await prisma.user.findUnique({ where: { email: 'designer@dev.mailnvosky.local' } });
+  const plan = await prisma.planCatalog.findUnique({ where: { code: 'DESIGNER_PRO' } });
+  if (!designer || !plan) {
+    console.log('Seed skip: designer PRO trial (user or plan missing)');
+    return;
+  }
+
+  const existing = await prisma.subscription.findFirst({
+    where: {
+      userId: designer.id,
+      planId: plan.id,
+      status: { in: [SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE] },
+    },
+  });
+  if (existing) {
+    console.log('Seed skip: designer already has DESIGNER_PRO');
+    return;
+  }
+
+  const now = new Date();
+  const trialEnds = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+  await prisma.subscription.create({
+    data: {
+      userId: designer.id,
+      planId: plan.id,
+      role: UserRole.DESIGNER,
+      status: SubscriptionStatus.TRIALING,
+      billingCycle: plan.billingCycle,
+      trialEndsAt: trialEnds,
+      currentPeriodStart: now,
+      currentPeriodEnd: trialEnds,
+    },
+  });
+  console.log('Seed complete: designer DESIGNER_PRO trial');
+}
+
+/**
+ * Showcase seed for Page 1 (BusinessProfileView).
+ * Mirrors the app's Hebrew demo copy so the integrated UI looks identical:
+ * businessName / bio / 2 portfolio works / 2 featured reviews.
+ * Idempotent: safe to re-run.
+ */
+async function seedJewelerProfileShowcase() {
+  const jeweler = await prisma.user.findUnique({ where: { email: 'jeweler@dev.mailnvosky.local' } });
+  if (!jeweler) {
+    console.log('Seed skip: jeweler dev user missing');
+    return;
+  }
+  const region = await prisma.region.findUnique({ where: { code: 'TEL_AVIV' } });
+  if (!region) {
+    console.log('Seed skip: TEL_AVIV region missing');
+    return;
+  }
+
+  const profile = await prisma.jewelerProfile.upsert({
+    where: { userId: jeweler.id },
+    update: {
+      businessName: 'תכשיטי גורלי',
+      bio: 'אטלייה "נילדד פארצ\'מנט" מתמחה בצורפות עלית בעבודת יד. אנו משלבים טכניקות מסורתיות עם עיצוב מודרני ליצירת תכשיטים שהם יצירות אמנות נצחיות. כל אבן נבחרת בקפידה ובכל עיצוב יש סיפור ייחודי של יוקרה ודיוק.',
+      regionId: region.id,
+      phone: '+972501234567',
+      email: 'jeweler@dev.mailnvosky.local',
+      publishStatus: ProfilePublishStatus.PUBLISHED,
+      publishedAt: new Date(),
+      verifiedBadge: true,
+      verifiedAt: new Date(),
+      latitude: 32.0853,
+      longitude: 34.7818,
+      specialties: ['ENGAGEMENT_RINGS', 'CUSTOM'],
+    },
+    create: {
+      userId: jeweler.id,
+      businessName: 'תכשיטי גורלי',
+      bio: 'אטלייה "נילדד פארצ\'מנט" מתמחה בצורפות עלית בעבודת יד. אנו משלבים טכניקות מסורתיות עם עיצוב מודרני ליצירת תכשיטים שהם יצירות אמנות נצחיות. כל אבן נבחרת בקפידה ובכל עיצוב יש סיפור ייחודי של יוקרה ודיוק.',
+      regionId: region.id,
+      phone: '+972501234567',
+      email: 'jeweler@dev.mailnvosky.local',
+      publishStatus: ProfilePublishStatus.PUBLISHED,
+      publishedAt: new Date(),
+      verifiedBadge: true,
+      verifiedAt: new Date(),
+      latitude: 32.0853,
+      longitude: 34.7818,
+      specialties: ['ENGAGEMENT_RINGS', 'CUSTOM'],
+    },
+  });
+
+  // Portfolio uploads reference real bytes under backend/seed-assets/showcase,
+  // served by GET /uploads/:id/content — the app loads gallery art over HTTP.
+  await prisma.portfolioItem.deleteMany({ where: { profileId: profile.id } });
+  await prisma.upload.deleteMany({
+    where: { ownerUserId: jeweler.id, objectKey: { startsWith: 'seed/' } },
+  });
+  // Portfolio order mirrors the app's gallery order (flower first, ring second).
+  const works = [
+    { title: 'עגילי פרח', file: 'work-flower.png', sizeBytes: 204814 },
+    { title: 'טבעת אוקיינוס', file: 'work-ring.png', sizeBytes: 287849 },
+  ];
+  for (let i = 0; i < works.length; i += 1) {
+    const upload = await prisma.upload.create({
+      data: {
+        ownerUserId: jeweler.id,
+        bucket: 'local-dev',
+        objectKey: `seed/showcase/${works[i].file}`,
+        mimeType: 'image/png',
+        sizeBytes: works[i].sizeBytes,
+        status: 'READY',
+      },
+    });
+    await prisma.portfolioItem.create({
+      data: {
+        profileId: profile.id,
+        uploadId: upload.id,
+        title: works[i].title,
+        sortOrder: i,
+        isSelectedWork: true,
+      },
+    });
+  }
+
+  await prisma.review.deleteMany({ where: { jewelerProfileId: profile.id } });
+  const dayMs = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const reviews = [
+    {
+      reviewerName: 'מיכל כהן',
+      rating: 5,
+      comment: 'העבודה מדויקת, השירות אדיב, והתוצאה עלתה על כל הציפיות. ממליצה בחום!',
+      isFeatured: true,
+      createdAt: new Date(now - 2 * dayMs),
+    },
+    {
+      reviewerName: 'נועה לוי',
+      rating: 5,
+      comment: 'תהליך מקצועי מההתחלה ועד הסוף. התכשיט יצא מושלם בדיוק כמו שחלמתי.',
+      isFeatured: true,
+      createdAt: new Date(now - 7 * dayMs),
+    },
+  ];
+  for (const review of reviews) {
+    await prisma.review.create({ data: { jewelerProfileId: profile.id, ...review } });
+  }
+  await prisma.jewelerProfile.update({
+    where: { id: profile.id },
+    data: { ratingAvg: 5, reviewCount: reviews.length },
+  });
+
+  console.log('Seed complete: jeweler showcase profile (תכשיטי גורלי, 2 works, 2 reviews)');
+}
+
+async function seedSystemMessageTemplates() {
+  const templates: { eventKey: string; locale: string; body: string }[] = [
+    { eventKey: 'quote.accepted', locale: 'he', body: 'The quote from {{jewelerName}} was accepted.' },
+    {
+      eventKey: 'handoff.created',
+      locale: 'he',
+      body: 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}',
+    },
+  ];
+
+  for (const template of templates) {
+    await prisma.systemMessageTemplate.upsert({
+      where: { eventKey_locale: { eventKey: template.eventKey, locale: template.locale } },
+      update: { body: template.body },
+      create: template,
+    });
+  }
+
+  console.log(`Seed complete: ${templates.length} system message templates`);
+}
+
+async function seedContentPages() {
+  const now = new Date();
+  const existing = await prisma.contentPage.findFirst({
+    where: { slug: 'quote_disclaimer', locale: 'he' },
+    orderBy: { version: 'desc' },
+  });
+
+  if (existing) {
+    if (existing.status !== ContentPageStatus.PUBLISHED) {
+      await prisma.contentPage.update({
+        where: { id: existing.id },
+        data: { status: ContentPageStatus.PUBLISHED, publishedAt: existing.publishedAt ?? now },
+      });
+    }
+  } else {
+    await prisma.contentPage.create({
+      data: {
+        slug: 'quote_disclaimer',
+        locale: 'he',
+        title: 'תנאי הצעת מחיר',
+        body: {
+          blocks: [
+            {
+              type: 'paragraph',
+              text: 'הצעת המחיר היא הערכה ראשונית בלבד ואינה מהווה התחייבות סופית של הצורף/ת. המחיר הסופי עשוי להשתנות בהתאם לזמינות חומרים, מורכבות הביצוע ותיאום ישיר מול הצורף/ת.',
+            },
+          ],
+        },
+        status: ContentPageStatus.PUBLISHED,
+        publishedAt: now,
+      },
+    });
+  }
+
+  console.log('Seed complete: quote_disclaimer content page (he, published)');
+}
+
+/**
+ * Showcase seed for Chats (jeweler perspective).
+ * Mirrors the app's 5 demo rows: peer names, design titles, preview texts,
+ * times (today 14:23–16:00) and unread badges 1–5. Conversation 1 reuses the
+ * thread demo exchange so ChatThread looks familiar. Idempotent.
+ */
+async function seedJewelerChatShowcase(itemTypeIds: Record<string, string>) {
+  const jeweler = await prisma.user.findUnique({ where: { email: 'jeweler@dev.mailnvosky.local' } });
+  if (!jeweler) {
+    console.log('Seed skip: jeweler dev user missing');
+    return;
+  }
+
+  const peers = [
+    {
+      email: 'yossi@dev.mailnvosky.local', firstName: 'יוסי', lastName: 'ברק',
+      designTitle: 'טבעת פנינה', itemType: 'RING', lastTime: '14:23', unread: 1,
+      preview: 'אוכל להתחיל בעבודה תוך כשבועיים מרגע אישור...',
+      history: [
+        { fromPeer: true, body: 'שלום, צירפתי לך את הצעת המחיר המעודכנת עבור הטבעת שביקשת. האם תרצה לבצע שינויים כלשהם בסוג האבן?', at: '14:05' },
+        { fromPeer: false, body: 'נראה מצוין, תודה! האם ניתן להשתמש בזהב לבן במקום בצהוב באותו המחיר?', at: '14:12' },
+        { fromPeer: true, body: 'בוודאי, אין הבדל במחיר בין זהב צהוב לזהב לבן 14K. אני יכול לעדכן את ההזמנה עבורך.', at: '14:18' },
+      ],
+    },
+    {
+      email: 'maya@dev.mailnvosky.local', firstName: 'מיה', lastName: 'לוי',
+      designTitle: 'שרשרת זהב', itemType: 'NECKLACE', lastTime: '14:45', unread: 2,
+      preview: 'שלחתי עדכון לגבי מידות החישוק',
+      history: [
+        { fromPeer: false, body: 'השרשרת בתהליך, אעדכן כשיהיה חדש', at: '13:50' },
+        { fromPeer: true, body: 'תודה! מחכה לעדכון', at: '14:00' },
+      ],
+    },
+    {
+      email: 'omer@dev.mailnvosky.local', firstName: 'עומר', lastName: 'שמואלי',
+      designTitle: 'עגילים מכסף', itemType: 'EARRINGS', lastTime: '15:10', unread: 3,
+      preview: 'אפשר לתאם שיחה קצרה מחר בבוקר?',
+      history: [
+        { fromPeer: false, body: 'העגילים כמעט מוכנים לליטוש סופי', at: '14:20' },
+        { fromPeer: true, body: 'נהדר, אשמח לראות תמונה', at: '14:30' },
+      ],
+    },
+    {
+      email: 'ronit@dev.mailnvosky.local', firstName: 'רונית', lastName: 'כהן',
+      designTitle: 'צמיד טורקיז', itemType: 'BRACELET', lastTime: '15:30', unread: 4,
+      preview: 'העיצוב מוכן לסקירה סופית',
+      history: [
+        { fromPeer: false, body: 'סיימתי את שיבוץ האבנים בצמיד', at: '14:35' },
+        { fromPeer: true, body: 'איזה כיף לשמוע!', at: '14:40' },
+      ],
+    },
+    {
+      email: 'eitan@dev.mailnvosky.local', firstName: 'איתן', lastName: 'גולדמן',
+      designTitle: 'מחרוזת פנינים', itemType: 'NECKLACE', lastTime: '16:00', unread: 5,
+      preview: 'הצעת המחיר עודכנה לפי הבקשה שלך',
+      history: [
+        { fromPeer: false, body: 'שלחתי לך את הצעת המחיר הראשונית', at: '15:00' },
+        { fromPeer: true, body: 'קיבלתי, אבדוק ואחזור אליך', at: '15:05' },
+      ],
+    },
+  ];
+
+  const peerPasswordHash = await bcrypt.hash('Designer123!', 12);
+  const atToday = (hhmm: string) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d;
+  };
+  const metalParams = (withSize: boolean) => ({
+    ...(withSize ? { size: { standard: 'US', sizeCode: '7.00' } } : {}),
+    metal: { metalCode: 'YELLOW_GOLD', purityCode: '14K' },
+  });
+
+  for (const peer of peers) {
+    const peerUser = await prisma.user.upsert({
+      where: { email: peer.email },
+      update: { firstName: peer.firstName, lastName: peer.lastName },
+      create: {
+        email: peer.email,
+        passwordHash: peerPasswordHash,
+        firstName: peer.firstName,
+        lastName: peer.lastName,
+        roles: [UserRole.DESIGNER],
+        activeRole: UserRole.DESIGNER,
+        status: UserStatus.ACTIVE,
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    let design = await prisma.design.findFirst({
+      where: { ownerUserId: peerUser.id, title: peer.designTitle, deletedAt: null },
+    });
+    if (!design) {
+      design = await prisma.design.create({
+        data: {
+          ownerUserId: peerUser.id,
+          itemTypeId: itemTypeIds[peer.itemType],
+          title: peer.designTitle,
+          status: 'PUBLISHED',
+          parameters: metalParams(peer.itemType === 'RING'),
+        },
+      });
+    }
+
+    // Fresh conversation each seed (cascade clears old messages/participants).
+    await prisma.conversation.deleteMany({ where: { designId: design.id } });
+    const conversation = await prisma.conversation.create({
+      data: {
+        designId: design.id,
+        participants: { create: [{ userId: peerUser.id }, { userId: jeweler.id }] },
+      },
+    });
+
+    const lastAt = atToday(peer.lastTime);
+    // History, then jeweler reads, then `unread` peer messages ending at lastTime.
+    for (const msg of peer.history) {
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          senderId: msg.fromPeer ? peerUser.id : jeweler.id,
+          type: 'TEXT',
+          body: msg.body,
+          createdAt: atToday(msg.at),
+        },
+      });
+    }
+    const readAt = new Date(lastAt.getTime() - peer.unread * 60_000 - 30_000);
+    await prisma.conversationParticipant.updateMany({
+      where: { conversationId: conversation.id, userId: jeweler.id },
+      data: { lastReadAt: readAt },
+    });
+    // Showcase media inside the read history (first conversation only): a
+    // workshop photo + voice note, so the thread renders IMAGE/AUDIO bubbles.
+    if (peer.email === 'yossi@dev.mailnvosky.local') {
+      await prisma.upload.deleteMany({
+        where: { ownerUserId: peerUser.id, objectKey: { startsWith: 'seed/showcase/' } },
+      });
+      const photo = await prisma.upload.create({
+        data: {
+          ownerUserId: peerUser.id,
+          bucket: 'local-dev',
+          objectKey: 'seed/showcase/chat-ring.png',
+          mimeType: 'image/png',
+          sizeBytes: 287849,
+          status: 'READY',
+        },
+      });
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          senderId: peerUser.id,
+          type: 'IMAGE',
+          imageUploadId: photo.id,
+          createdAt: new Date(lastAt.getTime() - 4 * 60_000),
+        },
+      });
+      const voice = await prisma.upload.create({
+        data: {
+          ownerUserId: peerUser.id,
+          bucket: 'local-dev',
+          objectKey: 'seed/showcase/voice-note.wav',
+          mimeType: 'audio/wav',
+          sizeBytes: 48044,
+          status: 'READY',
+        },
+      });
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          senderId: peerUser.id,
+          type: 'AUDIO',
+          imageUploadId: voice.id,
+          createdAt: new Date(lastAt.getTime() - 3 * 60_000),
+        },
+      });
+    }
+    const nudges = [
+      'היי, רציתי לוודא שראית את ההודעה הקודמת',
+      'אשמח לעדכון כשיתאפשר לך',
+      'תודה רבה על העזרה!',
+      'מחכה לשמוע ממך בהקדם',
+    ];
+    const tails = [...Array(peer.unread - 1).fill(null).map((_, i) => nudges[i % nudges.length]), peer.preview];
+    for (let i = 0; i < tails.length; i += 1) {
+      await prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          senderId: peerUser.id,
+          type: 'TEXT',
+          body: tails[i],
+          createdAt: new Date(lastAt.getTime() - (tails.length - 1 - i) * 60_000),
+        },
+      });
+    }
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { lastMessageAt: lastAt },
+    });
+  }
+
+  console.log('Seed complete: 5 jeweler showcase conversations (chats)');
+}
+
+async function seedAtelierPromotions() {
+  const now = new Date();
+  const end = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  const bannerEntityId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1';
+
+  await prisma.promotion.upsert({
+    where: { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee0' },
+    update: {
+      isActive: true,
+      startAt: new Date(now.getTime() - 60_000),
+      endAt: end,
+      meta: { headline: 'Featured Atelier jewelers this week', cta: 'Browse' },
+    },
+    create: {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee0',
+      entityType: PromotionEntityType.BANNER,
+      entityId: bannerEntityId,
+      placement: 'atelier_banner',
+      source: PromotionSource.PAID_PLACEMENT,
+      priority: 100,
+      startAt: new Date(now.getTime() - 60_000),
+      endAt: end,
+      isActive: true,
+      meta: { headline: 'Featured Atelier jewelers this week', cta: 'Browse' },
+    },
+  });
+
+  const published =
+    (await prisma.design.findFirst({
+      where: { status: DesignStatus.PUBLISHED, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    })) ??
+    (await prisma.design.findFirst({ where: { deletedAt: null }, orderBy: { createdAt: 'asc' } }));
+  if (published) {
+    if (published.status !== DesignStatus.PUBLISHED) {
+      await prisma.design.update({
+        where: { id: published.id },
+        data: { status: DesignStatus.PUBLISHED, publishedAt: now },
+      });
+    }
+    await prisma.promotion.upsert({
+      where: { id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee2' },
+      update: {
+        entityId: published.id,
+        isActive: true,
+        startAt: new Date(now.getTime() - 60_000),
+        endAt: end,
+      },
+      create: {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee2',
+        entityType: PromotionEntityType.DESIGN,
+        entityId: published.id,
+        placement: 'atelier_designs_feed',
+        source: PromotionSource.PAID_PLACEMENT,
+        priority: 80,
+        startAt: new Date(now.getTime() - 60_000),
+        endAt: end,
+        isActive: true,
+        meta: { headline: 'Sponsored design' },
+      },
+    });
+  }
+
+  console.log('Seed complete: Atelier banner (+ design promotion if a published design exists)');
+}
+
+async function main() {
+  await seedUsers();
+  await seedRegions();
+  const itemTypeIds = await seedItemTypes();
+  await seedMetalsAndPurities();
+  await seedSettings(itemTypeIds);
+  await seedStonesAndElements();
+  await seedSizeCharts(itemTypeIds);
+  await seedMeasurementGuides(itemTypeIds);
+  await seedFeatureFlags();
+  const entitlementIds = await seedEntitlementDefinitions();
+  await seedPlanCatalog(entitlementIds);
+  await seedDesignerProTrial();
+  await seedSystemMessageTemplates();
+  await seedContentPages();
+  await seedJewelerProfileShowcase();
+  await seedJewelerChatShowcase(itemTypeIds);
+  await seedAtelierPromotions();
+
+  await seedAppConfigDefaults();
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

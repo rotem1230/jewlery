@@ -1,0 +1,1303 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  DESIGNER
+  JEWELER
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum AuthProvider {
+  PASSWORD
+  GOOGLE
+  APPLE
+}
+
+enum DesignStatus {
+  DRAFT
+  PUBLISHED
+  COMPLETED
+  ARCHIVED
+}
+
+enum FeasibilityStatus {
+  NOT_REQUIRED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum DesignAssetKind {
+  ELEMENT
+  INSPIRATION
+  THUMBNAIL
+  RENDER
+  AI_INSPIRATION
+  EXPORT
+}
+
+enum DesignRequestStatus {
+  OPEN
+  QUOTE_SUBMITTED
+  NEGOTIATING
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum DesignRequestMode {
+  TARGETED
+  BROADCAST
+}
+
+enum QuoteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  WITHDRAWN
+}
+
+enum MessageType {
+  TEXT
+  QUOTE_CARD
+  SYSTEM
+  IMAGE
+  AUDIO
+}
+
+enum ProfilePublishStatus {
+  DRAFT
+  PREVIEW_READY
+  PENDING_REVIEW
+  PUBLISHED
+  UNPUBLISHED
+}
+
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+  PER_ITEM
+  PER_LEAD
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum LeadStatus {
+  AVAILABLE
+  RESERVED
+  CONSUMED
+  REFUNDED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum UploadStatus {
+  PENDING
+  READY
+  FAILED
+  QUARANTINED
+  DELETED
+}
+
+enum PromotionSource {
+  PAID_PLACEMENT
+  SUBSCRIPTION_PERK
+}
+
+enum PromotionEntityType {
+  DESIGN
+  JEWELER
+  BANNER
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  IN_APP
+}
+
+enum JewelryPaymentStatus {
+  REQUIRES_CONFIRMATION
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum ContentPageStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+// ---------------------------------------------------------------------------
+// 1. Auth & users
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String       @id @default(uuid()) @db.Uuid
+  email           String       @unique
+  passwordHash    String? // null if OAuth-only
+  authProvider    AuthProvider @default(PASSWORD)
+  authProviderSub String? // external subject; @@unique([authProvider, authProviderSub])
+  firstName       String?
+  lastName        String?
+  phone           String? // E.164
+  avatarUploadId  String?      @db.Uuid
+  roles           UserRole[]   @default([DESIGNER])
+  activeRole      UserRole     @default(DESIGNER)
+  status          UserStatus   @default(PENDING_VERIFICATION)
+  emailVerifiedAt DateTime?
+  loginAttempts   Int          @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  deletedAt       DateTime?
+
+  avatarUpload            Upload?                   @relation("UserAvatar", fields: [avatarUploadId], references: [id], onDelete: SetNull)
+  refreshTokens           RefreshToken[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  preference              UserPreference?
+  deviceTokens            DeviceToken[]
+  uploads                 Upload[]                  @relation("UploadOwner")
+  designs                 Design[]                  @relation("DesignOwner")
+  completedDesigns        Design[]                  @relation("DesignCompletedBy")
+  feasibilityReviews      Design[]                  @relation("DesignFeasibilityReviewer")
+  jewelerProfile          JewelerProfile?
+  onboardingDrafts        JewelerOnboardingDraft[]
+  subscriptions           Subscription[]
+  notifications           Notification[]
+  reviewsAuthored         Review[]                  @relation("ReviewAuthor")
+  requestCreated          DesignRequest[]           @relation("RequestRequester")
+  conversationParts       ConversationParticipant[]
+  messagesSent            Message[]                 @relation("MessageSender")
+  quotesCreated           Quote[]                   @relation("QuoteAuthor")
+  auditLogs               AuditLog[]
+  idempotencyKeys         IdempotencyKey[]
+  jewelryPaymentIntents   JewelryPaymentIntent[]
+
+  @@index([status])
+  @@index([phone])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String
+  familyId  String    @db.Uuid // rotation family for reuse detection
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model UserPreference {
+  id                     String   @id @default(uuid()) @db.Uuid
+  userId                 String   @unique @db.Uuid
+  locale                 String   @default("he")
+  preferredSizeStandard  String? // e.g. US|EU|UK|IL
+  preferredRingSizeCode  String?
+  notifyPushEnabled      Boolean  @default(true)
+  notifyEmailEnabled     Boolean  @default(true)
+  notifyChatEnabled      Boolean  @default(true)
+  notifyMarketingEnabled Boolean  @default(false)
+  updatedAt              DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+model DeviceToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  token      String
+  platform   String // ios|android
+  appVersion String?
+  lastSeenAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, token])
+  @@index([userId])
+  @@map("device_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// 2. Uploads & platform config
+// ---------------------------------------------------------------------------
+
+model Upload {
+  id             String       @id @default(uuid()) @db.Uuid
+  ownerUserId    String       @db.Uuid
+  bucket         String
+  objectKey      String
+  mimeType       String
+  sizeBytes      Int
+  checksumSha256 String?
+  status         UploadStatus @default(PENDING)
+  createdAt      DateTime     @default(now())
+  readyAt        DateTime?
+  deletedAt      DateTime?
+
+  owner              User                     @relation("UploadOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  avatarForUsers     User[]                   @relation("UserAvatar")
+  designAssets       DesignAsset[]
+  portfolioItems     PortfolioItem[]
+  profileLogos       JewelerProfile[]         @relation("ProfileLogo")
+  draftLogos         JewelerOnboardingDraft[] @relation("DraftLogo")
+  renderOutputs      RenderJob[]              @relation("RenderOutput")
+  aiOutputs          AiGenerationJob[]        @relation("AiOutput")
+  vizInputs          VisualizationJob[]       @relation("VizInput")
+  vizOutputs         VisualizationJob[]       @relation("VizOutput")
+  messageAttachments Message[]                @relation("MessageImage")
+
+  @@unique([bucket, objectKey])
+  @@index([ownerUserId, status])
+  @@map("uploads")
+}
+
+model AppConfig {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique // password_policy|upload_limits|token_ttls|lockout|lead_definition|...
+  value     Json
+  version   Int      @default(1)
+  updatedBy String?  @db.Uuid
+  updatedAt DateTime @updatedAt
+
+  @@map("app_configs")
+}
+
+model ContentPage {
+  id          String            @id @default(uuid()) @db.Uuid
+  slug        String // faq|tos|privacy|quote_disclaimer
+  locale      String            @default("he")
+  title       String
+  body        Json // structured blocks
+  status      ContentPageStatus @default(DRAFT)
+  version     Int               @default(1)
+  publishedAt DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  quotesUsing Quote[] @relation("QuoteDisclaimer")
+
+  @@unique([slug, locale, version])
+  @@index([slug, locale, status])
+  @@map("content_pages")
+}
+
+model FeatureFlag {
+  id         String   @id @default(uuid()) @db.Uuid
+  key        String   @unique
+  enabled    Boolean  @default(false)
+  rolloutPct Int      @default(100)
+  audience   Json? // { roles?:[], planCodes?:[] }
+  updatedAt  DateTime @updatedAt
+
+  @@map("feature_flags")
+}
+
+model Region {
+  id        String  @id @default(uuid()) @db.Uuid
+  code      String  @unique // TEL_AVIV|JERUSALEM|HAIFA|NORTH|SOUTH|CENTER
+  labelHe   String
+  labelEn   String?
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  profiles JewelerProfile[]
+  drafts   JewelerOnboardingDraft[]
+  designs  Design[]                 @relation("DesignPreferredRegion")
+
+  @@map("regions")
+}
+
+model SystemMessageTemplate {
+  id        String   @id @default(uuid()) @db.Uuid
+  eventKey  String // quote.accepted|handoff.created|...
+  locale    String   @default("he")
+  body      String // placeholders {{jewelerName}} {{whatsappUrl}}
+  updatedAt DateTime @updatedAt
+
+  @@unique([eventKey, locale])
+  @@map("system_message_templates")
+}
+
+model NotificationTemplate {
+  id        String              @id @default(uuid()) @db.Uuid
+  eventKey  String
+  channel   NotificationChannel
+  locale    String              @default("he")
+  title     String
+  body      String
+  updatedAt DateTime            @updatedAt
+
+  @@unique([eventKey, channel, locale])
+  @@map("notification_templates")
+}
+
+model Notification {
+  id        String              @id @default(uuid()) @db.Uuid
+  userId    String              @db.Uuid
+  channel   NotificationChannel @default(IN_APP)
+  eventKey  String
+  title     String
+  body      String
+  payload   Json?
+  readAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  actorUserId String?  @db.Uuid
+  action      String
+  entityType  String
+  entityId    String?
+  before      Json?
+  after       Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+  @@map("audit_logs")
+}
+
+model EventLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  eventKey   String
+  entityType String
+  entityId   String
+  payload    Json
+  createdAt  DateTime @default(now())
+
+  @@index([eventKey, createdAt])
+  @@index([entityType, entityId])
+  @@map("event_logs")
+}
+
+model IdempotencyKey {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  key          String
+  requestHash  String
+  responseCode Int?
+  responseBody Json?
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@map("idempotency_keys")
+}
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  type        String
+  payload     Json
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+  attempts    Int       @default(0)
+  lastError   String?
+
+  @@index([processedAt, createdAt])
+  @@map("outbox_events")
+}
+
+// ---------------------------------------------------------------------------
+// 3. Master data (fully relational)
+// ---------------------------------------------------------------------------
+
+model ItemType {
+  id        String  @id @default(uuid()) @db.Uuid
+  code      String  @unique // RING|NECKLACE|BRACELET|EARRINGS
+  labelHe   String
+  labelEn   String?
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  config        ItemTypeConfig?
+  sizeCharts    SizeChart[]
+  guides        MeasurementGuide[]
+  earringStyles EarringStyle[]
+  settingLinks  SettingItemType[]
+  designs       Design[]
+
+  @@map("item_types")
+}
+
+model ItemTypeConfig {
+  id                 String   @id @default(uuid()) @db.Uuid
+  itemTypeId         String   @unique @db.Uuid
+  version            Int      @default(1)
+  steps              Json // [{ key:"size", order:1, lockable:true }, ...]
+  parametersSchema   Json // JSON Schema for design.parameters
+  lockFields         String[] // e.g. ["size","bandWidthMm"]
+  compatibilityRules Json // [{ when:{...}, require:{...}, messageKey:"..." }]
+  defaults           Json?
+  updatedAt          DateTime @updatedAt
+
+  itemType ItemType @relation(fields: [itemTypeId], references: [id], onDelete: Cascade)
+
+  @@map("item_type_configs")
+}
+
+model SizeChart {
+  id            String   @id @default(uuid()) @db.Uuid
+  itemTypeId    String   @db.Uuid
+  standard      String // US|EU|UK|IL
+  sizeCode      String // "6.00" | "52"
+  diameterMinMm Decimal? @db.Decimal(6, 2)
+  diameterMaxMm Decimal? @db.Decimal(6, 2)
+  lengthCm      Decimal? @db.Decimal(6, 2) // necklace fixed lengths
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+
+  itemType ItemType @relation(fields: [itemTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([itemTypeId, standard, sizeCode])
+  @@index([itemTypeId, standard])
+  @@map("size_charts")
+}
+
+model MeasurementGuide {
+  id         String   @id @default(uuid()) @db.Uuid
+  itemTypeId String   @db.Uuid
+  locale     String   @default("he")
+  title      String
+  body       Json // tips + tables (Choker/Princess/...)
+  updatedAt  DateTime @updatedAt
+
+  itemType ItemType @relation(fields: [itemTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([itemTypeId, locale])
+  @@map("measurement_guides")
+}
+
+model EarringStyle {
+  id         String  @id @default(uuid()) @db.Uuid
+  itemTypeId String  @db.Uuid // must be EARRINGS
+  code       String
+  labelHe    String
+  labelEn    String?
+  isActive   Boolean @default(true)
+
+  itemType ItemType @relation(fields: [itemTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([itemTypeId, code])
+  @@map("earring_styles")
+}
+
+model Metal {
+  id            String  @id @default(uuid()) @db.Uuid
+  code          String  @unique // SILVER|YELLOW_GOLD|ROSE_GOLD|WHITE_GOLD|PLATINUM
+  labelHe       String
+  labelEn       String?
+  priceModifier Decimal @default(0) @db.Decimal(8, 4)
+  sortOrder     Int     @default(0)
+  isActive      Boolean @default(true)
+
+  purities MetalPurity[]
+
+  @@map("metals")
+}
+
+model MetalPurity {
+  id       String  @id @default(uuid()) @db.Uuid
+  metalId  String  @db.Uuid
+  code     String // 12K|14K|18K|925
+  labelHe  String?
+  isActive Boolean @default(true)
+
+  metal Metal @relation(fields: [metalId], references: [id], onDelete: Cascade)
+
+  @@unique([metalId, code])
+  @@map("metal_purities")
+}
+
+model Setting {
+  id             String   @id @default(uuid()) @db.Uuid
+  code           String   @unique
+  labelHe        String
+  labelEn        String?
+  minBandWidthMm Decimal? @db.Decimal(6, 2)
+  imageUploadId  String?  @db.Uuid
+  sortOrder      Int      @default(0)
+  isActive       Boolean  @default(true)
+
+  itemTypes SettingItemType[]
+
+  @@map("settings")
+}
+
+model SettingItemType {
+  settingId  String @db.Uuid
+  itemTypeId String @db.Uuid
+
+  setting  Setting  @relation(fields: [settingId], references: [id], onDelete: Cascade)
+  itemType ItemType @relation(fields: [itemTypeId], references: [id], onDelete: Cascade)
+
+  @@id([settingId, itemTypeId])
+  @@map("setting_item_types")
+}
+
+model Stone {
+  id            String  @id @default(uuid()) @db.Uuid
+  code          String  @unique
+  nameHe        String
+  nameEn        String?
+  imageUploadId String? @db.Uuid
+  sortOrder     Int     @default(0)
+  isActive      Boolean @default(true)
+
+  options StoneOption[]
+
+  @@map("stones")
+}
+
+// Flattened options: shape, color (GIA), clarity, size_mm as typed rows
+model StoneOption {
+  id        String  @id @default(uuid()) @db.Uuid
+  stoneId   String  @db.Uuid
+  kind      String // SHAPE|COLOR|CLARITY|SIZE_MM|WEIGHT_CT
+  value     String
+  labelHe   String?
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  stone Stone @relation(fields: [stoneId], references: [id], onDelete: Cascade)
+
+  @@unique([stoneId, kind, value])
+  @@index([stoneId, kind])
+  @@map("stone_options")
+}
+
+model FinishType {
+  id       String  @id @default(uuid()) @db.Uuid
+  code     String  @unique
+  labelHe  String
+  labelEn  String?
+  isActive Boolean @default(true)
+
+  @@map("finish_types")
+}
+
+model ElementCatalog {
+  id            String  @id @default(uuid()) @db.Uuid
+  code          String  @unique
+  labelHe       String
+  labelEn       String?
+  imageUploadId String? @db.Uuid
+  isActive      Boolean @default(true)
+
+  @@map("element_catalog")
+}
+
+// ---------------------------------------------------------------------------
+// 4. Designs, gallery, assets, jobs
+// ---------------------------------------------------------------------------
+
+model Design {
+  id                      String            @id @default(uuid()) @db.Uuid
+  ownerUserId             String            @db.Uuid
+  itemTypeId              String            @db.Uuid
+  preferredRegionId       String?           @db.Uuid // Atelier Designs-tab location filter
+  title                   String?
+  description             String?
+  status                  DesignStatus      @default(DRAFT)
+  parameters              Json // validated vs ItemTypeConfig.parametersSchema
+  // parameters shape (concrete contract):
+  // {
+  //   size: { standard, sizeCode, bandWidthMm?, wristCircumferenceCm?, necklaceLengthCm?, earringStyleCode? },
+  //   metal: { metalCode, purityCode },
+  //   setting: { settingCode },
+  //   stoneHousing: string?,              // e.g. "6-prong"
+  //   stones: [{ stoneCode, shape, color, clarity, sizeMm, weightCt, placement:{x,y,z?} }],
+  //   elements: [{ elementCode|customUploadId, placement:{x,y,z?} }],
+  //   finishCode, additionalStonesText, personalNote
+  // }
+  parametersSchemaVersion Int               @default(1)
+  jewelerNotes            String?
+  thumbnailUploadId       String?           @db.Uuid
+  lockedAt                DateTime?
+  lockedFields            String[]          @default([])
+  feasibilityStatus       FeasibilityStatus @default(NOT_REQUIRED)
+  feasibilityReviewedAt   DateTime?
+  feasibilityReviewerId   String?           @db.Uuid
+  publishedAt             DateTime?
+  expiresAt               DateTime?
+  completedAt             DateTime?
+  completedByJewelerId    String?           @db.Uuid
+  acceptedQuoteId         String?           @unique @db.Uuid
+  isCurated               Boolean           @default(false)
+  version                 Int               @default(1) // optimistic concurrency
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  deletedAt               DateTime?
+
+  owner               User               @relation("DesignOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  itemType            ItemType           @relation(fields: [itemTypeId], references: [id], onDelete: Restrict)
+  preferredRegion     Region?            @relation("DesignPreferredRegion", fields: [preferredRegionId], references: [id], onDelete: SetNull)
+  completedBy         User?              @relation("DesignCompletedBy", fields: [completedByJewelerId], references: [id], onDelete: SetNull)
+  feasibilityReviewer User?              @relation("DesignFeasibilityReviewer", fields: [feasibilityReviewerId], references: [id], onDelete: SetNull)
+  acceptedQuote       Quote?             @relation("DesignAcceptedQuote", fields: [acceptedQuoteId], references: [id], onDelete: SetNull)
+  versions            DesignVersion[]
+  assets              DesignAsset[]
+  requests            DesignRequest[]
+  quotes              Quote[]            @relation("DesignQuotes")
+  conversations       Conversation[]
+  renderJobs          RenderJob[]
+  aiJobs              AiGenerationJob[]
+  visualizationJobs   VisualizationJob[]
+  galleryItems        GalleryItem[]
+  usageEvents         UsageEvent[]
+
+  @@index([ownerUserId, status])
+  @@index([status, publishedAt])
+  @@index([itemTypeId])
+  @@index([preferredRegionId, status])
+  @@index([expiresAt])
+  @@map("designs")
+}
+
+model DesignVersion {
+  id            String       @id @default(uuid()) @db.Uuid
+  designId      String       @db.Uuid
+  versionNumber Int
+  status        DesignStatus
+  parameters    Json
+  jewelerNotes  String?
+  createdById   String       @db.Uuid
+  reason        String? // autosave|lock|publish|restore
+  createdAt     DateTime     @default(now())
+
+  design     Design      @relation(fields: [designId], references: [id], onDelete: Cascade)
+  renderJobs RenderJob[]
+
+  @@unique([designId, versionNumber])
+  @@index([designId, createdAt])
+  @@map("design_versions")
+}
+
+model DesignAsset {
+  id        String          @id @default(uuid()) @db.Uuid
+  designId  String          @db.Uuid
+  uploadId  String          @db.Uuid
+  kind      DesignAssetKind
+  meta      Json? // placement overlay, ai prompt, etc.
+  createdAt DateTime        @default(now())
+
+  design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+  upload Upload @relation(fields: [uploadId], references: [id], onDelete: Restrict)
+
+  @@index([designId, kind])
+  @@map("design_assets")
+}
+
+model GalleryItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  designId    String   @db.Uuid
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  captionHe   String?
+  publishedAt DateTime @default(now())
+
+  design Design @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+  @@index([isActive, sortOrder])
+  @@map("gallery_items")
+}
+
+model RenderJob {
+  id              String    @id @default(uuid()) @db.Uuid
+  designId        String    @db.Uuid
+  designVersionId String    @db.Uuid
+  status          JobStatus @default(QUEUED)
+  priority        Int       @default(100) // lower = sooner; priority_cloud_processing entitlement lowers this
+  providerRef     String?
+  outputUploadId  String?   @db.Uuid
+  exportFormat    String? // STL|OBJ|STEP|PNG_HD
+  applyWatermark  Boolean   @default(true) // false when entitlement no_watermark
+  errorMessage    String?
+  attempts        Int       @default(0)
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  design        Design        @relation(fields: [designId], references: [id], onDelete: Cascade)
+  designVersion DesignVersion @relation(fields: [designVersionId], references: [id], onDelete: Cascade)
+  outputUpload  Upload?       @relation("RenderOutput", fields: [outputUploadId], references: [id], onDelete: SetNull)
+
+  @@index([status, priority, createdAt])
+  @@index([designId, status])
+  @@map("render_jobs")
+}
+
+model AiGenerationJob {
+  id             String    @id @default(uuid()) @db.Uuid
+  designId       String?   @db.Uuid
+  requestedById  String    @db.Uuid
+  prompt         String
+  status         JobStatus @default(QUEUED)
+  outputUploadId String?   @db.Uuid
+  errorMessage   String?
+  createdAt      DateTime  @default(now())
+  finishedAt     DateTime?
+
+  design       Design? @relation(fields: [designId], references: [id], onDelete: SetNull)
+  outputUpload Upload? @relation("AiOutput", fields: [outputUploadId], references: [id], onDelete: SetNull)
+
+  @@index([requestedById, createdAt])
+  @@map("ai_generation_jobs")
+}
+
+model VisualizationJob {
+  id                 String    @id @default(uuid()) @db.Uuid
+  designId           String    @db.Uuid
+  requestedById      String    @db.Uuid
+  inputUploadId      String    @db.Uuid
+  outputUploadId     String?   @db.Uuid
+  status             JobStatus @default(QUEUED)
+  retentionExpiresAt DateTime
+  errorMessage       String?
+  createdAt          DateTime  @default(now())
+  finishedAt         DateTime?
+
+  design       Design  @relation(fields: [designId], references: [id], onDelete: Cascade)
+  inputUpload  Upload  @relation("VizInput", fields: [inputUploadId], references: [id], onDelete: Restrict)
+  outputUpload Upload? @relation("VizOutput", fields: [outputUploadId], references: [id], onDelete: SetNull)
+
+  @@index([requestedById, status])
+  @@index([retentionExpiresAt])
+  @@map("visualization_jobs")
+}
+
+// Design status transitions (enforced in service, not DB):
+// DRAFT->PUBLISHED|ARCHIVED; PUBLISHED<->ARCHIVED; ARCHIVED->DRAFT;
+// PUBLISHED->COMPLETED (sets acceptedQuoteId + completedByJewelerId); COMPLETED terminal except Admin force.
+
+// ---------------------------------------------------------------------------
+// 5. Atelier — jeweler profiles, requests, reviews, promotions
+// ---------------------------------------------------------------------------
+
+model JewelerProfile {
+  id              String               @id @default(uuid()) @db.Uuid
+  userId          String               @unique @db.Uuid
+  businessName    String
+  regionId        String               @db.Uuid
+  specialties     String[]             @default([]) // matching by specialty (dynamic codes from AppConfig/master)
+  bio             String?
+  phone           String // E.164 required when PUBLISHED
+  email           String?
+  businessHours   Json? // [{ day:0-6, open:"09:00", close:"18:00" }]
+  serviceAreaText String?
+  logoUploadId    String?              @db.Uuid
+  ratingAvg       Decimal              @default(0) @db.Decimal(3, 2)
+  reviewCount     Int                  @default(0)
+  publishStatus   ProfilePublishStatus @default(DRAFT)
+  verifiedBadge   Boolean              @default(false)
+  verifiedAt      DateTime?
+  publishedAt     DateTime?
+  latitude        Decimal?             @db.Decimal(9, 6)
+  longitude       Decimal?             @db.Decimal(9, 6)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  region     Region                @relation(fields: [regionId], references: [id], onDelete: Restrict)
+  logoUpload Upload?               @relation("ProfileLogo", fields: [logoUploadId], references: [id], onDelete: SetNull)
+  portfolio  PortfolioItem[]
+  reviews    Review[]
+  targets    DesignRequestTarget[]
+  crmNotes   JewelerCrmNote[]
+
+  @@index([regionId, publishStatus])
+  @@index([publishStatus, ratingAvg])
+  @@index([latitude, longitude])
+  @@map("jeweler_profiles")
+}
+
+// Premium jeweler "internal CRM" production tracking (PRD §5.8)
+model JewelerCrmNote {
+  id               String   @id @default(uuid()) @db.Uuid
+  jewelerProfileId String   @db.Uuid
+  designRequestId  String?  @db.Uuid
+  body             String
+  productionStatus String? // RECEIVED|IN_PRODUCTION|READY|SHIPPED|DONE (codes from AppConfig)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  profile       JewelerProfile @relation(fields: [jewelerProfileId], references: [id], onDelete: Cascade)
+  designRequest DesignRequest? @relation(fields: [designRequestId], references: [id], onDelete: SetNull)
+
+  @@index([jewelerProfileId, updatedAt])
+  @@index([designRequestId])
+  @@map("jeweler_crm_notes")
+}
+
+model JewelerOnboardingDraft {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  payload      Json // same shape as profile fields + portfolio draft refs
+  regionId     String?  @db.Uuid
+  logoUploadId String?  @db.Uuid
+  updatedAt    DateTime @updatedAt
+  createdAt    DateTime @default(now())
+
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  region     Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  logoUpload Upload? @relation("DraftLogo", fields: [logoUploadId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@map("jeweler_onboarding_drafts")
+}
+
+model PortfolioItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  profileId      String   @db.Uuid
+  uploadId       String   @db.Uuid
+  title          String?
+  sortOrder      Int      @default(0)
+  isSelectedWork Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  profile JewelerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  upload  Upload         @relation(fields: [uploadId], references: [id], onDelete: Restrict)
+
+  @@index([profileId, sortOrder])
+  @@map("portfolio_items")
+}
+
+model Review {
+  id               String   @id @default(uuid()) @db.Uuid
+  jewelerProfileId String   @db.Uuid
+  authorUserId     String?  @db.Uuid
+  reviewerName     String
+  rating           Int // 1..5 check in app
+  comment          String
+  isFeatured       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  profile JewelerProfile @relation(fields: [jewelerProfileId], references: [id], onDelete: Cascade)
+  author  User?          @relation("ReviewAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([jewelerProfileId, isFeatured])
+  @@map("reviews")
+}
+
+model DesignRequest {
+  id          String              @id @default(uuid()) @db.Uuid
+  designId    String              @db.Uuid
+  requesterId String              @db.Uuid
+  mode        DesignRequestMode
+  status      DesignRequestStatus @default(OPEN)
+  message     String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  expiresAt   DateTime?
+
+  design    Design                @relation(fields: [designId], references: [id], onDelete: Cascade)
+  requester User                  @relation("RequestRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  targets   DesignRequestTarget[]
+  quotes    Quote[]
+  leads     Lead[]
+  crmNotes  JewelerCrmNote[]
+
+  @@index([requesterId, status])
+  @@index([designId, status])
+  @@index([status, createdAt])
+  @@map("design_requests")
+}
+
+model DesignRequestTarget {
+  requestId        String   @db.Uuid
+  jewelerProfileId String   @db.Uuid
+  deliveredAt      DateTime @default(now())
+
+  request        DesignRequest  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  jewelerProfile JewelerProfile @relation(fields: [jewelerProfileId], references: [id], onDelete: Cascade)
+
+  @@id([requestId, jewelerProfileId])
+  @@index([jewelerProfileId, deliveredAt])
+  @@map("design_request_targets")
+}
+
+model Promotion {
+  id         String              @id @default(uuid()) @db.Uuid
+  entityType PromotionEntityType
+  entityId   String              @db.Uuid
+  placement  String // atelier_banner|recommendations_top
+  source     PromotionSource
+  priority   Int                 @default(0)
+  budget     Decimal?            @db.Decimal(12, 2)
+  startAt    DateTime
+  endAt      DateTime
+  isActive   Boolean             @default(true)
+  meta       Json? // headline, cta, imageUploadId
+  createdAt  DateTime            @default(now())
+
+  @@index([placement, isActive, startAt, endAt])
+  @@map("promotions")
+}
+
+// Jeweler orders board mapping:
+// All=DesignRequest where jeweler is target; QuoteSubmitted=QUOTE_SUBMITTED; Negotiating=NEGOTIATING; Completed=COMPLETED.
+
+// ---------------------------------------------------------------------------
+// 6. Chat & quotes
+// ---------------------------------------------------------------------------
+
+model Conversation {
+  id            String    @id @default(uuid()) @db.Uuid
+  designId      String    @db.Uuid
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastMessageAt DateTime?
+
+  design       Design                    @relation(fields: [designId], references: [id], onDelete: Cascade)
+  participants ConversationParticipant[]
+  messages     Message[]
+  quotes       Quote[]
+
+  @@index([designId])
+  @@index([lastMessageAt])
+  @@map("conversations")
+}
+
+model ConversationParticipant {
+  id             String    @id @default(uuid()) @db.Uuid
+  conversationId String    @db.Uuid
+  userId         String    @db.Uuid
+  lastReadAt     DateTime?
+  joinedAt       DateTime  @default(now())
+  leftAt         DateTime?
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_participants")
+}
+
+model Message {
+  id             String      @id @default(uuid()) @db.Uuid
+  conversationId String      @db.Uuid
+  senderId       String?     @db.Uuid // null for SYSTEM
+  type           MessageType
+  body           String?
+  payload        Json? // quote card snapshot, handoff link, etc.
+  quoteId        String?     @db.Uuid
+  imageUploadId  String?     @db.Uuid
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User?        @relation("MessageSender", fields: [senderId], references: [id], onDelete: SetNull)
+  quote        Quote?       @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  imageUpload  Upload?      @relation("MessageImage", fields: [imageUploadId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model Quote {
+  id               String      @id @default(uuid()) @db.Uuid
+  conversationId   String      @db.Uuid
+  designId         String      @db.Uuid
+  designRequestId  String?     @db.Uuid
+  authorUserId     String      @db.Uuid // jeweler user
+  materialsCost    Decimal     @db.Decimal(12, 2)
+  laborCost        Decimal     @db.Decimal(12, 2)
+  laborHours       Decimal?    @db.Decimal(8, 2)
+  totalPrice       Decimal     @db.Decimal(12, 2)
+  currency         String      @db.Char(3)
+  etaBusinessDays  Int
+  notes            String?
+  status           QuoteStatus @default(PENDING)
+  validUntil       DateTime?
+  acceptedAt       DateTime?
+  declinedAt       DateTime?
+  disclaimerPageId String?     @db.Uuid // ContentPage version snapshotted
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  conversation      Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  design            Design         @relation("DesignQuotes", fields: [designId], references: [id], onDelete: Cascade)
+  designRequest     DesignRequest? @relation(fields: [designRequestId], references: [id], onDelete: SetNull)
+  author            User           @relation("QuoteAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+  disclaimerPage    ContentPage?   @relation("QuoteDisclaimer", fields: [disclaimerPageId], references: [id], onDelete: SetNull)
+  events            QuoteEvent[]
+  messages          Message[]
+  acceptedForDesign Design?                 @relation("DesignAcceptedQuote")
+  jewelryPayments   JewelryPaymentIntent[]
+
+  @@index([designId, status])
+  @@index([authorUserId, status])
+  @@index([conversationId])
+  @@map("quotes")
+}
+
+model QuoteEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  quoteId     String       @db.Uuid
+  fromStatus  QuoteStatus?
+  toStatus    QuoteStatus
+  actorUserId String?      @db.Uuid
+  note        String?
+  createdAt   DateTime     @default(now())
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId, createdAt])
+  @@map("quote_events")
+}
+
+// ---------------------------------------------------------------------------
+// 7. Billing — plans, subscriptions, leads, payments
+// ---------------------------------------------------------------------------
+
+model EntitlementDefinition {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique // no_watermark|hd_export|personal_visualization|warm_leads|...
+  description String?
+
+  plans PlanEntitlement[]
+
+  @@map("entitlement_definitions")
+}
+
+model PlanCatalog {
+  id             String       @id @default(uuid()) @db.Uuid
+  code           String       @unique // DESIGNER_MONTHLY|JEWELER_ACTIVE|...
+  role           UserRole // DESIGNER|JEWELER
+  nameHe         String
+  nameEn         String?
+  billingCycle   BillingCycle
+  price          Decimal      @db.Decimal(12, 2)
+  currency       String       @db.Char(3)
+  leadQuota      Int          @default(0)
+  extraLeadPrice Decimal?     @db.Decimal(12, 2)
+  trialDays      Int          @default(0)
+  inclusions     Json // display bullets from CMS/admin
+  sortOrder      Int          @default(0)
+  isActive       Boolean      @default(true)
+  metadata       Json? // proration rules, etc.
+
+  entitlements  PlanEntitlement[]
+  subscriptions Subscription[]
+
+  @@index([role, isActive])
+  @@map("plan_catalog")
+}
+
+model PlanEntitlement {
+  planId        String @db.Uuid
+  entitlementId String @db.Uuid
+  limitValue    Int? // e.g. leads/month already on plan; optional per-feature cap
+
+  plan        PlanCatalog           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  entitlement EntitlementDefinition @relation(fields: [entitlementId], references: [id], onDelete: Cascade)
+
+  @@id([planId, entitlementId])
+  @@map("plan_entitlements")
+}
+
+model Subscription {
+  id                 String             @id @default(uuid()) @db.Uuid
+  userId             String             @db.Uuid
+  planId             String             @db.Uuid
+  role               UserRole
+  status             SubscriptionStatus @default(TRIALING)
+  billingCycle       BillingCycle
+  trialEndsAt        DateTime?
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  paymentProviderRef String?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan           PlanCatalog         @relation(fields: [planId], references: [id], onDelete: Restrict)
+  leads          Lead[]
+  overageCharges LeadOverageCharge[]
+  paymentEvents  PaymentEvent[]
+
+  @@index([userId, status])
+  @@index([planId])
+  @@map("subscriptions")
+}
+
+model Lead {
+  id              String     @id @default(uuid()) @db.Uuid
+  subscriptionId  String     @db.Uuid
+  sourceRequestId String?    @db.Uuid
+  status          LeadStatus @default(AVAILABLE)
+  periodStart     DateTime
+  periodEnd       DateTime
+  reservedAt      DateTime?
+  consumedAt      DateTime?
+  extraLeadPrice  Decimal?   @db.Decimal(12, 2)
+  createdAt       DateTime   @default(now())
+
+  subscription  Subscription   @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  sourceRequest DesignRequest? @relation(fields: [sourceRequestId], references: [id], onDelete: SetNull)
+
+  @@index([subscriptionId, status, periodStart])
+  @@index([sourceRequestId])
+  @@map("leads")
+}
+
+model LeadOverageCharge {
+  id             String   @id @default(uuid()) @db.Uuid
+  subscriptionId String   @db.Uuid
+  leadId         String?  @db.Uuid
+  amount         Decimal  @db.Decimal(12, 2)
+  currency       String   @db.Char(3)
+  providerRef    String?
+  createdAt      DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, createdAt])
+  @@map("lead_overage_charges")
+}
+
+model PaymentEvent {
+  id                     String   @id @default(uuid()) @db.Uuid
+  subscriptionId         String?  @db.Uuid
+  jewelryPaymentIntentId String?  @db.Uuid
+  provider               String
+  providerEventId        String   @unique
+  type                   String // invoice.paid|subscription.cancelled|jewelry.intent.created|...
+  payload                Json
+  processedAt            DateTime @default(now())
+
+  subscription         Subscription?          @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  jewelryPaymentIntent JewelryPaymentIntent?  @relation(fields: [jewelryPaymentIntentId], references: [id], onDelete: SetNull)
+
+  @@index([subscriptionId])
+  @@index([jewelryPaymentIntentId])
+  @@map("payment_events")
+}
+
+model JewelryPaymentIntent {
+  id           String               @id @default(uuid()) @db.Uuid
+  userId       String               @db.Uuid
+  quoteId      String?              @db.Uuid
+  designId     String?              @db.Uuid
+  amount       Decimal              @db.Decimal(12, 2)
+  currency     String               @db.Char(3)
+  status       JewelryPaymentStatus @default(REQUIRES_CONFIRMATION)
+  clientSecret String
+  provider     String
+  providerRef  String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quote  Quote?        @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  events PaymentEvent[]
+
+  @@index([userId, createdAt])
+  @@index([quoteId])
+  @@map("jewelry_payment_intents")
+}
+
+// Pay-per-item / metered usage (PRD §5.8 designer "Pay per item")
+model UsageEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @db.Uuid
+  subscriptionId String?  @db.Uuid
+  designId       String?  @db.Uuid
+  meterKey       String // design_model|hd_export|ai_generation|render
+  quantity       Int      @default(1)
+  unitPrice      Decimal? @db.Decimal(12, 2)
+  currency       String?  @db.Char(3)
+  providerRef    String?
+  createdAt      DateTime @default(now())
+
+  design Design? @relation(fields: [designId], references: [id], onDelete: SetNull)
+
+  @@index([userId, meterKey, createdAt])
+  @@index([subscriptionId])
+  @@map("usage_events")
+}
