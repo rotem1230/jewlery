@@ -60,3 +60,8 @@ backend/uploads-local/
 CLAUDE.md
 AGENTS.md
 *.mdc
+
+# test databases (embedded postgres) and local smoke data
+.tmp-test-pg/
+.tmp-e2e-pg/
+backend/uploads-local/

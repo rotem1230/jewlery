@@ -1,0 +1,115 @@
+import { UserRole } from '@prisma/client';
+import { API, createTestApp, TestApp } from '../utils/test-app';
+import { DEFAULT_PASSWORD, registerVerified, uniqueEmail } from '../utils/factories';
+
+const NEW_PASSWORD = 'N3w-Strong-Pass';
+
+describe('password reset', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp({ env: { AUTH_MAIL_THROTTLE_LIMIT: '1000' } });
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  async function requestReset(email: string): Promise<string> {
+    await t.http.post(`${API}/auth/forgot-password`).send({ email }).expect(200);
+    return t.mailbox.tokenFor(email, 'reset');
+  }
+
+  it('a weak new password does not burn the reset token', async () => {
+    const user = await registerVerified(t);
+    const token = await requestReset(user.email);
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: 'abcdefgh' }).expect(400);
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: NEW_PASSWORD }).expect(200);
+    await t.http.post(`${API}/auth/login`).send({ email: user.email, password: NEW_PASSWORD }).expect(201);
+  });
+
+  it('a reset token works exactly once under concurrent use', async () => {
+    const user = await registerVerified(t);
+    const token = await requestReset(user.email);
+    const results = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: `${NEW_PASSWORD}${i}` }),
+      ),
+    );
+    expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+    expect(results.filter((r) => r.status === 400)).toHaveLength(4);
+  });
+
+  it('reset revokes every existing session', async () => {
+    const user = await registerVerified(t);
+    const token = await requestReset(user.email);
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: NEW_PASSWORD }).expect(200);
+    await t.http.post(`${API}/auth/refresh`).send({ refreshToken: user.refreshToken }).expect(401);
+  });
+
+  it('reset clears a lockout', async () => {
+    const user = await registerVerified(t);
+    await t.prisma.user.update({
+      where: { id: user.id },
+      data: { lockedUntil: new Date(Date.now() + 60 * 60_000), loginAttempts: 0 },
+    });
+    const token = await requestReset(user.email);
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: NEW_PASSWORD }).expect(200);
+    await t.http.post(`${API}/auth/login`).send({ email: user.email, password: NEW_PASSWORD }).expect(201);
+  });
+
+  it('completing a reset proves mailbox ownership and activates a pending account', async () => {
+    const email = uniqueEmail('pending');
+    await t.http
+      .post(`${API}/auth/register`)
+      .send({ email, password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER] })
+      .expect(201);
+    const token = await requestReset(email);
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: NEW_PASSWORD }).expect(200);
+    await t.http.post(`${API}/auth/login`).send({ email, password: NEW_PASSWORD }).expect(201);
+  });
+
+  it('caps reset mails per account so the endpoint cannot be used to flood an inbox', async () => {
+    const user = await registerVerified(t);
+    for (let i = 0; i < 6; i += 1) {
+      await t.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
+    }
+    const resetMails = t.mailbox.to(user.email).filter((m) => m.body.includes('reset-password'));
+    expect(resetMails).toHaveLength(3);
+  });
+
+  it('caps verification re-sends per account', async () => {
+    const email = uniqueEmail('pending');
+    await t.http
+      .post(`${API}/auth/register`)
+      .send({ email, password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER] })
+      .expect(201);
+    for (let i = 0; i < 6; i += 1) {
+      await t.http.post(`${API}/auth/resend-verify`).send({ email }).expect(200);
+    }
+    const verifyMails = t.mailbox.to(email).filter((m) => m.body.includes('verify-email'));
+    expect(verifyMails).toHaveLength(3);
+  });
+});
+
+describe('auth mail endpoints are throttled per client', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('forgot-password returns 429 after the per-client budget', async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const res = await t.http.post(`${API}/auth/forgot-password`).send({ email: uniqueEmail('x') });
+      statuses.push(res.status);
+    }
+    expect(statuses).toContain(429);
+    expect(statuses.indexOf(429)).toBeGreaterThan(0);
+  });
+});

@@ -5,11 +5,20 @@
  */
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
-const EmbeddedPostgres = require('embedded-postgres').default;
+// initdb fails when PostgreSQL's own install path is non-ASCII (e.g. a Hebrew folder on Windows);
+// EMBEDDED_PG_MODULE_DIR may point at a dir whose node_modules holds embedded-postgres on an ASCII path.
+const EmbeddedPostgres = (
+  process.env.EMBEDDED_PG_MODULE_DIR
+    ? require('module').createRequire(path.join(process.env.EMBEDDED_PG_MODULE_DIR, 'index.js'))
+    : require
+)('embedded-postgres').default;
 
 const ROOT = path.join(__dirname, '..');
-const DB_DIR = path.join(ROOT, '.tmp-e2e-pg');
+// initdb cannot handle non-ASCII data-dir paths on Windows, so keep the throwaway cluster in the
+// OS temp dir rather than next to the sources.
+const DB_DIR = process.env.E2E_PG_DIR || path.join(os.tmpdir(), 'malinvosky-e2e-pg');
 const PG_PORT = 55433;
 const API_PORT = 3100;
 const BASE = `http://127.0.0.1:${API_PORT}/api/v1`;
