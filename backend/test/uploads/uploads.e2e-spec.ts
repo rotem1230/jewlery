@@ -393,3 +393,35 @@ describe('public jeweler logo for unpublished profiles', () => {
     await t.http.get(`${API}/uploads/${draftLogo.body.data.id}/content`).expect(404);
   });
 });
+
+describe('AI model of a saved design', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('the owner gets a working signed link to the design AI model, never to someone else upload', async () => {
+    const owner = await registerVerified(t);
+    const design = await createDraftDesign(t, owner);
+    const own = await t.app.get(UploadsService).createGeneratedLocal(owner.id, PNG_BYTES, 'image/png');
+    await t.prisma.design.update({ where: { id: design.id }, data: { parameters: { aiOutputUploadId: own.id } } });
+
+    const res = await t.http.get(`${API}/designs/${design.id}`).set(owner.auth).expect(200);
+    expect(res.body.data.aiOutputUrl).toMatch(/^\/uploads\/.+\/content\?exp=/);
+    await t.http.get(`${API}${res.body.data.aiOutputUrl}`).expect(200);
+
+    const victim = await registerVerified(t);
+    const foreign = await uploadFile(t, victim, PNG_BYTES, 'image/png').expect(201);
+    await t.prisma.design.update({
+      where: { id: design.id },
+      data: { parameters: { aiOutputUploadId: foreign.body.data.id } },
+    });
+    const forged = await t.http.get(`${API}/designs/${design.id}`).set(owner.auth).expect(200);
+    expect(forged.body.data.aiOutputUrl).toBeNull();
+  });
+});

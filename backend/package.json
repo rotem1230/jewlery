@@ -17,6 +17,8 @@
     "prisma:studio": "prisma studio",
     "postinstall": "prisma generate",
     "test:e2e:local": "npm run build && node scripts/e2e-local.cjs",
+    "cli:resend-verification": "node dist/cli/resend-verification.js",
+    "migrations:check": "node scripts/check-migrations.cjs",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "jest --runInBand",
     "test:unit": "jest --selectProjects unit",

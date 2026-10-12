@@ -143,16 +143,49 @@ export class AuthService implements OnModuleDestroy {
     await Promise.allSettled([...this.pendingMail]);
   }
 
-  private async sendVerificationEmail(userId: string, email: string): Promise<void> {
+  /** Sends a verification link unless the account reached its mail cap; true when mailed. */
+  private async sendVerificationEmail(userId: string, email: string): Promise<boolean> {
     const rawToken = await this.issueMailToken('verify', userId);
     if (!rawToken) {
-      return;
+      return false;
     }
     await this.mail.send(
       email,
       'Verify your Malinvosky account',
       `Welcome to Malinvosky! Please confirm your email address by opening this link:\n${this.hostedPageUrl('verify-email', rawToken)}\n\nIf you did not create this account, you can ignore this email.`,
     );
+    return true;
+  }
+
+  /**
+   * Operator tool (npm run cli:resend-verification): accounts created before e-mail verification
+   * was enforced are PENDING and cannot sign in; this mails each of them a fresh link (the
+   * per-account mail cap still applies, so re-running it cannot flood an inbox).
+   */
+  async resendVerificationToPendingAccounts(options: { dryRun?: boolean; limit?: number }): Promise<{
+    candidates: number;
+    sent: number;
+  }> {
+    const pending = await this.prisma.user.findMany({
+      where: { status: UserStatus.PENDING_VERIFICATION, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+      take: options.limit ?? 1000,
+      select: { id: true, email: true },
+    });
+    if (options.dryRun) {
+      return { candidates: pending.length, sent: 0 };
+    }
+    let sent = 0;
+    for (const user of pending) {
+      try {
+        if (await this.sendVerificationEmail(user.id, user.email)) {
+          sent += 1;
+        }
+      } catch (err) {
+        this.logger.warn(`Verification mail for user ${user.id} failed: ${(err as Error).message}`);
+      }
+    }
+    return { candidates: pending.length, sent };
   }
 
   private async sendPasswordResetEmail(email: string, userId: string): Promise<void> {
@@ -232,9 +265,9 @@ export class AuthService implements OnModuleDestroy {
     }
 
     // Registration must not fail because mail delivery is slow or down; the user can re-send.
-    this.sendInBackground(`Verification mail for user ${user.id}`, () =>
-      this.sendVerificationEmail(user.id, user.email),
-    );
+    this.sendInBackground(`Verification mail for user ${user.id}`, async () => {
+      await this.sendVerificationEmail(user.id, user.email);
+    });
 
     return { user: this.sanitize(user), requiresEmailVerification: true };
   }
@@ -405,9 +438,9 @@ export class AuthService implements OnModuleDestroy {
     await this.assertMailBudget(clientIp);
     const user = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } });
     if (user && !user.deletedAt && user.status === UserStatus.PENDING_VERIFICATION) {
-      this.sendInBackground(`Verification mail for user ${user.id}`, () =>
-        this.sendVerificationEmail(user.id, user.email),
-      );
+      this.sendInBackground(`Verification mail for user ${user.id}`, async () => {
+        await this.sendVerificationEmail(user.id, user.email);
+      });
     }
     // Always 200 — do not reveal whether the account exists or is already verified.
     return { ok: true };

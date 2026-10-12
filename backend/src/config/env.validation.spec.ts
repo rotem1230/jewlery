@@ -108,3 +108,14 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ NODE_ENV: 'development' })).toThrow(/DATABASE_URL/);
   });
 });
+
+describe('.env.example', () => {
+  it('is a valid development configuration', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { parse } = require('dotenv') as typeof import('dotenv');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readFileSync } = require('fs') as typeof import('fs');
+    const example = parse(readFileSync(`${__dirname}/../../.env.example`, 'utf8'));
+    expect(() => validateEnv(example)).not.toThrow();
+  });
+});
