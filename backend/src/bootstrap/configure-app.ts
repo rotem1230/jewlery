@@ -15,7 +15,15 @@ export function configureApp(app: INestApplication): void {
   const corsOrigins = config.get<string[]>('corsOrigins', []);
   const bodyLimit = config.get<number>('bodySizeLimit', 1_048_576);
 
-  app.use(json({ limit: bodyLimit }));
+  // Keep the exact bytes: webhook signatures are computed over the raw body.
+  app.use(
+    json({
+      limit: bodyLimit,
+      verify: (req, _res, buf) => {
+        (req as typeof req & { rawBody?: Buffer }).rawBody = buf;
+      },
+    }),
+  );
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
 
   app.setGlobalPrefix(apiPrefix);

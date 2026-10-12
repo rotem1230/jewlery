@@ -1,41 +1,38 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { BillingCycle, LeadStatus, Prisma, SubscriptionStatus, User, UserRole } from '@prisma/client';
+import {
+  ConflictException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { LeadStatus, PlanCatalog, Prisma, Subscription, SubscriptionStatus, User, UserRole } from '@prisma/client';
 import { EventLogService } from '../audit/event-log.service';
 import { OutboxService } from '../common/outbox/outbox.service';
-import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
-import { EntitlementsService } from '../entitlements/entitlements.service';
-import { PaymentWebhookDto, SubscribeDto } from './dto/subscription.dto';
+import { EntitlementsService, entitledSubscriptionWhere } from '../entitlements/entitlements.service';
+import { billingCyclePeriodMs, DAY_MS } from './billing-periods';
+import { SubscribeDto } from './dto/subscription.dto';
 
-const ACTIVE_STATUSES: SubscriptionStatus[] = [
+/** Statuses that still occupy the user's single subscription slot until the lifecycle sweep. */
+const LIVE_STATUSES: SubscriptionStatus[] = [
   SubscriptionStatus.TRIALING,
   SubscriptionStatus.ACTIVE,
   SubscriptionStatus.PAST_DUE,
 ];
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+export type LeadDeliveryOutcome = 'CONSUMED' | 'OVERAGE' | 'NO_LEADS' | 'NO_SUBSCRIPTION';
+
+type Tx = Prisma.TransactionClient;
 
 @Injectable()
 export class SubscriptionsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly stateMachine: StateMachineService,
     private readonly outbox: OutboxService,
     private readonly eventLog: EventLogService,
     private readonly entitlements: EntitlementsService,
   ) {}
-
-  private billingCyclePeriodMs(cycle: BillingCycle): number {
-    switch (cycle) {
-      case BillingCycle.ANNUAL:
-        return 365 * DAY_MS;
-      case BillingCycle.MONTHLY:
-      case BillingCycle.PER_ITEM:
-      case BillingCycle.PER_LEAD:
-      default:
-        return 30 * DAY_MS;
-    }
-  }
 
   async listPlans(role?: UserRole) {
     return this.prisma.planCatalog.findMany({
@@ -47,7 +44,7 @@ export class SubscriptionsService {
 
   async me(userId: string) {
     return this.prisma.subscription.findFirst({
-      where: { userId, status: { in: ACTIVE_STATUSES } },
+      where: { userId, status: { in: LIVE_STATUSES } },
       orderBy: { createdAt: 'desc' },
       include: { plan: true },
     });
@@ -58,6 +55,27 @@ export class SubscriptionsService {
     return { keys };
   }
 
+  /** Allocates the plan's lead quota for one billing period. */
+  async allocateLeads(tx: Tx, subscription: Pick<Subscription, 'id'>, plan: PlanCatalog, start: Date, end: Date) {
+    if (plan.leadQuota <= 0) {
+      return;
+    }
+    await tx.lead.createMany({
+      data: Array.from({ length: plan.leadQuota }, () => ({
+        subscriptionId: subscription.id,
+        status: LeadStatus.AVAILABLE,
+        periodStart: start,
+        periodEnd: end,
+      })),
+    });
+  }
+
+  /**
+   * Starts a subscription without any payment only when that is legitimate: a free plan, or the
+   * user's first trial for that role. Anything else needs a confirmed payment (402); paid
+   * activation arrives exclusively through the signed payment webhook. A per-user row lock keeps
+   * concurrent calls from creating two live subscriptions.
+   */
   async subscribe(user: User, dto: SubscribeDto) {
     const plan = await this.prisma.planCatalog.findUnique({ where: { code: dto.planCode } });
     if (!plan || !plan.isActive) {
@@ -70,23 +88,51 @@ export class SubscriptionsService {
       });
     }
 
-    const existing = await this.prisma.subscription.findFirst({
-      where: { userId: user.id, status: { in: ACTIVE_STATUSES } },
-    });
-    if (existing) {
-      throw new ConflictException({
-        success: false,
-        message: 'An active subscription already exists; cancel it before subscribing to a new plan',
-        code: 'SUBSCRIPTION_EXISTS',
-      });
-    }
-
     const now = new Date();
-    const currentPeriodEnd = new Date(now.getTime() + this.billingCyclePeriodMs(plan.billingCycle));
-    const status = plan.trialDays > 0 ? SubscriptionStatus.TRIALING : SubscriptionStatus.ACTIVE;
-    const trialEndsAt = plan.trialDays > 0 ? new Date(now.getTime() + plan.trialDays * DAY_MS) : null;
-
     const subscription = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${user.id}::uuid FOR UPDATE`;
+
+      const live = await tx.subscription.findFirst({
+        where: { userId: user.id, status: { in: LIVE_STATUSES } },
+      });
+      if (live) {
+        throw new ConflictException({
+          success: false,
+          message: 'An active subscription already exists; cancel it before subscribing to a new plan',
+          code: 'SUBSCRIPTION_EXISTS',
+        });
+      }
+
+      let status: SubscriptionStatus | null = null;
+      let trialEndsAt: Date | null = null;
+      let currentPeriodEnd: Date | null = null;
+
+      if (plan.trialDays > 0) {
+        const previousTrials = await tx.subscription.count({
+          where: { userId: user.id, role: plan.role, trialEndsAt: { not: null } },
+        });
+        if (previousTrials === 0) {
+          status = SubscriptionStatus.TRIALING;
+          trialEndsAt = new Date(now.getTime() + plan.trialDays * DAY_MS);
+          currentPeriodEnd = trialEndsAt;
+        }
+      }
+
+      if (!status) {
+        if (!plan.price.isZero()) {
+          throw new HttpException(
+            {
+              success: false,
+              message: 'This plan requires payment',
+              code: 'PAYMENT_REQUIRED',
+            },
+            HttpStatus.PAYMENT_REQUIRED,
+          );
+        }
+        status = SubscriptionStatus.ACTIVE;
+        currentPeriodEnd = new Date(now.getTime() + billingCyclePeriodMs(plan.billingCycle));
+      }
+
       const sub = await tx.subscription.create({
         data: {
           userId: user.id,
@@ -96,27 +142,16 @@ export class SubscriptionsService {
           billingCycle: plan.billingCycle,
           trialEndsAt,
           currentPeriodStart: now,
-          currentPeriodEnd,
+          currentPeriodEnd: currentPeriodEnd as Date,
         },
       });
-
-      if (plan.leadQuota > 0) {
-        await tx.lead.createMany({
-          data: Array.from({ length: plan.leadQuota }, () => ({
-            subscriptionId: sub.id,
-            status: LeadStatus.AVAILABLE,
-            periodStart: now,
-            periodEnd: currentPeriodEnd,
-          })),
-        });
-      }
-
+      await this.allocateLeads(tx, sub, plan, now, currentPeriodEnd as Date);
       return sub;
     });
 
     await this.eventLog.record('subscription.created', 'Subscription', subscription.id, {
       planCode: plan.code,
-      status,
+      status: subscription.status,
       userId: user.id,
     });
     await this.outbox.enqueue('subscription.created', {
@@ -128,98 +163,37 @@ export class SubscriptionsService {
     return subscription;
   }
 
+  /** Stops renewal; access continues until the end of the paid-for / trial period. */
   async cancel(user: User) {
     const subscription = await this.prisma.subscription.findFirst({
-      where: { userId: user.id, status: { in: ACTIVE_STATUSES } },
+      where: { userId: user.id, status: { in: LIVE_STATUSES } },
       orderBy: { createdAt: 'desc' },
     });
     if (!subscription) {
       throw new NotFoundException({ success: false, message: 'No active subscription to cancel' });
     }
-
-    this.stateMachine.assertTransition(
-      this.stateMachine.subscriptionGraph,
-      subscription.status,
-      SubscriptionStatus.CANCELLED,
-    );
+    if (subscription.cancelAtPeriodEnd) {
+      return subscription;
+    }
 
     const updated = await this.prisma.subscription.update({
       where: { id: subscription.id },
-      data: { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true },
+      data: { cancelAtPeriodEnd: true },
     });
 
-    await this.eventLog.record('subscription.cancelled', 'Subscription', subscription.id, { userId: user.id });
+    await this.eventLog.record('subscription.cancelled', 'Subscription', subscription.id, {
+      userId: user.id,
+      effectiveAt: updated.status === SubscriptionStatus.TRIALING ? updated.trialEndsAt : updated.currentPeriodEnd,
+    });
     await this.outbox.enqueue('subscription.cancelled', { subscriptionId: subscription.id, userId: user.id });
 
     return updated;
   }
 
-  async handlePaymentWebhook(dto: PaymentWebhookDto) {
-    const existing = await this.prisma.paymentEvent.findUnique({
-      where: { providerEventId: dto.providerEventId },
-    });
-    if (existing) {
-      return existing;
-    }
-
-    const event = await this.prisma.paymentEvent.create({
-      data: {
-        subscriptionId: dto.subscriptionId ?? null,
-        provider: dto.provider,
-        providerEventId: dto.providerEventId,
-        type: dto.type,
-        payload: dto.payload as Prisma.InputJsonValue,
-      },
-    });
-
-    if (dto.subscriptionId) {
-      await this.applyPaymentEventEffects(dto.subscriptionId, dto.type);
-    }
-
-    await this.eventLog.record('payment.webhook', 'PaymentEvent', event.id, {
-      provider: dto.provider,
-      type: dto.type,
-      subscriptionId: dto.subscriptionId ?? null,
-    });
-
-    return event;
-  }
-
-  private async applyPaymentEventEffects(subscriptionId: string, type: string): Promise<void> {
-    const subscription = await this.prisma.subscription.findUnique({ where: { id: subscriptionId } });
-    if (!subscription) {
-      return;
-    }
-
-    let nextStatus: SubscriptionStatus | null = null;
-    switch (type) {
-      case 'invoice.paid':
-      case 'payment.succeeded':
-        nextStatus = SubscriptionStatus.ACTIVE;
-        break;
-      case 'invoice.payment_failed':
-      case 'payment.failed':
-        nextStatus = SubscriptionStatus.PAST_DUE;
-        break;
-      case 'subscription.cancelled':
-        nextStatus = SubscriptionStatus.CANCELLED;
-        break;
-      default:
-        return;
-    }
-
-    if (
-      nextStatus &&
-      this.stateMachine.canTransition(this.stateMachine.subscriptionGraph, subscription.status, nextStatus)
-    ) {
-      await this.prisma.subscription.update({ where: { id: subscriptionId }, data: { status: nextStatus } });
-    }
-  }
-
   /** Records metered usage for pay-per-item billing (design_model|hd_export|ai_generation|render). */
   async recordUsage(userId: string, meterKey: string, designId?: string) {
     const subscription = await this.prisma.subscription.findFirst({
-      where: { userId, status: { in: ACTIVE_STATUSES } },
+      where: entitledSubscriptionWhere(userId),
       orderBy: { createdAt: 'desc' },
     });
 
@@ -235,38 +209,63 @@ export class SubscriptionsService {
   }
 
   /**
-   * Consumes one AVAILABLE lead from the jeweler's active subscription for a design request
-   * delivery. Returns null when there is no active subscription or no lead left in the current
-   * period, so the caller (Atelier design-request delivery) can decide whether to block delivery
-   * or charge a per-lead overage via `extraLeadPrice`.
+   * Meters one lead for delivering a design request to a jeweler. The lead row is claimed with
+   * FOR UPDATE SKIP LOCKED, so two simultaneous deliveries never consume the same lead. When no
+   * lead is left, a plan with an overage price records a LeadOverageCharge (only when
+   * `chargeOverage` is set, i.e. quota enforcement is on).
    */
-  async consumeLeadForDelivery(jewelerUserId: string, designRequestId: string) {
-    const subscription = await this.prisma.subscription.findFirst({
-      where: { userId: jewelerUserId, status: { in: ACTIVE_STATUSES } },
+  async consumeLeadForDelivery(
+    tx: Tx,
+    jewelerUserId: string,
+    designRequestId: string,
+    chargeOverage: boolean,
+  ): Promise<LeadDeliveryOutcome> {
+    const now = new Date();
+    const subscription = await tx.subscription.findFirst({
+      where: entitledSubscriptionWhere(jewelerUserId, now),
       orderBy: { createdAt: 'desc' },
+      include: { plan: true },
     });
     if (!subscription) {
-      return null;
+      return 'NO_SUBSCRIPTION';
     }
 
-    const lead = await this.prisma.lead.findFirst({
-      where: { subscriptionId: subscription.id, status: LeadStatus.AVAILABLE, periodEnd: { gte: new Date() } },
-      orderBy: { createdAt: 'asc' },
-    });
-    if (!lead) {
-      return null;
+    const claimed = await tx.$queryRaw<Array<{ id: string }>>`
+      UPDATE "leads"
+         SET "status" = 'CONSUMED', "consumedAt" = ${now}, "sourceRequestId" = ${designRequestId}::uuid
+       WHERE "id" = (
+         SELECT "id" FROM "leads"
+          WHERE "subscriptionId" = ${subscription.id}::uuid
+            AND "status" = 'AVAILABLE'
+            AND "periodEnd" >= ${now}
+          ORDER BY "createdAt" ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+       )
+      RETURNING "id"`;
+    if (claimed.length === 1) {
+      // Same transaction as the claim: a rolled-back delivery leaves no "consumed" trace.
+      await tx.eventLog.create({
+        data: {
+          eventKey: 'lead.consumed',
+          entityType: 'Lead',
+          entityId: claimed[0].id,
+          payload: { subscriptionId: subscription.id, designRequestId },
+        },
+      });
+      return 'CONSUMED';
     }
 
-    const consumed = await this.prisma.lead.update({
-      where: { id: lead.id },
-      data: { status: LeadStatus.CONSUMED, consumedAt: new Date(), sourceRequestId: designRequestId },
-    });
-
-    await this.eventLog.record('lead.consumed', 'Lead', consumed.id, {
-      subscriptionId: subscription.id,
-      designRequestId,
-    });
-
-    return consumed;
+    if (chargeOverage && subscription.plan.extraLeadPrice) {
+      await tx.leadOverageCharge.create({
+        data: {
+          subscriptionId: subscription.id,
+          amount: subscription.plan.extraLeadPrice,
+          currency: subscription.plan.currency,
+        },
+      });
+      return 'OVERAGE';
+    }
+    return 'NO_LEADS';
   }
 }

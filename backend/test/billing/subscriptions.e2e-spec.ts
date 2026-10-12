@@ -19,7 +19,7 @@ describe('subscriptions', () => {
     await t.close();
   });
 
-  async function subscribe(user: TestUser, planCode: string) {
+  function subscribe(user: TestUser, planCode: string) {
     return t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode });
   }
 

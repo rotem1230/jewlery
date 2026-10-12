@@ -1,21 +1,30 @@
-import { Body, Controller, Post } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Headers, Post, Req } from '@nestjs/common';
+import { ApiHeader, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
 import { Public } from '../authorization/decorators/public.decorator';
-import { PaymentWebhookDto } from './dto/subscription.dto';
-import { SubscriptionsService } from './subscriptions.service';
+import { PaymentWebhookService } from './payment-webhook.service';
 
 @ApiTags('Webhooks')
 @Controller('webhooks')
 export class WebhooksController {
-  constructor(private readonly subscriptions: SubscriptionsService) {}
+  constructor(private readonly webhooks: PaymentWebhookService) {}
 
   @Public()
   @Post('payments')
   @ApiOperation({
     summary: 'Receive a payment provider webhook',
-    description: 'Idempotent on providerEventId (unique). Applies subscription status transitions for known event types.',
+    description:
+      'Requires PAYMENT_WEBHOOK_SECRET. The body must be signed: x-webhook-signature: t=<unix>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">. ' +
+      'Idempotent on providerEventId; applies subscription status transitions for known event types.',
   })
-  handlePaymentWebhook(@Body() dto: PaymentWebhookDto) {
-    return this.subscriptions.handlePaymentWebhook(dto);
+  @ApiHeader({ name: 'x-webhook-signature', required: true })
+  @ApiResponse({ status: 201, description: 'Event recorded (or already recorded)' })
+  @ApiResponse({ status: 401, description: 'Missing, invalid or stale signature' })
+  @ApiResponse({ status: 503, description: 'Webhook secret not configured' })
+  handlePaymentWebhook(
+    @Req() req: Request & { rawBody?: Buffer },
+    @Headers('x-webhook-signature') signature?: string,
+  ) {
+    return this.webhooks.handle(req.rawBody, signature);
   }
 }

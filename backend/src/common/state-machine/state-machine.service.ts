@@ -70,7 +70,7 @@ export class StateMachineService {
   };
 
   readonly subscriptionGraph: TransitionGraph<SubscriptionStatus> = {
-    [SubscriptionStatus.TRIALING]: [SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED],
+    [SubscriptionStatus.TRIALING]: [SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED, SubscriptionStatus.EXPIRED],
     [SubscriptionStatus.ACTIVE]: [SubscriptionStatus.PAST_DUE, SubscriptionStatus.CANCELLED],
     [SubscriptionStatus.PAST_DUE]: [
       SubscriptionStatus.ACTIVE,

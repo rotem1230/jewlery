@@ -1,12 +1,24 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { SubscriptionStatus } from '@prisma/client';
+import { Prisma, SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
-const ACTIVE_SUBSCRIPTION_STATUSES: SubscriptionStatus[] = [
-  SubscriptionStatus.ACTIVE,
-  SubscriptionStatus.TRIALING,
-  SubscriptionStatus.PAST_DUE,
-];
+/**
+ * A subscription grants entitlements only while it is inside its paid-for / trial window:
+ * TRIALING until trialEndsAt, ACTIVE or PAST_DUE until currentPeriodEnd. The window is checked
+ * here (not only by the lifecycle sweep) so access ends on time even if the sweep is late.
+ */
+export function entitledSubscriptionWhere(userId: string, now: Date = new Date()): Prisma.SubscriptionWhereInput {
+  return {
+    userId,
+    OR: [
+      { status: SubscriptionStatus.TRIALING, trialEndsAt: { gt: now } },
+      {
+        status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE] },
+        currentPeriodEnd: { gt: now },
+      },
+    ],
+  };
+}
 
 @Injectable()
 export class EntitlementsService {
@@ -14,7 +26,7 @@ export class EntitlementsService {
 
   private async activeSubscriptionsWithEntitlements(userId: string) {
     return this.prisma.subscription.findMany({
-      where: { userId, status: { in: ACTIVE_SUBSCRIPTION_STATUSES } },
+      where: entitledSubscriptionWhere(userId),
       include: {
         plan: {
           include: {

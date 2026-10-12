@@ -1,7 +1,13 @@
 import { randomUUID } from 'crypto';
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JewelryPaymentStatus, Prisma, User } from '@prisma/client';
+import { JewelryPaymentIntent, JewelryPaymentStatus, Prisma, QuoteStatus, User } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { CreatePaymentIntentDto } from './dto/jewelry-payment.dto';
@@ -18,6 +24,19 @@ export type JewelryPaymentIntentView = {
   createdAt: string;
 };
 
+const OPEN_STATUSES: JewelryPaymentStatus[] = [
+  JewelryPaymentStatus.REQUIRES_CONFIRMATION,
+  JewelryPaymentStatus.PROCESSING,
+];
+
+function providerNotConfigured(): ServiceUnavailableException {
+  return new ServiceUnavailableException({
+    success: false,
+    message: 'In-app payments are not available yet',
+    code: 'PAYMENT_PROVIDER_NOT_CONFIGURED',
+  });
+}
+
 @Injectable()
 export class JewelryPaymentsService {
   constructor(
@@ -26,37 +45,83 @@ export class JewelryPaymentsService {
     private readonly config: ConfigService,
   ) {}
 
+  /**
+   * The mock provider exists for development only. A configured real provider key without an
+   * integration fails closed rather than handing the app a fake client secret.
+   */
+  private resolveProvider(): 'mock' {
+    if (this.config.get<string>('stripe.secretKey')) {
+      throw providerNotConfigured();
+    }
+    if (this.config.get<string>('nodeEnv') === 'production') {
+      throw providerNotConfigured();
+    }
+    return 'mock';
+  }
+
   async createIntent(user: User, dto: CreatePaymentIntentDto): Promise<JewelryPaymentIntentView> {
     await this.assertEnabled(user);
+    const provider = this.resolveProvider();
 
-    const provider = this.config.get<string>('stripe.secretKey') ? 'stripe' : 'mock';
-    const intent = await this.prisma.jewelryPaymentIntent.create({
-      data: {
-        userId: user.id,
-        quoteId: dto.quoteId ?? null,
-        designId: dto.designId ?? null,
-        amount: dto.amount,
-        currency: dto.currency.toUpperCase(),
-        status: JewelryPaymentStatus.REQUIRES_CONFIRMATION,
-        clientSecret: `mock_secret_${randomUUID()}`,
-        provider,
-        providerRef: provider === 'mock' ? `mock_${randomUUID()}` : null,
-      },
-    });
+    const intent = await this.prisma.$transaction(async (tx) => {
+      // Serialize per quote so two taps never open two intents for one purchase.
+      await tx.$queryRaw`SELECT id FROM "quotes" WHERE id = ${dto.quoteId}::uuid FOR UPDATE`;
+      const quote = await tx.quote.findUnique({
+        where: { id: dto.quoteId },
+        include: { design: { select: { ownerUserId: true } } },
+      });
+      if (!quote) {
+        throw new NotFoundException({ success: false, message: 'Quote not found' });
+      }
+      if (quote.design.ownerUserId !== user.id) {
+        throw new ForbiddenException({ success: false, message: 'Only the design owner can pay this quote' });
+      }
+      if (quote.status !== QuoteStatus.ACCEPTED) {
+        throw new ConflictException({
+          success: false,
+          message: 'Only an accepted quote can be paid',
+          code: 'QUOTE_NOT_ACCEPTED',
+        });
+      }
 
-    await this.prisma.paymentEvent.create({
-      data: {
-        jewelryPaymentIntentId: intent.id,
-        provider,
-        providerEventId: `${provider}.jewelry.${intent.id}`,
-        type: 'jewelry.intent.created',
-        payload: {
-          intentId: intent.id,
+      const open = await tx.jewelryPaymentIntent.findFirst({
+        where: { quoteId: quote.id, userId: user.id, status: { in: OPEN_STATUSES } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (open) {
+        return open;
+      }
+
+      const created = await tx.jewelryPaymentIntent.create({
+        data: {
           userId: user.id,
-          amount: dto.amount,
-          currency: dto.currency.toUpperCase(),
-        } as Prisma.InputJsonValue,
-      },
+          quoteId: quote.id,
+          designId: quote.designId,
+          amount: quote.totalPrice,
+          currency: quote.currency,
+          status: JewelryPaymentStatus.REQUIRES_CONFIRMATION,
+          clientSecret: `mock_secret_${randomUUID()}`,
+          provider,
+          providerRef: `mock_${randomUUID()}`,
+        },
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          jewelryPaymentIntentId: created.id,
+          provider,
+          providerEventId: `${provider}.jewelry.${created.id}`,
+          type: 'jewelry.intent.created',
+          payload: {
+            intentId: created.id,
+            userId: user.id,
+            quoteId: quote.id,
+            amount: quote.totalPrice.toString(),
+            currency: quote.currency,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return created;
     });
 
     return this.toView(intent);
@@ -84,17 +149,7 @@ export class JewelryPaymentsService {
     }
   }
 
-  private toView(intent: {
-    id: string;
-    status: JewelryPaymentStatus;
-    amount: Prisma.Decimal | number | string;
-    currency: string;
-    designId: string | null;
-    quoteId: string | null;
-    clientSecret: string;
-    provider: string;
-    createdAt: Date;
-  }): JewelryPaymentIntentView {
+  private toView(intent: JewelryPaymentIntent): JewelryPaymentIntentView {
     return {
       id: intent.id,
       status: intent.status.toLowerCase(),

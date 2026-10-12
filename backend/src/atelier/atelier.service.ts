@@ -13,6 +13,7 @@ import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { PromotionsService } from '../promotions/promotions.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAtelierJewelersDto } from './dto/atelier.dto';
 
 const PAGE_SIZE = 20;
@@ -32,6 +33,7 @@ export class AtelierService {
     private readonly appConfig: AppConfigService,
     private readonly featureFlags: FeatureFlagsService,
     private readonly promotions: PromotionsService,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   private async getMatchingWeights(): Promise<typeof DEFAULT_MATCHING_WEIGHTS> {
@@ -297,27 +299,63 @@ export class AtelierService {
       }
     }
 
-    const request = await this.prisma.designRequest.create({
-      data: {
-        designId: dto.designId,
-        requesterId: user.id,
-        mode: dto.mode,
-        status: DesignRequestStatus.OPEN,
-        message: dto.message ?? null,
-        targets: {
-          create: targetProfileIds.map((jewelerProfileId) => ({ jewelerProfileId })),
+    const enforceQuota = await this.leadQuotaEnforced();
+    const recipients = await this.prisma.jewelerProfile.findMany({
+      where: { id: { in: targetProfileIds }, userId: { not: user.id }, user: { deletedAt: null } },
+      select: { id: true, userId: true },
+    });
+
+    // One transaction: the request, the lead metering and the delivered targets succeed or fail
+    // together (a refused request consumes no leads).
+    const { request, deliveredProfileIds } = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.designRequest.create({
+        data: {
+          designId: dto.designId,
+          requesterId: user.id,
+          mode: dto.mode,
+          status: DesignRequestStatus.OPEN,
+          message: dto.message ?? null,
         },
-      },
-      include: { targets: true },
+      });
+
+      const delivered: string[] = [];
+      for (const recipient of recipients) {
+        const outcome = await this.subscriptions.consumeLeadForDelivery(tx, recipient.userId, created.id, enforceQuota);
+        if (enforceQuota && (outcome === 'NO_LEADS' || outcome === 'NO_SUBSCRIPTION')) {
+          continue;
+        }
+        delivered.push(recipient.id);
+      }
+      if (delivered.length === 0) {
+        throw new ConflictException({
+          success: false,
+          message: 'None of the selected jewelers can receive requests right now',
+          code: 'NO_ELIGIBLE_JEWELERS',
+        });
+      }
+      await tx.designRequestTarget.createMany({
+        data: delivered.map((jewelerProfileId) => ({ requestId: created.id, jewelerProfileId })),
+      });
+      const withTargets = await tx.designRequest.findUniqueOrThrow({
+        where: { id: created.id },
+        include: { targets: true },
+      });
+      return { request: withTargets, deliveredProfileIds: delivered };
     });
 
     await this.outbox.enqueue('design_request.delivered', {
       designRequestId: request.id,
       designId: request.designId,
-      jewelerProfileIds: targetProfileIds,
+      jewelerProfileIds: deliveredProfileIds,
     });
 
     return request;
+  }
+
+  /** AppConfig lead_definition.enforceQuota: when true, jewelers without a lead are skipped. */
+  private async leadQuotaEnforced(): Promise<boolean> {
+    const raw = await this.appConfig.get('lead_definition');
+    return !!raw && typeof raw === 'object' && !Array.isArray(raw) && (raw as Record<string, unknown>).enforceQuota === true;
   }
 
   async findRequest(id: string, user: User) {
