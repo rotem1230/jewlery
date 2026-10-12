@@ -1,4 +1,5 @@
 import { UserRole } from '@prisma/client';
+import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { DEFAULT_PASSWORD, registerVerified, uniqueEmail } from '../utils/factories';
 
@@ -6,7 +7,7 @@ import { DEFAULT_PASSWORD, registerVerified, uniqueEmail } from '../utils/factor
 async function verifiedWithoutLogin(t: TestApp): Promise<string> {
   const email = uniqueEmail('throttle');
   await t.http.post(`${API}/auth/register`).send({ email, password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER] }).expect(201);
-  await t.http.post(`${API}/auth/verify-email`).send({ token: t.mailbox.tokenFor(email, 'verify') }).expect(200);
+  await t.http.post(`${API}/auth/verify-email`).send({ token: await t.mailbox.tokenFor(email, 'verify') }).expect(200);
   return email;
 }
 
@@ -115,6 +116,42 @@ describe('login hardening', () => {
         .send({ email: user.email, password: user.password })
         .expect(403);
       expect(res.body.code).toBe('ACCOUNT_LOCKED');
+    });
+
+    it('simultaneous guesses never evaluate more passwords than the attempt limit', async () => {
+      const user = await registerVerified(t);
+      // Holding the user row makes every guess arrive before any failure is recorded.
+      const lock = await lockRow(t, 'users', user.id);
+      const guesses = Array.from({ length: 12 }, (_, i) =>
+        t.http
+          .post(`${API}/auth/login`)
+          .send({ email: user.email, password: `Wrong-pass${i}` })
+          .then((res) => res),
+      );
+      await waitForLockWaiters(t, 1);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await lock.release();
+
+      const results = await Promise.all(guesses);
+      expect(results.filter((r) => r.status === 401)).toHaveLength(3);
+      const refused = results.filter((r) => r.status === 403);
+      expect(refused).toHaveLength(9);
+      expect(refused.every((r) => r.body.code === 'ACCOUNT_LOCKED')).toBe(true);
+    });
+
+    it('an unknown e-mail is answered exactly like an account, through the lockout', async () => {
+      const user = await registerVerified(t);
+      const sequence = async (email: string) => {
+        const seen: Array<[number, string]> = [];
+        for (let i = 0; i < 5; i += 1) {
+          const res = await t.http.post(`${API}/auth/login`).send({ email, password: 'Wrong-pass1' });
+          seen.push([res.status, res.body.code]);
+        }
+        return seen;
+      };
+      const real = await sequence(user.email);
+      expect(real[3]).toEqual([403, 'ACCOUNT_LOCKED']);
+      expect(await sequence(uniqueEmail('ghost'))).toEqual(real);
     });
 
     it('a successful login clears earlier failures', async () => {

@@ -6,6 +6,8 @@ import { RedisService } from '../redis/redis.service';
 import { DEFAULT_APP_CONFIGS, PUBLIC_CONFIG_KEYS } from './app-config.constants';
 
 const VERSION_POINTER_PREFIX = 'config:version:';
+/** Values changed outside this service (migrations, operator fixes) become visible within this. */
+const CACHE_TTL_SECONDS = 60;
 const VALUE_KEY_PREFIX = 'config:';
 
 @Injectable()
@@ -112,7 +114,7 @@ export class AppConfigService {
   }
 
   private async cacheRow(row: AppConfig): Promise<void> {
-    await this.redis.set(this.versionKey(row.key), String(row.version));
-    await this.redis.setJson(this.valueKey(row.key, row.version), { value: row.value });
+    await this.redis.set(this.versionKey(row.key), String(row.version), CACHE_TTL_SECONDS);
+    await this.redis.setJson(this.valueKey(row.key, row.version), { value: row.value }, CACHE_TTL_SECONDS);
   }
 }

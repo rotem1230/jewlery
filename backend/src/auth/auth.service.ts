@@ -6,12 +6,14 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  OnModuleDestroy,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuthProvider, Prisma, User, UserRole, UserStatus } from '@prisma/client';
 import { RateLimiterService } from '../common/rate-limit/rate-limiter.service';
 import { PrismaService } from '../database/prisma.service';
+import { sqlTimestamp } from '../database/sql-time';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { MailService } from '../mail/mail.service';
 import { AUTH_ERROR } from './constants';
@@ -29,7 +31,7 @@ import {
 import { AuthResult, RegisterResult, SafeUser } from './interfaces/auth-user.interface';
 import { OAuthTokenVerifier } from './oauth/oauth-token-verifier';
 import { PasswordService } from './services/password.service';
-import { TokenService } from './services/token.service';
+import { InvalidTokenError, TokenService } from './services/token.service';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -41,6 +43,22 @@ function invalidCredentials(): UnauthorizedException {
   });
 }
 
+function accountLocked(): ForbiddenException {
+  return new ForbiddenException({
+    success: false,
+    message: 'Account temporarily locked. Try again later or reset your password.',
+    code: AUTH_ERROR.ACCOUNT_LOCKED,
+  });
+}
+
+function invalidResetToken(): BadRequestException {
+  return new BadRequestException({
+    success: false,
+    message: 'Invalid or expired reset token',
+    code: AUTH_ERROR.TOKEN_INVALID,
+  });
+}
+
 function tooManyRequests(message: string): HttpException {
   return new HttpException(
     { success: false, message, code: AUTH_ERROR.TOO_MANY_ATTEMPTS },
@@ -49,8 +67,9 @@ function tooManyRequests(message: string): HttpException {
 }
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleDestroy {
   private readonly logger = new Logger(AuthService.name);
+  private readonly pendingMail = new Set<Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -90,18 +109,45 @@ export class AuthService {
     }
   }
 
-  /** Per account cap so the mail endpoints cannot be used to flood someone's inbox. */
-  private async underAccountMailCap(kind: 'verify' | 'reset', userId: string): Promise<boolean> {
+  /**
+   * Creates a verification / reset token unless the account reached its hourly mail cap (so the
+   * endpoints cannot flood an inbox). Count and insert run under the user's row lock, so
+   * simultaneous requests cannot all pass the check.
+   */
+  private async issueMailToken(kind: 'verify' | 'reset', userId: string): Promise<string | null> {
     const cap = this.config.get<number>('auth.mailsPerAccountPerHour', 3);
-    const recent = await this.tokens.countRecentMailTokens(kind, userId, new Date(Date.now() - HOUR_MS));
-    return recent < cap;
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId}::uuid FOR UPDATE`;
+      const recent = await this.tokens.countRecentMailTokens(kind, userId, new Date(Date.now() - HOUR_MS), tx);
+      if (recent >= cap) {
+        return null;
+      }
+      return kind === 'verify'
+        ? this.tokens.createEmailVerificationToken(userId, tx)
+        : this.tokens.createPasswordResetToken(userId, tx);
+    });
+  }
+
+  /**
+   * Mail goes out after the response: SMTP latency must neither slow requests down nor reveal
+   * (by timing) whether an account exists. Pending deliveries are awaited on shutdown.
+   */
+  private sendInBackground(what: string, work: () => Promise<void>): void {
+    const job: Promise<void> = work()
+      .catch((err: Error) => this.logger.warn(`${what} failed: ${err.message}`))
+      .finally(() => this.pendingMail.delete(job));
+    this.pendingMail.add(job);
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await Promise.allSettled([...this.pendingMail]);
   }
 
   private async sendVerificationEmail(userId: string, email: string): Promise<void> {
-    if (!(await this.underAccountMailCap('verify', userId))) {
+    const rawToken = await this.issueMailToken('verify', userId);
+    if (!rawToken) {
       return;
     }
-    const rawToken = await this.tokens.createEmailVerificationToken(userId);
     await this.mail.send(
       email,
       'Verify your Malinvosky account',
@@ -110,10 +156,10 @@ export class AuthService {
   }
 
   private async sendPasswordResetEmail(email: string, userId: string): Promise<void> {
-    if (!(await this.underAccountMailCap('reset', userId))) {
+    const rawToken = await this.issueMailToken('reset', userId);
+    if (!rawToken) {
       return;
     }
-    const rawToken = await this.tokens.createPasswordResetToken(userId);
     await this.mail.send(
       email,
       'Reset your Malinvosky password',
@@ -186,8 +232,8 @@ export class AuthService {
     }
 
     // Registration must not fail because mail delivery is slow or down; the user can re-send.
-    await this.sendVerificationEmail(user.id, user.email).catch((err: Error) =>
-      this.logger.warn(`Verification mail failed for user ${user.id}: ${err.message}`),
+    this.sendInBackground(`Verification mail for user ${user.id}`, () =>
+      this.sendVerificationEmail(user.id, user.email),
     );
 
     return { user: this.sanitize(user), requiresEmailVerification: true };
@@ -206,24 +252,34 @@ export class AuthService {
 
     const found = await this.prisma.user.findUnique({ where: { email } });
     const user = found && !found.deletedAt ? found : null;
+    const maxAttempts = this.config.get<number>('auth.loginMaxAttempts', 10);
+    const lockMinutes = this.config.get<number>('auth.loginLockMinutes', 15);
 
-    // A locked account is refused without evaluating the password, so the lock cannot be used
-    // as an oracle for guessing it.
-    if (user?.lockedUntil && user.lockedUntil > new Date()) {
-      throw new ForbiddenException({
-        success: false,
-        message: 'Account temporarily locked. Try again later or reset your password.',
-        code: AUTH_ERROR.ACCOUNT_LOCKED,
-      });
+    if (!user) {
+      // Unknown addresses go through the same lockout as accounts, so the sequence of answers
+      // does not reveal whether an account exists.
+      const allowed = await this.limiter.consume(`auth-login-unknown:${email}`, maxAttempts, lockMinutes * 60_000);
+      if (!allowed) {
+        throw accountLocked();
+      }
+      await this.password.compareAgainstDummy(dto.password);
+      throw invalidCredentials();
+    }
+
+    // The attempt is counted before the password is evaluated, so simultaneous guesses cannot
+    // evaluate more passwords than the limit; a locked account is refused without evaluating it.
+    const attempt = await this.reserveLoginAttempt(user.id, maxAttempts, lockMinutes);
+    if (attempt === 'locked') {
+      throw accountLocked();
     }
 
     const passwordOk =
-      user?.passwordHash != null
+      user.passwordHash != null
         ? await this.password.compare(dto.password, user.passwordHash)
         : await this.password.compareAgainstDummy(dto.password);
-    if (!user || !passwordOk) {
-      if (user) {
-        await this.recordFailedLogin(user.id);
+    if (!passwordOk) {
+      if (attempt >= maxAttempts) {
+        await this.lockAccount(user.id, lockMinutes);
       }
       throw invalidCredentials();
     }
@@ -252,29 +308,45 @@ export class AuthService {
     return { user: safe, tokens: await this.tokens.issueTokens(safe) };
   }
 
-  /** Atomic increment; the attempt that reaches the threshold locks the account. */
-  private async recordFailedLogin(userId: string): Promise<void> {
-    const maxAttempts = this.config.get<number>('auth.loginMaxAttempts', 10);
-    const lockMinutes = this.config.get<number>('auth.loginLockMinutes', 15);
-    const after = await this.prisma.user.update({
-      where: { id: userId },
-      data: { loginAttempts: { increment: 1 } },
-      select: { loginAttempts: true },
-    });
-    if (after.loginAttempts >= maxAttempts) {
-      await this.prisma.user.updateMany({
-        where: { id: userId, loginAttempts: { gte: maxAttempts } },
-        data: { lockedUntil: new Date(Date.now() + lockMinutes * 60_000), loginAttempts: 0 },
-      });
-      this.logger.warn(`Account ${userId} locked after ${maxAttempts} failed sign-ins`);
+  /**
+   * Atomically counts a sign-in attempt on an account that is not locked and returns its number.
+   * Attempts beyond the limit lock the account (time-bounded, so a crashed request cannot leave
+   * it refusing forever).
+   */
+  private async reserveLoginAttempt(userId: string, maxAttempts: number, lockMinutes: number): Promise<number | 'locked'> {
+    const rows = await this.prisma.$queryRaw<Array<{ loginAttempts: number }>>`
+      UPDATE "users" SET "loginAttempts" = "loginAttempts" + 1
+       WHERE "id" = ${userId}::uuid
+         AND ("lockedUntil" IS NULL OR "lockedUntil" <= ${sqlTimestamp(new Date())})
+      RETURNING "loginAttempts"`;
+    if (rows.length === 0) {
+      return 'locked';
     }
+    const attempt = rows[0].loginAttempts;
+    if (attempt > maxAttempts) {
+      await this.lockAccount(userId, lockMinutes);
+      return 'locked';
+    }
+    return attempt;
+  }
+
+  private async lockAccount(userId: string, lockMinutes: number): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lockedUntil: new Date(Date.now() + lockMinutes * 60_000), loginAttempts: 0 },
+    });
+    this.logger.warn(`Account ${userId} locked after repeated failed sign-ins`);
   }
 
   async refresh(dto: RefreshDto): Promise<{ tokens: AuthResult['tokens'] }> {
     try {
       const { tokens } = await this.tokens.rotateRefreshToken(dto.refreshToken);
       return { tokens };
-    } catch {
+    } catch (err) {
+      // Only a bad token is a 401 (the app then signs out); an outage must stay retryable.
+      if (!(err instanceof InvalidTokenError)) {
+        throw err;
+      }
       throw new UnauthorizedException({
         success: false,
         message: 'Invalid refresh token',
@@ -333,8 +405,8 @@ export class AuthService {
     await this.assertMailBudget(clientIp);
     const user = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } });
     if (user && !user.deletedAt && user.status === UserStatus.PENDING_VERIFICATION) {
-      await this.sendVerificationEmail(user.id, user.email).catch((err: Error) =>
-        this.logger.warn(`Verification mail failed for user ${user.id}: ${err.message}`),
+      this.sendInBackground(`Verification mail for user ${user.id}`, () =>
+        this.sendVerificationEmail(user.id, user.email),
       );
     }
     // Always 200 — do not reveal whether the account exists or is already verified.
@@ -345,9 +417,7 @@ export class AuthService {
     await this.assertMailBudget(clientIp);
     const user = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } });
     if (user && !user.deletedAt && user.status !== UserStatus.DEACTIVATED) {
-      await this.sendPasswordResetEmail(user.email, user.id).catch((err: Error) =>
-        this.logger.warn(`Reset mail failed for user ${user.id}: ${err.message}`),
-      );
+      this.sendInBackground(`Reset mail for user ${user.id}`, () => this.sendPasswordResetEmail(user.email, user.id));
     }
     // Always 200 — do not reveal whether the account exists.
     return { ok: true };
@@ -364,38 +434,39 @@ export class AuthService {
       });
     }
 
-    let result: { userId: string };
-    try {
-      result = await this.tokens.consumePasswordResetToken(dto.token);
-    } catch {
-      throw new BadRequestException({
-        success: false,
-        message: 'Invalid or expired reset token',
-        code: AUTH_ERROR.TOKEN_INVALID,
-      });
+    // Cheap check first, so an invalid link never costs a password hash.
+    const token = await this.tokens.findUsablePasswordResetToken(dto.token);
+    if (!token) {
+      throw invalidResetToken();
     }
-
-    const user = await this.prisma.user.findUnique({ where: { id: result.userId } });
-    if (!user || user.deletedAt || user.status === UserStatus.DEACTIVATED) {
-      throw new BadRequestException({
-        success: false,
-        message: 'Invalid or expired reset token',
-        code: AUTH_ERROR.TOKEN_INVALID,
-      });
-    }
-
     const passwordHash = await this.password.hash(dto.newPassword);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        passwordHash,
-        loginAttempts: 0,
-        lockedUntil: null,
-        // Following the mailed link proves control of the mailbox.
-        emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
-        status: user.status === UserStatus.PENDING_VERIFICATION ? UserStatus.ACTIVE : user.status,
-      },
+
+    // Under the user's row lock: the token is redeemed (with every other reset link of the
+    // account) and the password replaced in one step, so two links cannot both succeed.
+    const user = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${token.userId}::uuid FOR UPDATE`;
+      if (!(await this.tokens.redeemPasswordResetToken(tx, token.id, token.userId))) {
+        return null;
+      }
+      const current = await tx.user.findUnique({ where: { id: token.userId } });
+      if (!current || current.deletedAt || current.status === UserStatus.DEACTIVATED) {
+        return null;
+      }
+      return tx.user.update({
+        where: { id: current.id },
+        data: {
+          passwordHash,
+          loginAttempts: 0,
+          lockedUntil: null,
+          // Following the mailed link proves control of the mailbox.
+          emailVerifiedAt: current.emailVerifiedAt ?? new Date(),
+          status: current.status === UserStatus.PENDING_VERIFICATION ? UserStatus.ACTIVE : current.status,
+        },
+      });
     });
+    if (!user) {
+      throw invalidResetToken();
+    }
 
     // Reset invalidates every existing session as a security precaution.
     await this.tokens.revokeAllForUser(user.id);

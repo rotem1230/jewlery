@@ -24,7 +24,7 @@ describe('hosted e-mail link pages', () => {
       .post(`${API}/auth/register`)
       .send({ email, password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER] })
       .expect(201);
-    return { email, token: t.mailbox.tokenFor(email, 'verify') };
+    return { email, token: await t.mailbox.tokenFor(email, 'verify') };
   }
 
   it('mails links to the hosted pages on the public API URL', async () => {
@@ -62,7 +62,7 @@ describe('hosted e-mail link pages', () => {
   it('the reset page sets a new password on submit', async () => {
     const user = await registerVerified(t);
     await t.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
-    const token = t.mailbox.tokenFor(user.email, 'reset');
+    const token = await t.mailbox.tokenFor(user.email, 'reset');
 
     await t.http.get(`${API}/auth/web/reset-password`).query({ token }).expect(200);
     await t.http
@@ -76,7 +76,7 @@ describe('hosted e-mail link pages', () => {
   it('a mismatched confirmation does not consume the reset token', async () => {
     const user = await registerVerified(t);
     await t.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
-    const token = t.mailbox.tokenFor(user.email, 'reset');
+    const token = await t.mailbox.tokenFor(user.email, 'reset');
 
     await t.http
       .post(`${API}/auth/web/reset-password`)

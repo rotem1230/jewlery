@@ -50,6 +50,26 @@ describe('refresh token rotation', () => {
     expect(results.map((r) => r.status).sort()).toEqual([201, 401]);
   });
 
+  it('a refresh that fails midway leaves the presented token usable (no false theft alarm)', async () => {
+    const user = await registerVerified(t);
+    await t.prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_refresh_insert() RETURNS trigger AS $$
+      BEGIN
+        IF NEW."userId" = '${user.id}'::uuid THEN RAISE EXCEPTION 'injected refresh failure'; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await t.prisma.$executeRawUnsafe(`
+      CREATE TRIGGER test_fail_refresh_insert BEFORE INSERT ON "refresh_tokens"
+      FOR EACH ROW EXECUTE FUNCTION test_fail_refresh_insert()`);
+    try {
+      expect((await refresh(user.refreshToken)).status).toBeGreaterThanOrEqual(500);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_refresh_insert ON "refresh_tokens"`);
+      await t.prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_refresh_insert()`);
+    }
+    expect((await refresh(user.refreshToken)).status).toBe(201);
+  });
+
   it('a suspended account cannot refresh', async () => {
     const user = await registerVerified(t);
     await t.prisma.user.update({ where: { id: user.id }, data: { status: 'SUSPENDED' } });

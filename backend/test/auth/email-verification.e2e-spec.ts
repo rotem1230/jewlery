@@ -78,7 +78,7 @@ describe('e-mail verification is enforced', () => {
 
   it('grants access once the e-mail is verified', async () => {
     const { email } = await registerPending();
-    const token = t.mailbox.tokenFor(email, 'verify');
+    const token = await t.mailbox.tokenFor(email, 'verify');
     await t.http.post(`${API}/auth/verify-email`).send({ token }).expect(200);
     const login = await t.http
       .post(`${API}/auth/login`)
@@ -89,7 +89,7 @@ describe('e-mail verification is enforced', () => {
 
   it('a verification token works only once under concurrent use', async () => {
     const { email } = await registerPending();
-    const token = t.mailbox.tokenFor(email, 'verify');
+    const token = await t.mailbox.tokenFor(email, 'verify');
     const results = await Promise.all(
       Array.from({ length: 5 }, () => t.http.post(`${API}/auth/verify-email`).send({ token })),
     );

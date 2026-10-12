@@ -44,7 +44,7 @@ export async function registerVerified(
     })
     .expect(201);
 
-  const token = t.mailbox.tokenFor(email, 'verify');
+  const token = await t.mailbox.tokenFor(email, 'verify');
   await t.http.post(`${API}/auth/verify-email`).send({ token }).expect(200);
   return login(t, email, password);
 }
