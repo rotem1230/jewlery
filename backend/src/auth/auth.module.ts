@@ -5,8 +5,12 @@ import { PassportModule } from '@nestjs/passport';
 import { CmsModule } from '../cms/cms.module';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 import { MailModule } from '../mail/mail.module';
+import { AuthWebController } from './auth-web.controller';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { jwtModuleOptions } from './jwt-options';
+import { HttpJwksProvider, JWKS_PROVIDER } from './oauth/jwks.provider';
+import { OAuthTokenVerifier } from './oauth/oauth-token-verifier';
 import { PasswordService } from './services/password.service';
 import { TokenService } from './services/token.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -17,19 +21,21 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        secret: config.getOrThrow<string>('jwt.secret'),
-        signOptions: {
-          expiresIn: config.get<string>('jwt.expiresIn', '15m') as `${number}${'s' | 'm' | 'h' | 'd'}`,
-        },
-      }),
+      useFactory: jwtModuleOptions,
     }),
     CmsModule,
     MailModule,
     FeatureFlagsModule,
   ],
-  controllers: [AuthController],
-  providers: [AuthService, PasswordService, TokenService, JwtStrategy],
+  controllers: [AuthController, AuthWebController],
+  providers: [
+    AuthService,
+    PasswordService,
+    TokenService,
+    JwtStrategy,
+    OAuthTokenVerifier,
+    { provide: JWKS_PROVIDER, useClass: HttpJwksProvider },
+  ],
   exports: [AuthService, PasswordService, TokenService],
 })
 export class AuthModule {}

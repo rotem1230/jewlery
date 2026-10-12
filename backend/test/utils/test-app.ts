@@ -50,7 +50,8 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication({ bodyParser: false, logger: ['error'] });
   configureApp(app);
-  await app.init();
+  // A real listening socket on an ephemeral loopback port (HTTP + WebSocket gateway).
+  await app.listen(0, '127.0.0.1');
 
   return {
     app,

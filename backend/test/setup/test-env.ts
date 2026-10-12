@@ -7,6 +7,9 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'test-only-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz';
 process.env.REDIS_URL = '';
 process.env.THROTTLE_LIMIT = '100000';
+// Suites register many accounts from 127.0.0.1; the throttle tests set production-like limits explicitly.
+process.env.AUTH_MAIL_THROTTLE_LIMIT = '100000';
+process.env.AUTH_LOGIN_THROTTLE_LIMIT = '100000';
 process.env.BCRYPT_ROUNDS = '4';
 process.env.JOBS_ENABLED = 'false';
 process.env.CORS_ORIGINS = 'http://localhost:8081';

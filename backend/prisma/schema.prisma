@@ -169,7 +169,7 @@ model User {
   email           String       @unique
   passwordHash    String? // null if OAuth-only
   authProvider    AuthProvider @default(PASSWORD)
-  authProviderSub String? // external subject; @@unique([authProvider, authProviderSub])
+  authProviderSub String? // external subject (unique per provider)
   firstName       String?
   lastName        String?
   phone           String? // E.164
@@ -207,6 +207,7 @@ model User {
   idempotencyKeys         IdempotencyKey[]
   jewelryPaymentIntents   JewelryPaymentIntent[]
 
+  @@unique([authProvider, authProviderSub])
   @@index([status])
   @@index([phone])
   @@map("users")

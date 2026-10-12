@@ -2,16 +2,24 @@ import { UserRole } from '@prisma/client';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { DEFAULT_PASSWORD, registerVerified, uniqueEmail } from '../utils/factories';
 
+/** Registers and verifies without signing in, so no attempt is spent before the test starts. */
+async function verifiedWithoutLogin(t: TestApp): Promise<string> {
+  const email = uniqueEmail('throttle');
+  await t.http.post(`${API}/auth/register`).send({ email, password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER] }).expect(201);
+  await t.http.post(`${API}/auth/verify-email`).send({ token: t.mailbox.tokenFor(email, 'verify') }).expect(200);
+  return email;
+}
+
 /**
  * Regressions for the login findings: account/status enumeration before the password check,
  * non-atomic failure counter, and unlimited guessing from one client.
  */
 describe('login hardening', () => {
-  describe('with default limits', () => {
+  describe('with a 5-attempt budget per client and account', () => {
     let t: TestApp;
 
     beforeAll(async () => {
-      t = await createTestApp();
+      t = await createTestApp({ env: { AUTH_LOGIN_THROTTLE_LIMIT: '5' } });
     });
 
     afterAll(async () => {
@@ -68,12 +76,12 @@ describe('login hardening', () => {
     });
 
     it('throttles repeated guesses for one account from one client', async () => {
-      const user = await registerVerified(t);
+      const email = await verifiedWithoutLogin(t);
       const statuses: number[] = [];
       for (let i = 0; i < 7; i += 1) {
         const res = await t.http
           .post(`${API}/auth/login`)
-          .send({ email: user.email, password: `Wrong-pass${i}` });
+          .send({ email, password: `Wrong-pass${i}` });
         statuses.push(res.status);
       }
       expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);

@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
-import { CreateQuoteDto, DeclineQuoteDto, UpdateQuoteDto } from './dto/quote.dto';
+import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, UpdateQuoteDto } from './dto/quote.dto';
 import { QuotesService } from './quotes.service';
 
 type AuthedRequest = Request & { user: User };
@@ -32,14 +32,20 @@ export class QuotesController {
       'Runs in a single database transaction: marks quote ACCEPTED, completes the Design, auto-declines other ' +
       'PENDING quotes on the design, and posts SYSTEM handoff messages with a WhatsApp deep link.',
   })
-  accept(@Param('id') id: string, @Req() req: AuthedRequest) {
-    return this.quotes.accept(id, req.user);
+  accept(@Param('id') id: string, @Body() dto: AcceptQuoteDto, @Req() req: AuthedRequest) {
+    return this.quotes.accept(id, req.user, dto);
   }
 
   @Post(':id/decline')
-  @ApiOperation({ summary: 'Decline a quote (idempotent)' })
+  @ApiOperation({ summary: 'Decline a quote (design owner only, idempotent)' })
   decline(@Param('id') id: string, @Body() dto: DeclineQuoteDto, @Req() req: AuthedRequest) {
     return this.quotes.decline(id, req.user, dto);
+  }
+
+  @Post(':id/withdraw')
+  @ApiOperation({ summary: 'Withdraw a pending quote (author only, idempotent)' })
+  withdraw(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.quotes.withdraw(id, req.user);
   }
 
   @Patch(':id')

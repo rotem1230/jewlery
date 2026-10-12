@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { UserStatus } from '@prisma/client';
 import { ExtractJwt, Strategy } from 'passport-jwt';
+import { JWT_AUDIENCE, JWT_ISSUER } from '../../config/configuration';
 import { AUTH_ERROR } from '../constants';
 import { AuthService } from '../auth.service';
 import { JwtPayload } from '../interfaces/auth-user.interface';
@@ -16,7 +17,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: config.get<string>('jwt.secret')!,
+      secretOrKey: config.getOrThrow<string>('jwt.secret'),
+      algorithms: ['HS256'],
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
     });
   }
 
@@ -36,6 +40,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         code: AUTH_ERROR.ACCOUNT_SUSPENDED,
       });
     }
+    // PENDING_VERIFICATION is refused by JwtAuthGuard unless the route is @AllowUnverified().
     return user;
   }
 }

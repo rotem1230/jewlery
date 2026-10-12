@@ -19,15 +19,23 @@ const corsOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
   .map((o) => o.trim())
   .filter(Boolean);
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function conversationRoom(conversationId: string): string {
   return `conversation:${conversationId}`;
 }
+
+type AuthedSocketData = { userId?: string; authPromise?: Promise<string>; expiryTimer?: NodeJS.Timeout };
 
 /**
  * Real-time chat transport. HTTP endpoints on ConversationsController remain the
  * source of truth for persistence; this gateway only handles socket auth, room
  * membership, and broadcasting `message:new` / `message:read` events emitted by
  * ConversationsService after a successful write.
+ *
+ * Authentication: the access token must be sent in the handshake `auth.token` (never the query
+ * string, which ends up in proxy logs). The same issuer/audience/algorithm rules as HTTP apply,
+ * unverified / suspended accounts are refused, and the socket is closed when the token expires.
  */
 @WebSocketGateway({ namespace: '/ws', cors: { origin: corsOrigins, credentials: true } })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -46,41 +54,49 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (typeof authToken === 'string' && authToken.length > 0) {
       return authToken.replace(/^Bearer\s+/i, '');
     }
-    const queryToken = client.handshake.query?.token;
-    if (typeof queryToken === 'string' && queryToken.length > 0) {
-      return queryToken;
-    }
     return null;
   }
 
-  /**
-   * Resolves the user id for a socket. `handleConnection` is async, so a
-   * client that emits `conversation:join` immediately on `connect` can reach
-   * handlers before `client.data.userId` is assigned — fall back to verifying
-   * the handshake token on demand instead of dropping the join.
-   */
-  private async resolveUserId(client: Socket): Promise<string> {
-    const cached = client.data.userId as string | undefined;
-    if (cached) {
-      return cached;
-    }
+  private async authenticate(client: Socket): Promise<string> {
     const token = this.extractToken(client);
     if (!token) {
       throw new Error('Missing token');
     }
-    const payload = await this.jwt.verifyAsync<JwtPayload>(token);
+    const payload = await this.jwt.verifyAsync<JwtPayload & { exp?: number }>(token);
     const user = await this.prisma.user.findFirst({ where: { id: payload.sub, deletedAt: null } });
-    if (!user || user.status === UserStatus.SUSPENDED || user.status === UserStatus.DEACTIVATED) {
+    if (!user || user.status !== UserStatus.ACTIVE) {
       throw new Error('Invalid or inactive user');
     }
-    client.data.userId = user.id;
+    const data = client.data as AuthedSocketData;
+    if (typeof payload.exp === 'number') {
+      const msLeft = payload.exp * 1000 - Date.now();
+      data.expiryTimer = setTimeout(() => {
+        client.emit('error', { message: 'Session expired' });
+        client.disconnect(true);
+      }, Math.max(0, msLeft));
+      data.expiryTimer.unref?.();
+    }
+    data.userId = user.id;
     return user.id;
+  }
+
+  /**
+   * Resolves the user id for a socket. `handleConnection` is async, so a client that emits
+   * `conversation:join` immediately on `connect` can reach handlers before authentication
+   * finished — join waits for the same in-flight authentication instead of re-verifying.
+   */
+  private resolveUserId(client: Socket): Promise<string> {
+    const data = client.data as AuthedSocketData;
+    if (data.userId) {
+      return Promise.resolve(data.userId);
+    }
+    data.authPromise ??= this.authenticate(client);
+    return data.authPromise;
   }
 
   async handleConnection(client: Socket): Promise<void> {
     try {
       const userId = await this.resolveUserId(client);
-      client.data.userId = userId;
       this.logger.debug(`Socket connected: ${client.id} (user ${userId})`);
     } catch (err) {
       this.logger.warn(`Socket auth failed for ${client.id}: ${(err as Error).message}`);
@@ -90,6 +106,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   handleDisconnect(client: Socket): void {
+    const data = client.data as AuthedSocketData;
+    if (data.expiryTimer) {
+      clearTimeout(data.expiryTimer);
+    }
     this.logger.debug(`Socket disconnected: ${client.id}`);
   }
 
@@ -105,13 +125,13 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     } catch {
       return;
     }
-    if (!userId || !conversationId) {
+    if (!userId || typeof conversationId !== 'string' || !UUID.test(conversationId)) {
       return;
     }
     const participant = await this.prisma.conversationParticipant.findUnique({
       where: { conversationId_userId: { conversationId, userId } },
     });
-    if (!participant) {
+    if (!participant || participant.leftAt) {
       client.emit('error', { message: 'Not a participant of this conversation' });
       return;
     }
@@ -120,7 +140,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('conversation:leave')
   onLeave(@ConnectedSocket() client: Socket, @MessageBody() data: { conversationId?: string }): void {
-    if (data?.conversationId) {
+    if (typeof data?.conversationId === 'string') {
       void client.leave(conversationRoom(data.conversationId));
     }
   }

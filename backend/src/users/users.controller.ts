@@ -14,6 +14,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
+import { AllowUnverified } from '../authorization/decorators/allow-unverified.decorator';
 import { PrismaService } from '../database/prisma.service';
 import { ChangePasswordDto, RegisterDeviceDto, UpdateMeDto, UpdatePreferencesDto } from './dto/users.dto';
 import { UsersService } from './users.service';
@@ -29,6 +30,7 @@ export class UsersController {
     private readonly usersService: UsersService,
   ) {}
 
+  @AllowUnverified()
   @Get('me')
   @ApiOperation({ summary: 'Get the current user profile' })
   @ApiResponse({ status: 200, description: 'Current user profile' })
@@ -61,6 +63,7 @@ export class UsersController {
     return this.usersService.upsertPreferences(req.user.id, dto);
   }
 
+  @AllowUnverified()
   @Delete('me')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Soft-delete (deactivate) the current account' })

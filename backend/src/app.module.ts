@@ -14,6 +14,7 @@ import { RolesGuard } from './authorization/guards/roles.guard';
 import { ChatModule } from './chat/chat.module';
 import { CmsModule } from './cms/cms.module';
 import { OutboxModule } from './common/outbox/outbox.module';
+import { RateLimitModule } from './common/rate-limit/rate-limit.module';
 import { StateMachineModule } from './common/state-machine/state-machine.module';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { configuration } from './config/configuration';
@@ -48,6 +49,8 @@ import { WizardModule } from './wizard/wizard.module';
       isGlobal: true,
       load: [configuration],
       validate: validateEnv,
+      // Tests configure everything through process.env; never pick up a developer's .env.
+      ignoreEnvFile: process.env.NODE_ENV === 'test',
     }),
     EventEmitterModule.forRoot(),
     ThrottlerModule.forRootAsync({
@@ -77,6 +80,7 @@ import { WizardModule } from './wizard/wizard.module';
     }),
     PrismaModule,
     RedisModule,
+    RateLimitModule,
     AuditModule,
     StateMachineModule,
     OutboxModule,

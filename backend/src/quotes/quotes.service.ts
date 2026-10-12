@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   ContentPageStatus,
   DesignRequestStatus,
@@ -16,9 +22,19 @@ import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { CreateQuoteDto, DeclineQuoteDto, UpdateQuoteDto } from './dto/quote.dto';
+import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, UpdateQuoteDto } from './dto/quote.dto';
 
 const DEFAULT_CURRENCY = 'ILS';
+
+/** Thrown inside the accept transaction to roll it back with a client-facing conflict. */
+class AcceptConflict extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 @Injectable()
 export class QuotesService {
@@ -59,12 +75,26 @@ export class QuotesService {
     if (!conversation) {
       throw new NotFoundException({ success: false, message: 'Conversation not found' });
     }
-    if (!conversation.participants.some((p) => p.userId === userId)) {
+    if (!conversation.participants.some((p) => p.userId === userId && !p.leftAt)) {
       throw new ForbiddenException({ success: false, message: 'Not a participant of this conversation' });
     }
     return conversation;
   }
 
+  private cardPayload(quote: { id: string; totalPrice: Prisma.Decimal; currency: string; etaBusinessDays: number }) {
+    return toJsonValue({
+      quoteId: quote.id,
+      totalPrice: quote.totalPrice.toString(),
+      currency: quote.currency,
+      etaBusinessDays: quote.etaBusinessDays,
+    });
+  }
+
+  /**
+   * Only a jeweler who is not the design owner may quote, in a conversation that includes the
+   * owner, on a PUBLISHED design. A linked design request must belong to the same design and
+   * have been delivered to this jeweler; its status moves through the state machine.
+   */
   async create(user: User, dto: CreateQuoteDto) {
     const conversation = await this.assertConversationParticipant(dto.conversationId, user.id);
     if (conversation.designId !== dto.designId) {
@@ -74,11 +104,52 @@ export class QuotesService {
       });
     }
 
+    const design = await this.prisma.design.findFirst({ where: { id: dto.designId, deletedAt: null } });
+    if (!design) {
+      throw new NotFoundException({ success: false, message: 'Design not found' });
+    }
+    if (design.ownerUserId === user.id) {
+      throw new ForbiddenException({ success: false, message: 'You cannot quote your own design' });
+    }
+    if (!user.roles.includes(UserRole.JEWELER)) {
+      throw new ForbiddenException({ success: false, message: 'Only jewelers can submit quotes' });
+    }
+    if (!conversation.participants.some((p) => p.userId === design.ownerUserId && !p.leftAt)) {
+      throw new ForbiddenException({
+        success: false,
+        message: 'The design owner is not part of this conversation',
+      });
+    }
+    if (design.status !== DesignStatus.PUBLISHED) {
+      throw new ConflictException({
+        success: false,
+        message: 'This design is not open for quotes',
+        code: 'DESIGN_NOT_PUBLISHED',
+      });
+    }
+
     if (dto.designRequestId) {
-      const request = await this.prisma.designRequest.findUnique({ where: { id: dto.designRequestId } });
+      const request = await this.prisma.designRequest.findUnique({
+        where: { id: dto.designRequestId },
+        include: { targets: { include: { jewelerProfile: { select: { userId: true } } } } },
+      });
       if (!request) {
         throw new NotFoundException({ success: false, message: 'Design request not found' });
       }
+      if (request.designId !== dto.designId) {
+        throw new BadRequestException({
+          success: false,
+          message: 'designRequestId does not belong to this design',
+        });
+      }
+      if (!request.targets.some((t) => t.jewelerProfile.userId === user.id)) {
+        throw new ForbiddenException({ success: false, message: 'This request was not sent to you' });
+      }
+      this.stateMachine.assertTransition(
+        this.stateMachine.designRequestGraph,
+        request.status,
+        DesignRequestStatus.QUOTE_SUBMITTED,
+      );
     }
 
     const materialsCost = new Prisma.Decimal(dto.materialsCost);
@@ -119,12 +190,7 @@ export class QuotesService {
           senderId: user.id,
           type: MessageType.QUOTE_CARD,
           quoteId: createdQuote.id,
-          payload: toJsonValue({
-            quoteId: createdQuote.id,
-            totalPrice: totalPrice.toString(),
-            currency: createdQuote.currency,
-            etaBusinessDays: createdQuote.etaBusinessDays,
-          }),
+          payload: this.cardPayload(createdQuote),
         },
         include: { sender: { select: { id: true, firstName: true, lastName: true, avatarUploadId: true } } },
       });
@@ -135,10 +201,23 @@ export class QuotesService {
       });
 
       if (dto.designRequestId) {
-        await tx.designRequest.update({
-          where: { id: dto.designRequestId },
+        // Conditional: a request cancelled meanwhile is not resurrected.
+        const moved = await tx.designRequest.updateMany({
+          where: {
+            id: dto.designRequestId,
+            status: {
+              in: [DesignRequestStatus.OPEN, DesignRequestStatus.NEGOTIATING, DesignRequestStatus.QUOTE_SUBMITTED],
+            },
+          },
           data: { status: DesignRequestStatus.QUOTE_SUBMITTED },
         });
+        if (moved.count !== 1) {
+          throw new ConflictException({
+            success: false,
+            message: 'The design request is no longer open',
+            code: 'REQUEST_NOT_OPEN',
+          });
+        }
       }
 
       return { quote: createdQuote, message: createdMessage };
@@ -158,16 +237,13 @@ export class QuotesService {
       conversationId: quote.conversationId,
     });
 
-    const others = conversation.participants.filter((p) => p.userId !== user.id);
-    for (const other of others) {
-      await this.notifications.createInApp(
-        other.userId,
-        'quote.created',
-        'New quote received',
-        `You received a new quote of ${totalPrice.toString()} ${quote.currency}`,
-        { quoteId: quote.id, conversationId: quote.conversationId },
-      );
-    }
+    await this.notifications.createInApp(
+      design.ownerUserId,
+      'quote.created',
+      'New quote received',
+      `You received a new quote of ${totalPrice.toString()} ${quote.currency}`,
+      { quoteId: quote.id, conversationId: quote.conversationId },
+    );
 
     return this.findOne(quote.id, user);
   }
@@ -193,43 +269,81 @@ export class QuotesService {
     return rest;
   }
 
-  async accept(id: string, user: User) {
-    const existing = await this.prisma.quote.findUnique({
+  private async loadForDecision(id: string) {
+    const quote = await this.prisma.quote.findUnique({
       where: { id },
-      include: { conversation: { include: { participants: true } } },
+      include: { design: { select: { ownerUserId: true } } },
     });
-    if (!existing) {
+    if (!quote) {
       throw new NotFoundException({ success: false, message: 'Quote not found' });
     }
-    if (!existing.conversation.participants.some((p) => p.userId === user.id)) {
-      throw new ForbiddenException({ success: false, message: 'Not authorized to accept this quote' });
-    }
+    return quote;
+  }
 
+  /**
+   * Accepting a quote is the design owner's decision alone. The design row is locked first, so
+   * concurrent accepts (same or competing quotes) serialize: exactly one quote is ACCEPTED, the
+   * design is COMPLETED once, and repeating an accept is idempotent.
+   */
+  async accept(id: string, user: User, dto: AcceptQuoteDto = {}) {
+    const existing = await this.loadForDecision(id);
+    if (existing.design.ownerUserId !== user.id) {
+      throw new ForbiddenException({ success: false, message: 'Only the design owner can accept a quote' });
+    }
     if (existing.status === QuoteStatus.ACCEPTED) {
       return this.findOne(id, user);
     }
-
-    this.stateMachine.assertTransition(this.stateMachine.quoteGraph, existing.status, QuoteStatus.ACCEPTED);
+    if (existing.status !== QuoteStatus.PENDING) {
+      throw new ConflictException({
+        success: false,
+        message: `This quote is ${existing.status.toLowerCase()}`,
+        code: 'QUOTE_NOT_PENDING',
+      });
+    }
+    if (existing.validUntil && existing.validUntil.getTime() < Date.now()) {
+      throw new ConflictException({ success: false, message: 'This quote has expired', code: 'QUOTE_EXPIRED' });
+    }
+    if (
+      dto.expectedTotalPrice !== undefined &&
+      !new Prisma.Decimal(dto.expectedTotalPrice).equals(existing.totalPrice)
+    ) {
+      throw new ConflictException({
+        success: false,
+        message: 'The quote changed since you opened it; review the new price',
+        code: 'QUOTE_CHANGED',
+        currentTotalPrice: existing.totalPrice.toString(),
+      });
+    }
 
     const acceptedAt = new Date();
+    let result: {
+      acceptedMsg: Prisma.MessageGetPayload<object>;
+      handoffMsg: Prisma.MessageGetPayload<object>;
+      otherPendingIds: string[];
+      otherAuthorIds: string[];
+    };
+    try {
+      result = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "designs" WHERE id = ${existing.designId}::uuid FOR UPDATE`;
+        const design = await tx.design.findUniqueOrThrow({ where: { id: existing.designId } });
+        if (design.acceptedQuoteId === id) {
+          throw new AcceptConflict('ALREADY_ACCEPTED', 'Already accepted');
+        }
+        if (design.status !== DesignStatus.PUBLISHED || design.acceptedQuoteId || design.deletedAt) {
+          throw new AcceptConflict('DESIGN_NOT_OPEN', 'This design already has an accepted quote');
+        }
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const updatedQuote = await tx.quote.update({
-        where: { id },
-        data: { status: QuoteStatus.ACCEPTED, acceptedAt },
-      });
-      await tx.quoteEvent.create({
-        data: {
-          quoteId: id,
-          fromStatus: existing.status,
-          toStatus: QuoteStatus.ACCEPTED,
-          actorUserId: user.id,
-        },
-      });
+        const claimed = await tx.quote.updateMany({
+          where: { id, status: QuoteStatus.PENDING },
+          data: { status: QuoteStatus.ACCEPTED, acceptedAt },
+        });
+        if (claimed.count !== 1) {
+          throw new AcceptConflict('QUOTE_NOT_PENDING', 'This quote is no longer pending');
+        }
+        await tx.quoteEvent.create({
+          data: { quoteId: id, fromStatus: QuoteStatus.PENDING, toStatus: QuoteStatus.ACCEPTED, actorUserId: user.id },
+        });
 
-      const design = await tx.design.findUnique({ where: { id: existing.designId } });
-      if (design && design.status !== DesignStatus.COMPLETED) {
-        this.stateMachine.assertTransition(this.stateMachine.designGraph, design.status, DesignStatus.COMPLETED);
         await tx.design.update({
           where: { id: existing.designId },
           data: {
@@ -239,89 +353,100 @@ export class QuotesService {
             acceptedQuoteId: existing.id,
           },
         });
-      }
 
-      const otherPending = await tx.quote.findMany({
-        where: { designId: existing.designId, id: { not: id }, status: QuoteStatus.PENDING },
-      });
-      for (const other of otherPending) {
-        await tx.quote.update({
-          where: { id: other.id },
-          data: { status: QuoteStatus.DECLINED, declinedAt: acceptedAt },
+        const otherPending = await tx.quote.findMany({
+          where: { designId: existing.designId, id: { not: id }, status: QuoteStatus.PENDING },
+          select: { id: true, authorUserId: true },
         });
-        await tx.quoteEvent.create({
+        if (otherPending.length > 0) {
+          await tx.quote.updateMany({
+            where: { id: { in: otherPending.map((q) => q.id) }, status: QuoteStatus.PENDING },
+            data: { status: QuoteStatus.DECLINED, declinedAt: acceptedAt },
+          });
+          await tx.quoteEvent.createMany({
+            data: otherPending.map((other) => ({
+              quoteId: other.id,
+              fromStatus: QuoteStatus.PENDING,
+              toStatus: QuoteStatus.DECLINED,
+              actorUserId: user.id,
+              note: 'Auto-declined: another quote was accepted for this design',
+            })),
+          });
+        }
+
+        const jeweler = await tx.user.findUnique({
+          where: { id: existing.authorUserId },
+          include: { jewelerProfile: true },
+        });
+        const phone = jeweler?.jewelerProfile?.phone ?? jeweler?.phone ?? null;
+        const whatsappUrl = this.toWhatsappUrl(phone);
+        const jewelerName = this.fullName(jeweler);
+
+        const [acceptedTemplate, handoffTemplate] = await Promise.all([
+          tx.systemMessageTemplate.findUnique({ where: { eventKey_locale: { eventKey: 'quote.accepted', locale: 'he' } } }),
+          tx.systemMessageTemplate.findUnique({ where: { eventKey_locale: { eventKey: 'handoff.created', locale: 'he' } } }),
+        ]);
+
+        const templateVars = { jewelerName, whatsappUrl: whatsappUrl ?? '' };
+        const acceptedMsg = await tx.message.create({
           data: {
-            quoteId: other.id,
-            fromStatus: QuoteStatus.PENDING,
-            toStatus: QuoteStatus.DECLINED,
-            actorUserId: user.id,
-            note: 'Auto-declined: another quote was accepted for this design',
+            conversationId: existing.conversationId,
+            senderId: null,
+            type: MessageType.SYSTEM,
+            body: this.renderTemplate(
+              acceptedTemplate?.body ?? 'The quote from {{jewelerName}} was accepted.',
+              templateVars,
+            ),
+            payload: toJsonValue({ eventKey: 'quote.accepted', quoteId: id }),
           },
         });
+        const handoffMsg = await tx.message.create({
+          data: {
+            conversationId: existing.conversationId,
+            senderId: null,
+            type: MessageType.SYSTEM,
+            body: this.renderTemplate(
+              handoffTemplate?.body ?? 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}',
+              templateVars,
+            ),
+            payload: toJsonValue({ eventKey: 'handoff.created', quoteId: id, whatsappUrl }),
+          },
+        });
+        await tx.conversation.update({
+          where: { id: existing.conversationId },
+          data: { lastMessageAt: handoffMsg.createdAt },
+        });
+
+        await tx.eventLog.create({
+          data: {
+            eventKey: 'quote.accepted',
+            entityType: 'Quote',
+            entityId: id,
+            payload: toJsonValue({
+              designId: existing.designId,
+              jewelerUserId: existing.authorUserId,
+              acceptedAt,
+              declinedQuoteIds: otherPending.map((q) => q.id),
+            }),
+          },
+        });
+
+        return {
+          acceptedMsg,
+          handoffMsg,
+          otherPendingIds: otherPending.map((q) => q.id),
+          otherAuthorIds: otherPending.map((q) => q.authorUserId),
+        };
+      });
+    } catch (err) {
+      if (err instanceof AcceptConflict) {
+        if (err.code === 'ALREADY_ACCEPTED') {
+          return this.findOne(id, user);
+        }
+        throw new ConflictException({ success: false, message: err.message, code: err.code });
       }
-
-      const jeweler = await tx.user.findUnique({
-        where: { id: existing.authorUserId },
-        include: { jewelerProfile: true },
-      });
-      const phone = jeweler?.jewelerProfile?.phone ?? jeweler?.phone ?? null;
-      const whatsappUrl = this.toWhatsappUrl(phone);
-      const jewelerName = this.fullName(jeweler);
-
-      const [acceptedTemplate, handoffTemplate] = await Promise.all([
-        tx.systemMessageTemplate.findUnique({ where: { eventKey_locale: { eventKey: 'quote.accepted', locale: 'he' } } }),
-        tx.systemMessageTemplate.findUnique({ where: { eventKey_locale: { eventKey: 'handoff.created', locale: 'he' } } }),
-      ]);
-
-      const templateVars = { jewelerName, whatsappUrl: whatsappUrl ?? '' };
-      const acceptedBody = this.renderTemplate(
-        acceptedTemplate?.body ?? 'The quote from {{jewelerName}} was accepted.',
-        templateVars,
-      );
-      const handoffBody = this.renderTemplate(
-        handoffTemplate?.body ?? 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}',
-        templateVars,
-      );
-
-      const acceptedMsg = await tx.message.create({
-        data: {
-          conversationId: existing.conversationId,
-          senderId: null,
-          type: MessageType.SYSTEM,
-          body: acceptedBody,
-          payload: toJsonValue({ eventKey: 'quote.accepted', quoteId: id }),
-        },
-      });
-      const handoffMsg = await tx.message.create({
-        data: {
-          conversationId: existing.conversationId,
-          senderId: null,
-          type: MessageType.SYSTEM,
-          body: handoffBody,
-          payload: toJsonValue({ eventKey: 'handoff.created', quoteId: id, whatsappUrl }),
-        },
-      });
-      await tx.conversation.update({
-        where: { id: existing.conversationId },
-        data: { lastMessageAt: handoffMsg.createdAt },
-      });
-
-      await tx.eventLog.create({
-        data: {
-          eventKey: 'quote.accepted',
-          entityType: 'Quote',
-          entityId: id,
-          payload: toJsonValue({
-            designId: existing.designId,
-            jewelerUserId: existing.authorUserId,
-            acceptedAt,
-            declinedQuoteIds: otherPending.map((q) => q.id),
-          }),
-        },
-      });
-
-      return { updatedQuote, acceptedMsg, handoffMsg, otherPendingIds: otherPending.map((q) => q.id) };
-    });
+      throw err;
+    }
 
     this.gateway.emitToConversation(existing.conversationId, 'message:new', result.acceptedMsg);
     this.gateway.emitToConversation(existing.conversationId, 'message:new', result.handoffMsg);
@@ -337,58 +462,47 @@ export class QuotesService {
       jewelerUserId: existing.authorUserId,
     });
 
-    const requesterIds = existing.conversation.participants
-      .map((p) => p.userId)
-      .filter((uid) => uid !== existing.authorUserId);
-    for (const requesterId of requesterIds) {
+    await this.notifications.createInApp(
+      user.id,
+      'quote.accepted',
+      'Quote accepted',
+      'The quote was accepted. Check the conversation for handoff details.',
+      { quoteId: id },
+    );
+    for (const [index, declinedId] of result.otherPendingIds.entries()) {
       await this.notifications.createInApp(
-        requesterId,
-        'quote.accepted',
-        'Quote accepted',
-        'The quote was accepted. Check the conversation for handoff details.',
-        { quoteId: id },
+        result.otherAuthorIds[index],
+        'quote.declined',
+        'Quote declined',
+        'Another quote was accepted for this design; your quote was automatically declined.',
+        { quoteId: declinedId },
       );
-    }
-    for (const declinedId of result.otherPendingIds) {
-      const declined = await this.prisma.quote.findUnique({ where: { id: declinedId } });
-      if (declined) {
-        await this.notifications.createInApp(
-          declined.authorUserId,
-          'quote.declined',
-          'Quote declined',
-          'Another quote was accepted for this design; your quote was automatically declined.',
-          { quoteId: declinedId },
-        );
-      }
     }
 
     return this.findOne(id, user);
   }
 
+  /** Declining is the design owner's decision; repeating it is idempotent. */
   async decline(id: string, user: User, dto: DeclineQuoteDto) {
-    const quote = await this.prisma.quote.findUnique({
-      where: { id },
-      include: { conversation: { include: { participants: true } } },
-    });
-    if (!quote) {
-      throw new NotFoundException({ success: false, message: 'Quote not found' });
+    const quote = await this.loadForDecision(id);
+    if (quote.design.ownerUserId !== user.id) {
+      throw new ForbiddenException({ success: false, message: 'Only the design owner can decline a quote' });
     }
-    if (!quote.conversation.participants.some((p) => p.userId === user.id)) {
-      throw new ForbiddenException({ success: false, message: 'Not authorized to decline this quote' });
-    }
-
     if (quote.status === QuoteStatus.DECLINED) {
       return this.findOne(id, user);
     }
-
-    this.stateMachine.assertTransition(this.stateMachine.quoteGraph, quote.status, QuoteStatus.DECLINED);
-
     const declinedAt = new Date();
-    await this.prisma.quote.update({ where: { id }, data: { status: QuoteStatus.DECLINED, declinedAt } });
+    const changed = await this.prisma.quote.updateMany({
+      where: { id, status: QuoteStatus.PENDING },
+      data: { status: QuoteStatus.DECLINED, declinedAt },
+    });
+    if (changed.count !== 1) {
+      throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
+    }
     await this.prisma.quoteEvent.create({
       data: {
         quoteId: id,
-        fromStatus: quote.status,
+        fromStatus: QuoteStatus.PENDING,
         toStatus: QuoteStatus.DECLINED,
         actorUserId: user.id,
         note: dto.note ?? null,
@@ -407,12 +521,38 @@ export class QuotesService {
     return this.findOne(id, user);
   }
 
+  /** The author can take back a quote that was not decided yet. */
+  async withdraw(id: string, user: User) {
+    const quote = await this.loadForDecision(id);
+    if (quote.authorUserId !== user.id) {
+      throw new ForbiddenException({ success: false, message: 'Only the quote author can withdraw it' });
+    }
+    if (quote.status === QuoteStatus.WITHDRAWN) {
+      return this.findOne(id, user);
+    }
+    const changed = await this.prisma.quote.updateMany({
+      where: { id, status: QuoteStatus.PENDING },
+      data: { status: QuoteStatus.WITHDRAWN },
+    });
+    if (changed.count !== 1) {
+      throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
+    }
+    await this.prisma.quoteEvent.create({
+      data: { quoteId: id, fromStatus: QuoteStatus.PENDING, toStatus: QuoteStatus.WITHDRAWN, actorUserId: user.id },
+    });
+    await this.eventLog.record('quote.withdrawn', 'Quote', id, { actorUserId: user.id });
+    return this.findOne(id, user);
+  }
+
   async update(id: string, user: User, dto: UpdateQuoteDto) {
-    const quote = await this.prisma.quote.findUnique({ where: { id } });
+    const quote = await this.prisma.quote.findUnique({
+      where: { id },
+      include: { design: { select: { ownerUserId: true } } },
+    });
     if (!quote) {
       throw new NotFoundException({ success: false, message: 'Quote not found' });
     }
-    if (quote.authorUserId !== user.id && !user.roles.includes(UserRole.ADMIN)) {
+    if (quote.authorUserId !== user.id) {
       throw new ForbiddenException({ success: false, message: 'Only the quote author can edit it' });
     }
     if (quote.status !== QuoteStatus.PENDING) {
@@ -423,21 +563,40 @@ export class QuotesService {
     const laborCost = dto.laborCost != null ? new Prisma.Decimal(dto.laborCost) : quote.laborCost;
     const totalPrice = materialsCost.add(laborCost);
 
-    const updated = await this.prisma.quote.update({
-      where: { id },
-      data: {
-        materialsCost,
-        laborCost,
-        totalPrice,
-        laborHours: dto.laborHours != null ? new Prisma.Decimal(dto.laborHours) : undefined,
-        etaBusinessDays: dto.etaBusinessDays,
-        notes: dto.notes,
-        validUntil: dto.validUntil ? new Date(dto.validUntil) : undefined,
-        currency: dto.currency,
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.quote.updateMany({
+        where: { id, status: QuoteStatus.PENDING },
+        data: {
+          materialsCost,
+          laborCost,
+          totalPrice,
+          laborHours: dto.laborHours != null ? new Prisma.Decimal(dto.laborHours) : undefined,
+          etaBusinessDays: dto.etaBusinessDays,
+          notes: dto.notes,
+          validUntil: dto.validUntil ? new Date(dto.validUntil) : undefined,
+          currency: dto.currency,
+        },
+      });
+      if (changed.count !== 1) {
+        throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
+      }
+      const fresh = await tx.quote.findUniqueOrThrow({ where: { id } });
+      // Keep the chat card in sync so the owner never sees a stale price.
+      await tx.message.updateMany({
+        where: { quoteId: id, type: MessageType.QUOTE_CARD },
+        data: { payload: this.cardPayload(fresh) },
+      });
+      return fresh;
     });
 
     await this.eventLog.record('quote.updated', 'Quote', id, { actorUserId: user.id });
+    await this.notifications.createInApp(
+      quote.design.ownerUserId,
+      'quote.updated',
+      'Quote updated',
+      `A quote was updated to ${updated.totalPrice.toString()} ${updated.currency}`,
+      { quoteId: id, conversationId: updated.conversationId },
+    );
 
     return this.findOne(updated.id, user);
   }

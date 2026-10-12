@@ -7,8 +7,14 @@ import {
   IsString,
   IsUUID,
   Length,
+  Max,
+  MaxLength,
   Min,
 } from 'class-validator';
+
+/** Matches the Decimal(12, 2) columns. */
+const MAX_AMOUNT = 9_999_999_999.99;
+const MAX_NOTES = 2000;
 
 export class CreateQuoteDto {
   @ApiProperty({ description: 'Conversation this quote is posted into' })
@@ -19,35 +25,40 @@ export class CreateQuoteDto {
   @IsUUID()
   designId!: string;
 
-  @ApiPropertyOptional({ description: 'Linked design request, if this quote responds to one' })
+  @ApiPropertyOptional({ description: 'Linked design request (must target the quoting jeweler)' })
   @IsOptional()
   @IsUUID()
   designRequestId?: string;
 
   @ApiProperty()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(MAX_AMOUNT)
   materialsCost!: number;
 
   @ApiProperty()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(MAX_AMOUNT)
   laborCost!: number;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(999_999)
   laborHours?: number;
 
   @ApiProperty()
   @IsInt()
   @Min(0)
+  @Max(3650)
   etaBusinessDays!: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_NOTES)
   notes?: string;
 
   @ApiPropertyOptional({ description: 'ISO date the quote expires' })
@@ -65,31 +76,36 @@ export class CreateQuoteDto {
 export class UpdateQuoteDto {
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(MAX_AMOUNT)
   materialsCost?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(MAX_AMOUNT)
   laborCost?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(999_999)
   laborHours?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(3650)
   etaBusinessDays?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_NOTES)
   notes?: string;
 
   @ApiPropertyOptional()
@@ -104,9 +120,20 @@ export class UpdateQuoteDto {
   currency?: string;
 }
 
+export class AcceptQuoteDto {
+  @ApiPropertyOptional({
+    description: 'Total price the owner saw; if the quote now differs the accept is refused with 409 QUOTE_CHANGED',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  expectedTotalPrice?: number;
+}
+
 export class DeclineQuoteDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(MAX_NOTES)
   note?: string;
 }

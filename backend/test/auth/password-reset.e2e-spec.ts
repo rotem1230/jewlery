@@ -8,7 +8,7 @@ describe('password reset', () => {
   let t: TestApp;
 
   beforeAll(async () => {
-    t = await createTestApp({ env: { AUTH_MAIL_THROTTLE_LIMIT: '1000' } });
+    t = await createTestApp();
   });
 
   afterAll(async () => {
@@ -96,7 +96,7 @@ describe('auth mail endpoints are throttled per client', () => {
   let t: TestApp;
 
   beforeAll(async () => {
-    t = await createTestApp();
+    t = await createTestApp({ env: { AUTH_MAIL_THROTTLE_LIMIT: '10' } });
   });
 
   afterAll(async () => {

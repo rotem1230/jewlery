@@ -9,14 +9,20 @@ type PasswordPolicy = {
   requireNumber: boolean;
 };
 
+/** bcrypt only reads the first 72 bytes; longer inputs would silently collide. */
+const MAX_PASSWORD_BYTES = 72;
+
 @Injectable()
 export class PasswordService {
-  private readonly rounds = 12;
+  private readonly rounds: number;
+  private dummyHash: Promise<string> | null = null;
 
   constructor(
     private readonly config: ConfigService,
     private readonly appConfig: AppConfigService,
-  ) {}
+  ) {
+    this.rounds = this.config.get<number>('auth.bcryptRounds', 12);
+  }
 
   hash(plain: string): Promise<string> {
     return bcrypt.hash(plain, this.rounds);
@@ -24,6 +30,16 @@ export class PasswordService {
 
   compare(plain: string, hash: string): Promise<boolean> {
     return bcrypt.compare(plain, hash);
+  }
+
+  /**
+   * Runs a full-cost comparison against a throwaway hash so that "no such account" takes as long
+   * as "wrong password" (no timing oracle for account enumeration). Always resolves false.
+   */
+  async compareAgainstDummy(plain: string): Promise<false> {
+    this.dummyHash ??= bcrypt.hash('timing-equalizer-not-a-real-password', this.rounds);
+    await bcrypt.compare(plain, await this.dummyHash);
+    return false;
   }
 
   private async getPolicy(): Promise<PasswordPolicy> {
@@ -59,6 +75,9 @@ export class PasswordService {
     const policy = await this.getPolicy();
     if (password.length < policy.minLength) {
       return `Password must be at least ${policy.minLength} characters`;
+    }
+    if (Buffer.byteLength(password, 'utf8') > MAX_PASSWORD_BYTES) {
+      return `Password must be at most ${MAX_PASSWORD_BYTES} bytes`;
     }
     if (policy.requireLetter && !/[A-Za-z]/.test(password)) {
       return 'Password must include at least one letter';

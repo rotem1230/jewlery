@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { jwtModuleOptions } from '../auth/jwt-options';
 import { ChatGateway } from './chat.gateway';
 import { ConversationsController } from './conversations.controller';
 import { ConversationsService } from './conversations.service';
@@ -10,9 +11,7 @@ import { ConversationsService } from './conversations.service';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        secret: config.getOrThrow<string>('jwt.secret'),
-      }),
+      useFactory: jwtModuleOptions,
     }),
   ],
   controllers: [ConversationsController],

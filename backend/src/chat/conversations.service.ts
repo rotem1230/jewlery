@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MessageType, Prisma } from '@prisma/client';
+import { DesignStatus, Prisma, ProfilePublishStatus, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ChatGateway } from './chat.gateway';
 import { CreateConversationDto, CreateMessageDto, QueryConversationsDto, QueryMessagesDto } from './dto/chat.dto';
@@ -42,11 +42,12 @@ export class ConversationsService {
     return participant;
   }
 
+  /** Unread = messages after my last read that I did not send (SYSTEM messages have no sender). */
   private async unreadCountFor(conversationId: string, userId: string, lastReadAt: Date | null) {
     return this.prisma.message.count({
       where: {
         conversationId,
-        senderId: { not: userId },
+        OR: [{ senderId: null }, { senderId: { not: userId } }],
         ...(lastReadAt ? { createdAt: { gt: lastReadAt } } : {}),
       },
     });
@@ -128,48 +129,98 @@ export class ConversationsService {
     };
   }
 
-  async findOrCreate(userId: string, dto: CreateConversationDto) {
-    const design = await this.prisma.design.findFirst({ where: { id: dto.designId, deletedAt: null } });
+  private async hasPublishedJewelerProfile(userId: string): Promise<boolean> {
+    const profile = await this.prisma.jewelerProfile.findFirst({
+      where: { userId, publishStatus: ProfilePublishStatus.PUBLISHED, user: { deletedAt: null } },
+      select: { id: true },
+    });
+    return !!profile;
+  }
+
+  /**
+   * Conversations are 1:1 and always about a design, between its owner and a listed jeweler:
+   *  - the owner may open one with any user that has a PUBLISHED jeweler profile;
+   *  - anyone else must be such a jeweler, must talk to the owner, and the design must be
+   *    PUBLISHED (an existing conversation is still returned after the design moves on).
+   */
+  async findOrCreate(user: User, dto: CreateConversationDto) {
+    const design = await this.prisma.design.findFirst({
+      where: { id: dto.designId, deletedAt: null, owner: { deletedAt: null } },
+    });
     if (!design) {
       throw new NotFoundException({ success: false, message: 'Design not found' });
     }
 
-    const participantIds = Array.from(new Set([userId, ...dto.participantUserIds]));
-    if (participantIds.length < 2) {
-      throw new BadRequestException({ success: false, message: 'At least one other participant is required' });
+    const others = Array.from(new Set(dto.participantUserIds)).filter((id) => id !== user.id);
+    if (others.length !== 1) {
+      throw new BadRequestException({
+        success: false,
+        message: 'A conversation has exactly one other participant',
+      });
+    }
+    const [otherId] = others;
+    const isOwner = design.ownerUserId === user.id;
+
+    if (isOwner) {
+      if (!(await this.hasPublishedJewelerProfile(otherId))) {
+        throw new ForbiddenException({
+          success: false,
+          message: 'Conversations can only be opened with a listed jeweler',
+        });
+      }
+    } else {
+      if (otherId !== design.ownerUserId) {
+        throw new ForbiddenException({
+          success: false,
+          message: 'A conversation about a design must include its owner',
+        });
+      }
+      if (!user.roles.includes(UserRole.JEWELER) || !(await this.hasPublishedJewelerProfile(user.id))) {
+        throw new ForbiddenException({
+          success: false,
+          message: 'Publish your jeweler profile before contacting designers',
+        });
+      }
     }
 
-    const users = await this.prisma.user.findMany({ where: { id: { in: participantIds }, deletedAt: null } });
-    if (users.length !== participantIds.length) {
-      throw new NotFoundException({ success: false, message: 'One or more participants were not found' });
-    }
-
-    const candidates = await this.prisma.conversation.findMany({
-      where: { designId: dto.designId },
-      include: { participants: true },
-    });
-    const targetKey = [...participantIds].sort().join(',');
-    const existing = candidates.find((c) => {
-      const activeKey = c.participants
-        .filter((p) => !p.leftAt)
-        .map((p) => p.userId)
-        .sort()
-        .join(',');
-      return activeKey === targetKey;
-    });
-
+    const participantIds = [user.id, otherId];
+    const existing = await this.findExisting(design.id, participantIds);
     if (existing) {
-      return this.detail(existing.id, userId);
+      return this.detail(existing, user.id);
+    }
+
+    if (!isOwner && design.status !== DesignStatus.PUBLISHED) {
+      throw new ForbiddenException({
+        success: false,
+        message: 'This design is not open for quotes',
+      });
     }
 
     const created = await this.prisma.conversation.create({
       data: {
-        designId: dto.designId,
+        designId: design.id,
         participants: { create: participantIds.map((id) => ({ userId: id })) },
       },
     });
 
-    return this.detail(created.id, userId);
+    return this.detail(created.id, user.id);
+  }
+
+  private async findExisting(designId: string, participantIds: string[]): Promise<string | null> {
+    const candidates = await this.prisma.conversation.findMany({
+      where: { designId, participants: { some: { userId: participantIds[0] } } },
+      include: { participants: true },
+    });
+    const targetKey = [...participantIds].sort().join(',');
+    const match = candidates.find(
+      (c) =>
+        c.participants
+          .filter((p) => !p.leftAt)
+          .map((p) => p.userId)
+          .sort()
+          .join(',') === targetKey,
+    );
+    return match?.id ?? null;
   }
 
   async getMessages(conversationId: string, userId: string, query: QueryMessagesDto) {
@@ -194,13 +245,10 @@ export class ConversationsService {
   async createMessage(conversationId: string, userId: string, dto: CreateMessageDto) {
     await this.assertParticipant(conversationId, userId);
 
-    if (dto.type === MessageType.TEXT && !dto.body) {
+    if (dto.type === 'TEXT' && !dto.body) {
       throw new BadRequestException({ success: false, message: 'body is required for TEXT messages' });
     }
-    if (
-      (dto.type === MessageType.IMAGE || dto.type === MessageType.AUDIO) &&
-      !dto.imageUploadId
-    ) {
+    if ((dto.type === 'IMAGE' || dto.type === 'AUDIO') && !dto.imageUploadId) {
       throw new BadRequestException({
         success: false,
         message: 'imageUploadId is required for IMAGE/AUDIO messages',

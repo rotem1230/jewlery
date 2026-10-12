@@ -35,7 +35,7 @@ export class ConversationsController {
     description: WS_DESCRIPTION,
   })
   create(@Body() dto: CreateConversationDto, @Req() req: AuthedRequest) {
-    return this.conversations.findOrCreate(req.user.id, dto);
+    return this.conversations.findOrCreate(req.user, dto);
   }
 
   @Get(':id/messages')

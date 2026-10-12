@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   DesignRequestMode,
   DesignRequestStatus,
@@ -242,6 +242,13 @@ export class AtelierService {
     }
     if (design.ownerUserId !== user.id && !user.roles.includes(UserRole.ADMIN)) {
       throw new ForbiddenException({ success: false, message: 'Not the design owner' });
+    }
+    if (design.status !== DesignStatus.PUBLISHED) {
+      throw new ConflictException({
+        success: false,
+        message: 'Publish the design before requesting quotes',
+        code: 'DESIGN_NOT_PUBLISHED',
+      });
     }
 
     let targetProfileIds: string[];

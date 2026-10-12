@@ -5,13 +5,8 @@
  *          PostgreSQL (TEST_DATABASE_URL, or an embedded server started in global setup).
  *          Every security fix ships a regression test in test/**\/*.e2e-spec.ts.
  */
-const tsJest = [
-  'ts-jest',
-  {
-    tsconfig: '<rootDir>/tsconfig.test.json',
-    isolatedModules: true,
-  },
-];
+// Type checking is a separate gate (`npm run typecheck`); jest transpiles per file for speed.
+const tsJest = ['ts-jest', { tsconfig: '<rootDir>/tsconfig.jest.json' }];
 
 module.exports = {
   testTimeout: 60_000,

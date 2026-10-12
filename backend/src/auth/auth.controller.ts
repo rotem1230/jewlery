@@ -1,7 +1,8 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Ip, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthProvider, User } from '@prisma/client';
 import { Request } from 'express';
+import { AllowUnverified } from '../authorization/decorators/allow-unverified.decorator';
 import { Public } from '../authorization/decorators/public.decorator';
 import { JwtAuthGuard } from '../authorization/guards/jwt-auth.guard';
 import { AuthService } from './auth.service';
@@ -30,34 +31,35 @@ export class AuthController {
     summary: 'Register a new account',
     description:
       'Creates the account with status PENDING_VERIFICATION and emails a verification link. ' +
-      'Tokens are returned immediately, but `POST /auth/login` will be rejected with code ' +
-      'EMAIL_NOT_VERIFIED until `POST /auth/verify-email` is completed.',
+      'No session is issued: sign in with `POST /auth/login` after the e-mail is verified.',
   })
   @ApiResponse({ status: 201, description: 'Account created; verification email sent' })
   @ApiResponse({ status: 400, description: 'Weak password or invalid payload' })
   @ApiResponse({ status: 409, description: 'Email already registered' })
-  register(@Body() dto: RegisterDto) {
-    return this.authService.register(dto);
+  @ApiResponse({ status: 429, description: 'Too many requests from this client' })
+  register(@Body() dto: RegisterDto, @Ip() ip: string) {
+    return this.authService.register(dto, ip);
   }
 
   @Public()
   @Post('login')
   @ApiOperation({ summary: 'Log in with email and password' })
-  @ApiResponse({ status: 200, description: 'Authenticated successfully' })
+  @ApiResponse({ status: 201, description: 'Authenticated successfully' })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
   @ApiResponse({
     status: 403,
-    description: 'Account locked, suspended, or unverified (EMAIL_NOT_VERIFIED)',
+    description: 'Account locked, or (correct password) suspended / unverified (EMAIL_NOT_VERIFIED)',
   })
-  login(@Body() dto: LoginDto) {
-    return this.authService.login(dto);
+  @ApiResponse({ status: 429, description: 'Too many attempts for this account from this client' })
+  login(@Body() dto: LoginDto, @Ip() ip: string) {
+    return this.authService.login(dto, ip);
   }
 
   @Public()
   @Post('refresh')
   @ApiOperation({ summary: 'Exchange a refresh token for a new access/refresh token pair' })
-  @ApiResponse({ status: 200, description: 'New token pair issued' })
-  @ApiResponse({ status: 401, description: 'Invalid or expired refresh token' })
+  @ApiResponse({ status: 201, description: 'New token pair issued' })
+  @ApiResponse({ status: 401, description: 'Invalid, expired or replayed refresh token' })
   refresh(@Body() dto: RefreshDto) {
     return this.authService.refresh(dto);
   }
@@ -65,7 +67,7 @@ export class AuthController {
   @Public()
   @Post('logout')
   @ApiOperation({ summary: 'Revoke a single refresh token' })
-  @ApiResponse({ status: 200, description: 'Logged out' })
+  @ApiResponse({ status: 201, description: 'Logged out' })
   logout(@Body() dto: RefreshDto) {
     return this.authService.logout(dto.refreshToken);
   }
@@ -86,10 +88,10 @@ export class AuthController {
   @ApiOperation({ summary: 'Resend the email verification link' })
   @ApiResponse({
     status: 200,
-    description: 'Always 200; an email is sent only if the account exists and is unverified',
+    description: 'Always 200; an email is sent only if the account exists, is unverified and under its hourly cap',
   })
-  resendVerify(@Body() dto: ResendVerifyDto) {
-    return this.authService.resendVerify(dto);
+  resendVerify(@Body() dto: ResendVerifyDto, @Ip() ip: string) {
+    return this.authService.resendVerify(dto, ip);
   }
 
   @Public()
@@ -98,10 +100,10 @@ export class AuthController {
   @ApiOperation({ summary: 'Request a password reset link by email' })
   @ApiResponse({
     status: 200,
-    description: 'Always 200; an email is sent only if the account exists',
+    description: 'Always 200; an email is sent only if the account exists and is under its hourly cap',
   })
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.authService.forgotPassword(dto);
+  forgotPassword(@Body() dto: ForgotPasswordDto, @Ip() ip: string) {
+    return this.authService.forgotPassword(dto, ip);
   }
 
   @Public()
@@ -118,11 +120,12 @@ export class AuthController {
   @Post('oauth/google')
   @ApiOperation({
     summary: 'Sign in / register with Google',
-    description: 'Requires phase3_oauth. Verifies the Google ID token. Unsigned tokens return 401.',
+    description: 'Requires phase3_oauth and GOOGLE_CLIENT_ID. The ID token is verified locally against Google keys.',
   })
-  @ApiResponse({ status: 200, description: 'Authenticated; account created if it did not already exist' })
+  @ApiResponse({ status: 201, description: 'Authenticated; account created if it did not already exist' })
   @ApiResponse({ status: 401, description: 'Identity token invalid' })
   @ApiResponse({ status: 403, description: 'phase3_oauth is disabled' })
+  @ApiResponse({ status: 503, description: 'Provider not configured on this server' })
   oauthGoogle(@Body() dto: OAuthLoginDto) {
     return this.authService.oauthLogin(AuthProvider.GOOGLE, dto);
   }
@@ -131,17 +134,19 @@ export class AuthController {
   @Post('oauth/apple')
   @ApiOperation({
     summary: 'Sign in / register with Apple',
-    description: 'Requires phase3_oauth. Verifies the Apple ID token. Unsigned tokens return 401.',
+    description: 'Requires phase3_oauth and APPLE_CLIENT_ID. The ID token is verified locally against Apple keys.',
   })
-  @ApiResponse({ status: 200, description: 'Authenticated; account created if it did not already exist' })
+  @ApiResponse({ status: 201, description: 'Authenticated; account created if it did not already exist' })
   @ApiResponse({ status: 401, description: 'Identity token invalid' })
   @ApiResponse({ status: 403, description: 'phase3_oauth is disabled' })
+  @ApiResponse({ status: 503, description: 'Provider not configured on this server' })
   oauthApple(@Body() dto: OAuthLoginDto) {
     return this.authService.oauthLogin(AuthProvider.APPLE, dto);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @AllowUnverified()
   @Get('me')
   @ApiOperation({ summary: 'Get the current authenticated user' })
   @ApiResponse({ status: 200, description: 'Current user profile' })
@@ -158,7 +163,7 @@ export class AuthController {
       'The requested role must already be assigned to the account (in `user.roles`); ' +
       'ADMIN can only be selected if the account already has the ADMIN role.',
   })
-  @ApiResponse({ status: 200, description: 'Active role switched; new token pair issued' })
+  @ApiResponse({ status: 201, description: 'Active role switched; new token pair issued' })
   @ApiResponse({ status: 403, description: 'Role is not assigned to this account' })
   switchRole(@Req() req: AuthedRequest, @Body() dto: SwitchRoleDto) {
     return this.authService.switchRole(req.user, dto);
@@ -166,6 +171,7 @@ export class AuthController {
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @AllowUnverified()
   @Post('revoke-all')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Revoke every refresh token for the current user (log out everywhere)' })

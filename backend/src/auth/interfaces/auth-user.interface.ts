@@ -13,6 +13,12 @@ export type AuthResult = {
   tokens: AuthTokens;
 };
 
+/** Registration never opens a session; the e-mail must be verified first. */
+export type RegisterResult = {
+  user: SafeUser;
+  requiresEmailVerification: true;
+};
+
 export type JwtPayload = {
   sub: string;
   email: string;

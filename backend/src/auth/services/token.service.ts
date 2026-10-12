@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { UserStatus } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { AppConfigService } from '../../cms/app-config.service';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthTokens, JwtPayload, SafeUser } from '../interfaces/auth-user.interface';
@@ -12,6 +14,14 @@ type TokenTtls = {
   passwordResetMinutes: number;
 };
 
+const REFRESHABLE_STATUSES: UserStatus[] = [UserStatus.ACTIVE];
+
+export class InvalidTokenError extends Error {
+  constructor(reason: string) {
+    super(reason);
+  }
+}
+
 @Injectable()
 export class TokenService {
   constructor(
@@ -21,7 +31,8 @@ export class TokenService {
     private readonly appConfig: AppConfigService,
   ) {}
 
-  async issueTokens(user: SafeUser): Promise<AuthTokens> {
+  /** Issues an access token and a refresh token; `familyId` keeps a rotation chain together. */
+  async issueTokens(user: SafeUser, familyId: string = randomUUID()): Promise<AuthTokens> {
     const expiresIn = this.config.get<string>('jwt.expiresIn', '15m');
     const refreshExpiresIn = this.config.get<string>('jwt.refreshExpiresIn', '7d');
 
@@ -36,46 +47,61 @@ export class TokenService {
       expiresIn: expiresIn as `${number}${'s' | 'm' | 'h' | 'd'}`,
     });
     const refreshToken = generateSecureToken();
-    const tokenHash = hashToken(refreshToken);
-    const expiresAt = new Date(Date.now() + parseDurationToMs(refreshExpiresIn));
 
     await this.prisma.refreshToken.create({
       data: {
         userId: user.id,
-        tokenHash,
-        familyId: crypto.randomUUID(),
-        expiresAt,
+        tokenHash: hashToken(refreshToken),
+        familyId,
+        expiresAt: new Date(Date.now() + parseDurationToMs(refreshExpiresIn)),
       },
     });
 
     return { accessToken, refreshToken, expiresIn };
   }
 
+  /**
+   * Rotates a refresh token. A token is redeemable once: presenting an already-rotated token
+   * (replay, or losing a concurrent race) is treated as theft and revokes the whole family.
+   */
   async rotateRefreshToken(rawRefreshToken: string): Promise<{ userId: string; tokens: AuthTokens }> {
-    const tokenHash = hashToken(rawRefreshToken);
     const existing = await this.prisma.refreshToken.findFirst({
-      where: { tokenHash, revokedAt: null },
+      where: { tokenHash: hashToken(rawRefreshToken) },
       include: { user: true },
     });
-
-    if (!existing || existing.expiresAt < new Date() || existing.user.deletedAt) {
-      throw new Error('INVALID_REFRESH');
+    if (!existing) {
+      throw new InvalidTokenError('unknown refresh token');
+    }
+    if (existing.revokedAt) {
+      await this.revokeFamily(existing.familyId);
+      throw new InvalidTokenError('refresh token reuse');
+    }
+    if (existing.expiresAt <= new Date()) {
+      throw new InvalidTokenError('refresh token expired');
+    }
+    const { user } = existing;
+    if (user.deletedAt || !REFRESHABLE_STATUSES.includes(user.status)) {
+      await this.revokeFamily(existing.familyId);
+      throw new InvalidTokenError('account cannot refresh');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: existing.id },
+    const claimed = await this.prisma.refreshToken.updateMany({
+      where: { id: existing.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (claimed.count !== 1) {
+      await this.revokeFamily(existing.familyId);
+      throw new InvalidTokenError('refresh token reuse');
+    }
 
-    const { passwordHash: _, ...safe } = existing.user;
-    const tokens = await this.issueTokens(safe);
+    const { passwordHash: _ignored, ...safe } = user;
+    const tokens = await this.issueTokens(safe, existing.familyId);
     return { userId: existing.userId, tokens };
   }
 
   async revokeRefreshToken(rawRefreshToken: string): Promise<void> {
-    const tokenHash = hashToken(rawRefreshToken);
     await this.prisma.refreshToken.updateMany({
-      where: { tokenHash, revokedAt: null },
+      where: { tokenHash: hashToken(rawRefreshToken), revokedAt: null },
       data: { revokedAt: new Date() },
     });
   }
@@ -84,6 +110,13 @@ export class TokenService {
   async revokeAllForUser(userId: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+
+  private async revokeFamily(familyId: string): Promise<void> {
+    await this.prisma.refreshToken.updateMany({
+      where: { familyId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
   }
@@ -129,18 +162,38 @@ export class TokenService {
     return rawToken;
   }
 
-  /** Validates and consumes an email verification token. Throws if invalid, used, or expired. */
+  /** Validates and atomically consumes an email verification token (first caller wins). */
   async consumeEmailVerificationToken(rawToken: string): Promise<{ userId: string }> {
-    const tokenHash = hashToken(rawToken);
-    const record = await this.prisma.emailVerificationToken.findUnique({ where: { tokenHash } });
-    if (!record || record.usedAt || record.expiresAt < new Date()) {
-      throw new Error('INVALID_TOKEN');
+    const record = await this.prisma.emailVerificationToken.findUnique({
+      where: { tokenHash: hashToken(rawToken) },
+    });
+    if (!record) {
+      throw new InvalidTokenError('unknown token');
     }
-    await this.prisma.emailVerificationToken.update({
-      where: { id: record.id },
+    const claimed = await this.prisma.emailVerificationToken.updateMany({
+      where: { id: record.id, usedAt: null, expiresAt: { gt: new Date() } },
       data: { usedAt: new Date() },
     });
+    if (claimed.count !== 1) {
+      throw new InvalidTokenError('token used or expired');
+    }
     return { userId: record.userId };
+  }
+
+  /** True when the token exists, is unused and unexpired (no side effects). */
+  async isPasswordResetTokenUsable(rawToken: string): Promise<boolean> {
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash: hashToken(rawToken) },
+    });
+    return !!record && !record.usedAt && record.expiresAt > new Date();
+  }
+
+  /** True when the token exists, is unused and unexpired (no side effects). */
+  async isEmailVerificationTokenUsable(rawToken: string): Promise<boolean> {
+    const record = await this.prisma.emailVerificationToken.findUnique({
+      where: { tokenHash: hashToken(rawToken) },
+    });
+    return !!record && !record.usedAt && record.expiresAt > new Date();
   }
 
   /** Creates a single-use password reset token and returns the raw (unhashed) value to email. */
@@ -157,17 +210,29 @@ export class TokenService {
     return rawToken;
   }
 
-  /** Validates and consumes a password reset token. Throws if invalid, used, or expired. */
+  /** Validates and atomically consumes a password reset token (first caller wins). */
   async consumePasswordResetToken(rawToken: string): Promise<{ userId: string }> {
-    const tokenHash = hashToken(rawToken);
-    const record = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
-    if (!record || record.usedAt || record.expiresAt < new Date()) {
-      throw new Error('INVALID_TOKEN');
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash: hashToken(rawToken) },
+    });
+    if (!record) {
+      throw new InvalidTokenError('unknown token');
     }
-    await this.prisma.passwordResetToken.update({
-      where: { id: record.id },
+    const claimed = await this.prisma.passwordResetToken.updateMany({
+      where: { id: record.id, usedAt: null, expiresAt: { gt: new Date() } },
       data: { usedAt: new Date() },
     });
+    if (claimed.count !== 1) {
+      throw new InvalidTokenError('token used or expired');
+    }
     return { userId: record.userId };
+  }
+
+  /** Number of verification / reset mails created for the user since `since` (mail cap). */
+  async countRecentMailTokens(kind: 'verify' | 'reset', userId: string, since: Date): Promise<number> {
+    const where = { userId, createdAt: { gt: since } };
+    return kind === 'verify'
+      ? this.prisma.emailVerificationToken.count({ where })
+      : this.prisma.passwordResetToken.count({ where });
   }
 }
