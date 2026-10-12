@@ -34,6 +34,12 @@ export async function scratchDatabase(name: string): Promise<ScratchDatabase> {
   const admin = new PrismaClient({ datasourceUrl: serverUrl.toString() });
   await admin.$executeRawUnsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
   await admin.$executeRawUnsafe(`CREATE DATABASE "${name}"`);
+  // Same non-UTC zone as the main test database, so time-zone mistakes in migrations show up.
+  const timezone = process.env.TEST_DB_TIMEZONE || 'Asia/Jerusalem';
+  if (!/^[A-Za-z0-9_+\-/]+$/.test(timezone)) {
+    throw new Error(`invalid TEST_DB_TIMEZONE: ${timezone}`);
+  }
+  await admin.$executeRawUnsafe(`ALTER DATABASE "${name}" SET timezone TO '${timezone}'`);
 
   const url = new URL(serverUrl.toString());
   url.pathname = `/${name}`;

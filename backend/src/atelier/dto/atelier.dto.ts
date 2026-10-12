@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { DesignRequestMode } from '@prisma/client';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsEnum,
@@ -104,6 +105,7 @@ export class CreateAtelierRequestDto {
   @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(20)
   @IsUUID('4', { each: true })
   targetJewelerProfileIds?: string[];
 

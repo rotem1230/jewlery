@@ -6,11 +6,14 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { LeadStatus, PlanCatalog, Prisma, Subscription, SubscriptionStatus, User, UserRole } from '@prisma/client';
 import { EventLogService } from '../audit/event-log.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
 import { sqlTimestamp } from '../database/sql-time';
+import { randomUUID } from 'crypto';
+import { trialIdentityHash } from './trial-identity';
 import { EntitlementsService, entitledSubscriptionWhere } from '../entitlements/entitlements.service';
 import { billingCyclePeriodMs, DAY_MS } from './billing-periods';
 import { SubscribeDto } from './dto/subscription.dto';
@@ -33,6 +36,7 @@ export class SubscriptionsService {
     private readonly outbox: OutboxService,
     private readonly eventLog: EventLogService,
     private readonly entitlements: EntitlementsService,
+    private readonly config: ConfigService,
   ) {}
 
   async listPlans(role?: UserRole) {
@@ -112,7 +116,7 @@ export class SubscriptionsService {
         const previousTrials = await tx.subscription.count({
           where: { userId: user.id, role: plan.role, trialEndsAt: { not: null } },
         });
-        if (previousTrials === 0) {
+        if (previousTrials === 0 && (await this.claimTrial(tx, user.email, plan.role, now))) {
           status = SubscriptionStatus.TRIALING;
           trialEndsAt = new Date(now.getTime() + plan.trialDays * DAY_MS);
           currentPeriodEnd = trialEndsAt;
@@ -164,7 +168,40 @@ export class SubscriptionsService {
     return subscription;
   }
 
-  /** Stops renewal; access continues until the end of the paid-for / trial period. */
+  /**
+   * One trial per mailbox and role, recorded under a keyed hash that outlives the account: deleting
+   * the account (or using an alias of the same inbox) does not grant another trial.
+   */
+  private async claimTrial(tx: Tx, email: string, role: UserRole, now: Date): Promise<boolean> {
+    const hash = trialIdentityHash(email, this.trialSecret());
+    const claimed = await tx.$queryRaw<Array<{ id: string }>>`
+      INSERT INTO "trial_grants" ("id", "identityHash", "role", "grantedAt")
+      VALUES (${randomUUID()}::uuid, ${hash}, ${role}::"UserRole", ${sqlTimestamp(now)})
+      ON CONFLICT ("identityHash", "role") DO NOTHING
+      RETURNING "id"`;
+    return claimed.length === 1;
+  }
+
+  /** Remembers the trials an account used before its e-mail address is erased. */
+  async recordTrialsBeforeDeletion(tx: Tx, userId: string, email: string): Promise<void> {
+    const trials = await tx.subscription.findMany({
+      where: { userId, trialEndsAt: { not: null } },
+      select: { role: true },
+      distinct: ['role'],
+    });
+    for (const trial of trials) {
+      await this.claimTrial(tx, email, trial.role, new Date());
+    }
+  }
+
+  private trialSecret(): string {
+    return this.config.get<string>('subscriptions.trialHashSecret') || this.config.getOrThrow<string>('jwt.secret');
+  }
+
+  /**
+   * Stops renewal; access continues until the end of the paid-for / trial period. A past-due
+   * subscription has no paid period left, so it ends at once and another plan can be chosen.
+   */
   async cancel(user: User) {
     const subscription = await this.prisma.subscription.findFirst({
       where: { userId: user.id, status: { in: LIVE_STATUSES } },
@@ -173,13 +210,16 @@ export class SubscriptionsService {
     if (!subscription) {
       throw new NotFoundException({ success: false, message: 'No active subscription to cancel' });
     }
-    if (subscription.cancelAtPeriodEnd) {
+    if (subscription.status !== SubscriptionStatus.PAST_DUE && subscription.cancelAtPeriodEnd) {
       return subscription;
     }
 
     const updated = await this.prisma.subscription.update({
       where: { id: subscription.id },
-      data: { cancelAtPeriodEnd: true },
+      data:
+        subscription.status === SubscriptionStatus.PAST_DUE
+          ? { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true }
+          : { cancelAtPeriodEnd: true },
     });
 
     await this.eventLog.record('subscription.cancelled', 'Subscription', subscription.id, {
@@ -238,6 +278,7 @@ export class SubscriptionsService {
          SELECT "id" FROM "leads"
           WHERE "subscriptionId" = ${subscription.id}::uuid
             AND "status" = 'AVAILABLE'
+            AND "periodStart" <= ${sqlTimestamp(now)}
             AND "periodEnd" >= ${sqlTimestamp(now)}
           ORDER BY "createdAt" ASC
           LIMIT 1
@@ -257,11 +298,21 @@ export class SubscriptionsService {
       return 'CONSUMED';
     }
 
-    if (chargeOverage && subscription.plan.extraLeadPrice) {
+    const overagePrice = subscription.plan.extraLeadPrice;
+    if (chargeOverage && overagePrice && overagePrice.greaterThan(0)) {
+      // Serialized per subscription so the per-period cap holds under simultaneous deliveries.
+      await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${subscription.id}::uuid FOR UPDATE`;
+      const chargedThisPeriod = await tx.leadOverageCharge.count({
+        where: { subscriptionId: subscription.id, createdAt: { gte: subscription.currentPeriodStart } },
+      });
+      if (chargedThisPeriod >= this.config.get<number>('leads.overageCapPerPeriod', 50)) {
+        return 'NO_LEADS';
+      }
       await tx.leadOverageCharge.create({
         data: {
           subscriptionId: subscription.id,
-          amount: subscription.plan.extraLeadPrice,
+          designRequestId,
+          amount: overagePrice,
           currency: subscription.plan.currency,
         },
       });

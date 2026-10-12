@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JewelryPaymentIntent, JewelryPaymentStatus, Prisma, QuoteStatus, User } from '@prisma/client';
+import { resolvePaymentProvider } from '../common/payments/payment-provider';
 import { PrismaService } from '../database/prisma.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { CreatePaymentIntentDto } from './dto/jewelry-payment.dto';
@@ -29,14 +30,6 @@ const OPEN_STATUSES: JewelryPaymentStatus[] = [
   JewelryPaymentStatus.PROCESSING,
 ];
 
-function providerNotConfigured(): ServiceUnavailableException {
-  return new ServiceUnavailableException({
-    success: false,
-    message: 'In-app payments are not available yet',
-    code: 'PAYMENT_PROVIDER_NOT_CONFIGURED',
-  });
-}
-
 @Injectable()
 export class JewelryPaymentsService {
   constructor(
@@ -45,24 +38,9 @@ export class JewelryPaymentsService {
     private readonly config: ConfigService,
   ) {}
 
-  /**
-   * The mock provider must be chosen explicitly (PAYMENTS_PROVIDER=mock) and never runs in
-   * production. A configured real provider key without an integration fails closed rather than
-   * handing the app a fake client secret.
-   */
-  private resolveProvider(): 'mock' {
-    if (this.config.get<string>('stripe.secretKey')) {
-      throw providerNotConfigured();
-    }
-    if (this.config.get<string>('payments.provider') !== 'mock' || this.config.get<string>('nodeEnv') === 'production') {
-      throw providerNotConfigured();
-    }
-    return 'mock';
-  }
-
   async createIntent(user: User, dto: CreatePaymentIntentDto): Promise<JewelryPaymentIntentView> {
     await this.assertEnabled(user);
-    const provider = this.resolveProvider();
+    const provider = resolvePaymentProvider(this.config);
 
     const intent = await this.prisma.$transaction(async (tx) => {
       // Serialize per quote so two taps never open two intents for one purchase.

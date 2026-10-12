@@ -167,6 +167,43 @@ describe('data migrations on existing data', () => {
     expect(msg.imageUploadId).toBeNull();
   });
 
+  it('duplicate live subscriptions from before the guard keep only the newest live; the database then refuses a second one', async () => {
+    db = await scratchDatabase('mig_live_subscription');
+    db.migrateTo('20261012120000_cross_owner_media_cleanup');
+    const user = await insertUser(null, '2026-01-01 10:00:00');
+    const plan = randomUUID();
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "plan_catalog" ("id", "code", "role", "nameHe", "billingCycle", "price", "currency", "inclusions")
+       VALUES ($1::uuid, 'MIG_PLAN', 'DESIGNER', 'תוכנית', 'MONTHLY', 0, 'ILS', '{}'::jsonb)`,
+      plan,
+    );
+    const subscription = async (createdAt: string) => {
+      const id = randomUUID();
+      await db.sql.$executeRawUnsafe(
+        `INSERT INTO "subscriptions" ("id", "userId", "planId", "role", "status", "billingCycle", "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'DESIGNER', 'ACTIVE', 'MONTHLY', now(), now() + interval '30 days', $4::timestamp, now())`,
+        id,
+        user,
+        plan,
+        createdAt,
+      );
+      return id;
+    };
+    const older = await subscription('2026-02-01 10:00:00');
+    const newer = await subscription('2026-03-01 10:00:00');
+
+    db.migrateTo('20261012130000_billing_correctness');
+
+    const rows = await db.sql.$queryRawUnsafe<Array<{ id: string; status: string }>>(
+      `SELECT "id", "status"::text AS "status" FROM "subscriptions" WHERE "userId" = $1::uuid`,
+      user,
+    );
+    const status = new Map(rows.map((row) => [row.id, row.status]));
+    expect(status.get(newer)).toBe('ACTIVE');
+    expect(status.get(older)).toBe('CANCELLED');
+    await expect(subscription('2026-04-01 10:00:00')).rejects.toThrow();
+  });
+
   it('pending outbox events stay deliverable and voice-note types are allowed after the upgrade', async () => {
     db = await scratchDatabase('mig_outbox');
     db.migrateTo('20261012100000_auth_identity_unique');
@@ -191,5 +228,10 @@ describe('data migrations on existing data', () => {
     );
     expect(config.value.allowedMimeTypes).toEqual(expect.arrayContaining(['image/png', 'audio/m4a', 'audio/mpeg']));
     expect(config.version).toBe(5);
+    const [stamp] = await db.sql.$queryRawUnsafe<Array<{ updatedAt: Date }>>(
+      `SELECT "updatedAt" FROM "app_configs" WHERE "key" = 'upload_limits'`,
+    );
+    // Stored as UTC wall-clock like every Prisma DateTime (not shifted by the session time zone).
+    expect(Math.abs(stamp.updatedAt.getTime() - Date.now())).toBeLessThan(5 * 60_000);
   });
 });

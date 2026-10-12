@@ -5,6 +5,9 @@
  * Uses SHADOW_DATABASE_URL when set (CI service container); otherwise starts a throwaway embedded
  * PostgreSQL. EMBEDDED_PG_MODULE_DIR may point at an embedded-postgres install on an ASCII path
  * (initdb fails under non-ASCII directories on Windows).
+ *
+ * --print-sql prints the SQL that would bring the migrations to the schema (to start a new
+ * migration) instead of checking.
  */
 const fs = require('fs');
 const net = require('net');
@@ -14,6 +17,7 @@ const { createRequire } = require('module');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
+const PRINT_SQL = process.argv.includes('--print-sql');
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -67,13 +71,15 @@ async function main() {
         path.join('prisma', 'schema.prisma'),
         '--shadow-database-url',
         shadowUrl,
-        '--exit-code',
+        PRINT_SQL ? '--script' : '--exit-code',
       ],
       { cwd: ROOT, encoding: 'utf8' },
     );
     process.stdout.write(result.stdout ?? '');
     process.stderr.write(result.stderr ?? '');
-    if (result.status === 0) {
+    if (PRINT_SQL) {
+      // the SQL itself is on stdout
+    } else if (result.status === 0) {
       console.log('Migrations match schema.prisma (no drift).');
     } else if (result.status === 2) {
       console.error('DRIFT: migrations do not produce schema.prisma (diff above).');

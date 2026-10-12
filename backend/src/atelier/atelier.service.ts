@@ -1,4 +1,13 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   DesignRequestMode,
   DesignRequestStatus,
@@ -18,6 +27,7 @@ import { PUBLIC_PORTFOLIO_SELECT, toPublicJewelerProfile } from '../jeweler-prof
 import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAtelierJewelersDto } from './dto/atelier.dto';
 
 const PAGE_SIZE = 20;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_FANOUT_LIMIT = 50;
 const BANNER_PLACEMENT = 'atelier_banner';
 const DESIGNS_FEED_PLACEMENT = 'atelier_designs_feed';
@@ -64,6 +74,7 @@ export class AtelierService {
     private readonly featureFlags: FeatureFlagsService,
     private readonly promotions: PromotionsService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly config: ConfigService,
   ) {}
 
   private async getMatchingWeights(): Promise<typeof DEFAULT_MATCHING_WEIGHTS> {
@@ -348,9 +359,37 @@ export class AtelierService {
       select: { id: true, userId: true },
     });
 
+    const requestsPerDay = this.config.get<number>('atelier.requestsPerDay', 20);
+
     // One transaction: the request, the lead metering and the delivered targets succeed or fail
-    // together (a refused request consumes no leads).
+    // together (a refused request consumes no leads). The requester's row lock makes the daily cap
+    // and the one-delivery-per-design rule hold under simultaneous requests.
     const { request, deliveredProfileIds } = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${user.id}::uuid FOR UPDATE`;
+      const sentToday = await tx.designRequest.count({
+        where: { requesterId: user.id, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
+      });
+      if (sentToday >= requestsPerDay) {
+        throw new HttpException(
+          { success: false, message: 'Daily design request limit reached', code: 'REQUEST_QUOTA_EXCEEDED' },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      // A jeweler receives (and pays a lead for) a design once, however often it is requested.
+      const reached = await tx.designRequestTarget.findMany({
+        where: { jewelerProfileId: { in: recipients.map((r) => r.id) }, request: { designId: dto.designId } },
+        select: { jewelerProfileId: true },
+      });
+      const reachedIds = new Set(reached.map((row) => row.jewelerProfileId));
+      const fresh = recipients.filter((recipient) => !reachedIds.has(recipient.id));
+      if (recipients.length > 0 && fresh.length === 0) {
+        throw new ConflictException({
+          success: false,
+          message: 'These jewelers already received this design',
+          code: 'ALREADY_REQUESTED',
+        });
+      }
+
       const created = await tx.designRequest.create({
         data: {
           designId: dto.designId,
@@ -362,7 +401,7 @@ export class AtelierService {
       });
 
       const delivered: string[] = [];
-      for (const recipient of recipients) {
+      for (const recipient of fresh) {
         const outcome = await this.subscriptions.consumeLeadForDelivery(tx, recipient.userId, created.id, enforceQuota);
         if (enforceQuota && (outcome === 'NO_LEADS' || outcome === 'NO_SUBSCRIPTION')) {
           continue;

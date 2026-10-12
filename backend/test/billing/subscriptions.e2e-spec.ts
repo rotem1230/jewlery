@@ -1,4 +1,5 @@
 import { SubscriptionLifecycleService } from '../../src/subscriptions/subscription-lifecycle.service';
+import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { registerVerified, TestUser } from '../utils/factories';
 
@@ -108,6 +109,57 @@ describe('subscriptions', () => {
     expect(await entitlementKeys(designer)).toContain('personal_visualization');
   });
 
+  it('a paid period that ended grants nothing, even before the sweep runs', async () => {
+    const designer = await registerVerified(t);
+    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    await t.prisma.subscription.update({
+      where: { id: sub.id },
+      data: { status: 'ACTIVE', trialEndsAt: null, currentPeriodEnd: new Date(Date.now() - 60_000) },
+    });
+    expect(await entitlementKeys(designer)).not.toContain('personal_visualization');
+    await t.prisma.subscription.update({ where: { id: sub.id }, data: { status: 'PAST_DUE' } });
+    expect(await entitlementKeys(designer)).not.toContain('personal_visualization');
+  });
+
+  it('a trial is granted once per role, but the other role still has its own', async () => {
+    const both = await registerVerified(t, { roles: ['DESIGNER', 'JEWELER'] });
+    const trial = (await subscribe(both, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    await t.prisma.subscription.update({ where: { id: trial.id }, data: { status: 'EXPIRED' } });
+    await subscribe(both, 'DESIGNER_PRO').expect(402);
+    const jewelerTrial = await subscribe(both, 'JEWELER_ACTIVE').expect(201);
+    expect(jewelerTrial.body.data.status).toBe('TRIALING');
+  });
+
+  it('a past-due subscription can be cancelled at once, so another plan can be chosen', async () => {
+    const designer = await registerVerified(t);
+    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    await t.prisma.subscription.update({
+      where: { id: sub.id },
+      data: { status: 'PAST_DUE', currentPeriodEnd: new Date(Date.now() - DAY_MS) },
+    });
+    const cancelled = await t.http.post(`${API}/subscriptions/cancel`).set(designer.auth).send({}).expect(201);
+    expect(cancelled.body.data.status).toBe('CANCELLED');
+    await subscribe(designer, 'DESIGNER_FREE').expect(201);
+  });
+
+  it('deleting the account and registering again does not grant another trial', async () => {
+    const first = await registerVerified(t);
+    await subscribe(first, 'DESIGNER_PRO').expect(201);
+    await t.http.delete(`${API}/users/me`).set(first.auth).expect(200);
+
+    const again = await registerVerified(t, { email: first.email });
+    const res = await subscribe(again, 'DESIGNER_PRO').expect(402);
+    expect(res.body.code).toBe('PAYMENT_REQUIRED');
+  });
+
+  it('an address alias (+tag) does not grant another trial either', async () => {
+    const first = await registerVerified(t);
+    await subscribe(first, 'DESIGNER_PRO').expect(201);
+    const [local, domain] = first.email.split('@');
+    const alias = await registerVerified(t, { email: `${local}+again@${domain}` });
+    await subscribe(alias, 'DESIGNER_PRO').expect(402);
+  });
+
   describe('lifecycle sweep', () => {
     async function seedSubscription(planCode: string, data: Record<string, unknown>) {
       const user = await registerVerified(t);
@@ -157,6 +209,27 @@ describe('subscriptions', () => {
       const renewed = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
       expect(renewed.status).toBe('ACTIVE');
       expect(renewed.currentPeriodEnd.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('two sweeps at once renew a free plan once and allocate its leads once', async () => {
+      const sub = await seedSubscription('JEWELER_BASIC', {});
+      await Promise.all([sweep(), sweep()]);
+      const renewed = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
+      expect(renewed.currentPeriodEnd.getTime()).toBeLessThan(Date.now() + 31 * DAY_MS);
+      const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_BASIC' } });
+      expect(await t.prisma.lead.count({ where: { subscriptionId: sub.id } })).toBe(plan.leadQuota);
+    });
+
+    it('a free plan cancelled while the sweep is renewing it is not renewed', async () => {
+      const sub = await seedSubscription('DESIGNER_FREE', {});
+      const lock = await lockRow(t, 'subscriptions', sub.id);
+      const sweeping = sweep();
+      await waitForLockWaiters(t, 1);
+      await lock.release((tx) => tx.subscription.update({ where: { id: sub.id }, data: { cancelAtPeriodEnd: true } }));
+      await sweeping;
+
+      const row = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
+      expect(row.currentPeriodEnd.getTime()).toBe(sub.currentPeriodEnd.getTime());
     });
 
     it('expires a past-due subscription after the grace period', async () => {

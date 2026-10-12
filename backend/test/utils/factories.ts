@@ -33,6 +33,7 @@ export async function registerVerified(
 ): Promise<TestUser> {
   const email = opts.email ?? uniqueEmail();
   const password = opts.password ?? DEFAULT_PASSWORD;
+  const mailsBefore = t.mailbox.to(email).length;
   await t.http
     .post(`${API}/auth/register`)
     .send({
@@ -44,6 +45,8 @@ export async function registerVerified(
     })
     .expect(201);
 
+  // Mail is sent in the background; wait for this registration's mail (the address may be reused).
+  await t.mailbox.waitForMoreThan(email, mailsBefore);
   const token = await t.mailbox.tokenFor(email, 'verify');
   await t.http.post(`${API}/auth/verify-email`).send({ token }).expect(200);
   return login(t, email, password);

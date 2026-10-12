@@ -70,7 +70,12 @@ export class StateMachineService {
   };
 
   readonly subscriptionGraph: TransitionGraph<SubscriptionStatus> = {
-    [SubscriptionStatus.TRIALING]: [SubscriptionStatus.ACTIVE, SubscriptionStatus.CANCELLED, SubscriptionStatus.EXPIRED],
+    [SubscriptionStatus.TRIALING]: [
+      SubscriptionStatus.ACTIVE,
+      SubscriptionStatus.PAST_DUE,
+      SubscriptionStatus.CANCELLED,
+      SubscriptionStatus.EXPIRED,
+    ],
     [SubscriptionStatus.ACTIVE]: [SubscriptionStatus.PAST_DUE, SubscriptionStatus.CANCELLED],
     [SubscriptionStatus.PAST_DUE]: [
       SubscriptionStatus.ACTIVE,
@@ -78,7 +83,8 @@ export class StateMachineService {
       SubscriptionStatus.CANCELLED,
     ],
     [SubscriptionStatus.CANCELLED]: [],
-    [SubscriptionStatus.EXPIRED]: [],
+    // A verified payment that arrives after the sweep expired the subscription reactivates it.
+    [SubscriptionStatus.EXPIRED]: [SubscriptionStatus.ACTIVE],
   };
 
   assertTransition<TState extends string>(

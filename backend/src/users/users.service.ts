@@ -15,6 +15,7 @@ import { SafeUser } from '../auth/interfaces/auth-user.interface';
 import { PasswordService } from '../auth/services/password.service';
 import { TokenService } from '../auth/services/token.service';
 import { SessionEvents } from '../common/session-events/session-events.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../database/prisma.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { ChangePasswordDto, RegisterDeviceDto, UpdateMeDto, UpdatePreferencesDto } from './dto/users.dto';
@@ -38,6 +39,7 @@ export class UsersService {
     private readonly audit: AuditService,
     private readonly uploads: UploadsService,
     private readonly sessionEvents: SessionEvents,
+    private readonly subscriptions: SubscriptionsService,
   ) {}
 
   private sanitize(user: User): SafeUser {
@@ -134,6 +136,9 @@ export class UsersService {
   async softDelete(userId: string): Promise<{ ok: true }> {
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      const current = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true } });
+      // Before the address is erased: a new account for it must not get the same trials again.
+      await this.subscriptions.recordTrialsBeforeDeletion(tx, userId, current.email);
       await tx.user.update({
         where: { id: userId },
         data: {

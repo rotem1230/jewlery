@@ -62,6 +62,18 @@ export const configuration = () => {
     stripe: {
       secretKey: process.env.STRIPE_SECRET_KEY,
     },
+    subscriptions: {
+      /** Key for trial bookkeeping hashes; derived from JWT_SECRET when not set. */
+      trialHashSecret: process.env.TRIAL_HASH_SECRET ?? '',
+    },
+    atelier: {
+      /** Design requests one designer may send per 24 hours (each one costs jewelers a lead). */
+      requestsPerDay: int(process.env.DESIGN_REQUESTS_PER_DAY, 20),
+    },
+    leads: {
+      /** Overage charges per subscription and billing period before delivery stops. */
+      overageCapPerPeriod: int(process.env.LEAD_OVERAGE_CAP, 50),
+    },
     payments: {
       /** "mock" enables the fake provider (never in production); unset = payments fail closed. */
       provider: process.env.PAYMENTS_PROVIDER ?? '',

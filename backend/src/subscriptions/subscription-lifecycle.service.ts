@@ -80,7 +80,12 @@ export class SubscriptionLifecycleService {
       await this.prisma.$transaction(async (tx) => {
         // Conditional on the period we read, so two sweeps never renew the same period twice.
         const claimed = await tx.subscription.updateMany({
-          where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: SubscriptionStatus.ACTIVE },
+          where: {
+            id: sub.id,
+            currentPeriodEnd: sub.currentPeriodEnd,
+            status: SubscriptionStatus.ACTIVE,
+            cancelAtPeriodEnd: false,
+          },
           data: { currentPeriodStart: start, currentPeriodEnd: end },
         });
         if (claimed.count === 1) {

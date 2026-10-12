@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { IsEnum, IsObject, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsEnum, IsNumber, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
 
 export class QueryPlansDto {
   @ApiPropertyOptional({ enum: UserRole })
@@ -36,6 +36,29 @@ export class PaymentWebhookDto {
   @IsOptional()
   @IsUUID()
   subscriptionId?: string;
+
+  @ApiPropertyOptional({ description: 'checkout.completed: the checkout session that was paid' })
+  @IsOptional()
+  @IsUUID()
+  checkoutId?: string;
+
+  @ApiPropertyOptional({ description: 'invoice.paid: provider invoice id (one renewal per invoice)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  invoiceId?: string;
+
+  @ApiPropertyOptional({ description: 'Amount actually paid' })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  amount?: number;
+
+  @ApiPropertyOptional({ description: 'ISO 4217 currency of the amount' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z]{3}$/)
+  currency?: string;
 
   @ApiProperty({ description: 'Raw provider payload' })
   @IsObject()

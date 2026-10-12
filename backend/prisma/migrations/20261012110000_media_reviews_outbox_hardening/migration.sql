@@ -56,6 +56,6 @@ SET "value" = jsonb_set(
       )
     ),
     "version" = "version" + 1,
-    "updatedAt" = CURRENT_TIMESTAMP
+    "updatedAt" = timezone('UTC', now())
 WHERE "key" = 'upload_limits'
   AND jsonb_typeof("value" -> 'allowedMimeTypes') = 'array';
