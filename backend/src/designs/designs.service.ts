@@ -358,6 +358,22 @@ export class DesignsService {
 
   async transition(id: string, user: User, toStatus: DesignStatus): Promise<Design> {
     const design = await this.getOwned(id, user);
+    // COMPLETED records who made the piece; only accepting a quote can set it.
+    if (toStatus === DesignStatus.COMPLETED) {
+      throw new ConflictException({
+        success: false,
+        message: 'A design is completed by accepting a quote',
+        code: 'COMPLETE_BY_ACCEPTING_A_QUOTE',
+      });
+    }
+    // An accepted quote is final: the design can be archived, never offered again (duplicate it instead).
+    if (design.acceptedQuoteId && (toStatus === DesignStatus.PUBLISHED || toStatus === DesignStatus.DRAFT)) {
+      throw new ConflictException({
+        success: false,
+        message: 'This design already has an accepted quote; duplicate it to start a new one',
+        code: 'DESIGN_COMPLETED',
+      });
+    }
     this.stateMachine.assertTransition(this.stateMachine.designGraph, design.status, toStatus);
 
     const data: Prisma.DesignUpdateInput = { status: toStatus, version: { increment: 1 } };
@@ -385,10 +401,6 @@ export class DesignsService {
     if (design.status === DesignStatus.ARCHIVED && toStatus === DesignStatus.DRAFT) {
       data.publishedAt = null;
       data.expiresAt = null;
-    }
-
-    if (toStatus === DesignStatus.COMPLETED) {
-      data.completedAt = new Date();
     }
 
     const updated = await this.prisma.design.update({ where: { id }, data });

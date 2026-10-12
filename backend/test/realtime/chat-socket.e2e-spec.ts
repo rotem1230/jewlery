@@ -4,7 +4,7 @@ import { io, Socket } from 'socket.io-client';
 import { UserRole } from '@prisma/client';
 import { TokenService } from '../../src/auth/services/token.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
-import { DEFAULT_PASSWORD, marketplaceScenario, registerVerified, uniqueEmail } from '../utils/factories';
+import { createQuote, DEFAULT_PASSWORD, marketplaceScenario, registerVerified, uniqueEmail } from '../utils/factories';
 
 function b64(input: string): string {
   return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -108,5 +108,25 @@ describe('chat WebSocket gateway', () => {
 
     expect(received).toEqual(['hello designer']);
     expect(leaked).toEqual([]);
+  });
+
+  it('tells the conversation when a quote changes, so nobody acts on a stale card', async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    const owner = connect({ token: s.designer.accessToken });
+    await outcome(owner, 100);
+    owner.emit('conversation:join', { conversationId: s.conversation.id });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const updates: Array<Record<string, unknown>> = [];
+    owner.on('quote:updated', (update: Record<string, unknown>) => updates.push(update));
+    await t.http.patch(`${API}/quotes/${quote.id}`).set(s.jeweler.auth).send({ laborCost: 900 }).expect(200);
+    await t.http.post(`${API}/quotes/${quote.id}/withdraw`).set(s.jeweler.auth).send({}).expect(201);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(updates).toEqual([
+      expect.objectContaining({ quoteId: quote.id, status: 'PENDING', totalPrice: '1000', currency: 'ILS' }),
+      expect.objectContaining({ quoteId: quote.id, status: 'WITHDRAWN' }),
+    ]);
   });
 });

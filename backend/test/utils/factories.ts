@@ -140,13 +140,23 @@ export async function createQuote(
   conversationId: string,
   designId: string,
   extra: Record<string, unknown> = {},
-): Promise<{ id: string; totalPrice: string }> {
+): Promise<TestQuote> {
   const res = await t.http
     .post(`${API}/quotes`)
     .set(jeweler.auth)
     .send({ conversationId, designId, materialsCost: 100, laborCost: 50, etaBusinessDays: 10, ...extra })
     .expect(201);
   return res.body.data;
+}
+
+export type TestQuote = { id: string; totalPrice: string; currency: string };
+
+/** Accepts as the owner would: confirming the exact price and currency shown on the quote card. */
+export function acceptQuote(t: TestApp, owner: TestUser, quote: TestQuote) {
+  return t.http
+    .post(`${API}/quotes/${quote.id}/accept`)
+    .set(owner.auth)
+    .send({ expectedTotalPrice: Number(quote.totalPrice), expectedCurrency: quote.currency });
 }
 
 /** Designer with a published design and a published jeweler holding an open conversation on it. */

@@ -8,8 +8,9 @@ export class OutboxService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async enqueue(type: string, payload: Prisma.InputJsonValue): Promise<OutboxEvent> {
-    const event = await this.prisma.outboxEvent.create({
+  /** Pass the caller's transaction client so the event commits (or rolls back) with its cause. */
+  async enqueue(type: string, payload: Prisma.InputJsonValue, tx?: Prisma.TransactionClient): Promise<OutboxEvent> {
+    const event = await (tx ?? this.prisma).outboxEvent.create({
       data: { type, payload },
     });
     this.logger.debug(`Enqueued outbox event ${type} (${event.id})`);

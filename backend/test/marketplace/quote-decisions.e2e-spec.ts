@@ -1,5 +1,6 @@
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
+  acceptQuote,
   createPublishedJeweler,
   createQuote,
   marketplaceScenario,
@@ -31,7 +32,7 @@ describe('quote decisions', () => {
     const { jeweler, design, conversation } = await marketplaceScenario(t);
     const quote = await createQuote(t, jeweler, conversation.id, design.id);
 
-    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(jeweler.auth).send({}).expect(403);
+    await acceptQuote(t, jeweler, quote).expect(403);
 
     expect((await designState(design.id)).status).toBe('PUBLISHED');
     const stored = await t.prisma.quote.findUniqueOrThrow({ where: { id: quote.id } });
@@ -50,7 +51,7 @@ describe('quote decisions', () => {
     });
     const quote = await createQuote(t, jeweler, legacy.id, design.id);
 
-    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(intruder.auth).send({}).expect(403);
+    await acceptQuote(t, intruder, quote).expect(403);
     expect((await designState(design.id)).status).toBe('PUBLISHED');
   });
 
@@ -62,7 +63,7 @@ describe('quote decisions', () => {
     const rivalConversation = await openConversation(t, rival, design.id, [designer.id]);
     const rivalQuote = await createQuote(t, rival, rivalConversation.id, design.id);
 
-    await t.http.post(`${API}/quotes/${rivalQuote.id}/accept`).set(rival.auth).send({}).expect(403);
+    await acceptQuote(t, rival, rivalQuote).expect(403);
 
     const legitStored = await t.prisma.quote.findUniqueOrThrow({ where: { id: legit.id } });
     expect(legitStored.status).toBe('PENDING');
@@ -90,7 +91,7 @@ describe('quote decisions', () => {
     const quote = await createQuote(t, jeweler, conversation.id, design.id);
     await t.prisma.quote.update({ where: { id: quote.id }, data: { validUntil: new Date(Date.now() - 60_000) } });
 
-    const res = await t.http.post(`${API}/quotes/${quote.id}/accept`).set(designer.auth).send({}).expect(409);
+    const res = await acceptQuote(t, designer, quote).expect(409);
     expect(res.body.code).toBe('QUOTE_EXPIRED');
     expect((await designState(design.id)).status).toBe('PUBLISHED');
   });
@@ -100,18 +101,33 @@ describe('quote decisions', () => {
     const quote = await createQuote(t, jeweler, conversation.id, design.id);
     await t.http.patch(`${API}/quotes/${quote.id}`).set(jeweler.auth).send({ laborCost: 900 }).expect(200);
 
-    const stale = await t.http
-      .post(`${API}/quotes/${quote.id}/accept`)
-      .set(designer.auth)
-      .send({ expectedTotalPrice: 150 })
-      .expect(409);
+    const stale = await acceptQuote(t, designer, quote).expect(409);
     expect(stale.body.code).toBe('QUOTE_CHANGED');
+    expect(stale.body.currentTotalPrice).toBe('1000');
 
+    await acceptQuote(t, designer, { ...quote, totalPrice: '1000' }).expect(201);
+  });
+
+  it('accept requires the price and currency the owner agreed to', async () => {
+    const { designer, jeweler, design, conversation } = await marketplaceScenario(t);
+    const quote = await createQuote(t, jeweler, conversation.id, design.id);
+
+    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(designer.auth).send({}).expect(400);
     await t.http
       .post(`${API}/quotes/${quote.id}/accept`)
       .set(designer.auth)
-      .send({ expectedTotalPrice: 1000 })
-      .expect(201);
+      .send({ expectedTotalPrice: 150 })
+      .expect(400);
+    expect((await t.prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe('PENDING');
+  });
+
+  it('accept refuses a quote whose currency is not the one the owner saw', async () => {
+    const { designer, jeweler, design, conversation } = await marketplaceScenario(t);
+    const quote = await createQuote(t, jeweler, conversation.id, design.id);
+
+    const res = await acceptQuote(t, designer, { ...quote, currency: 'USD' }).expect(409);
+    expect(res.body.code).toBe('QUOTE_CHANGED');
+    expect((await designState(design.id)).status).toBe('PUBLISHED');
   });
 
   it('editing a pending quote refreshes the price on its chat card', async () => {
@@ -135,7 +151,7 @@ describe('quote decisions', () => {
 
     const results = await Promise.all(
       Array.from({ length: 5 }, () =>
-        t.http.post(`${API}/quotes/${quote.id}/accept`).set(designer.auth).send({}),
+        acceptQuote(t, designer, quote),
       ),
     );
     expect(results.every((r) => r.status === 201 || r.status === 409)).toBe(true);
@@ -158,8 +174,8 @@ describe('quote decisions', () => {
     const second = await createQuote(t, rival, rivalConversation.id, design.id);
 
     const results = await Promise.all([
-      t.http.post(`${API}/quotes/${first.id}/accept`).set(designer.auth).send({}),
-      t.http.post(`${API}/quotes/${second.id}/accept`).set(designer.auth).send({}),
+      acceptQuote(t, designer, first),
+      acceptQuote(t, designer, second),
     ]);
     expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
 

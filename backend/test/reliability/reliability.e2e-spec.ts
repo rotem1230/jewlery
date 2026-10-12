@@ -1,8 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { OutboxProcessor } from '../../src/common/outbox/outbox.processor';
+import { OutboxService } from '../../src/common/outbox/outbox.service';
 import { NotificationsService } from '../../src/notifications/notifications.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
+  acceptQuote,
   createDraftDesign,
   createQuote,
   marketplaceScenario,
@@ -61,6 +63,21 @@ describe('outbox delivery', () => {
       orderBy: { createdAt: 'desc' },
     });
     expect(dead.attempts).toBeLessThanOrEqual(10);
+  });
+
+  it('a new event is due at once, whichever clock stamped it', async () => {
+    // Regression: nextAttemptAt defaulted to the insert time from Prisma's clock, which can run
+    // ahead of the worker's clock, so a fresh event looked "not yet due" to the next pass.
+    const user = await registerVerified(t);
+    const event = await t.app.get(OutboxService).enqueue('notification.push', {
+      userId: user.id,
+      eventKey: 'probe.immediate',
+      title: 't',
+      body: 'b',
+    });
+    expect(event.nextAttemptAt).toBeNull();
+    await t.app.get(OutboxProcessor).processPending();
+    expect(await t.prisma.notification.count({ where: { userId: user.id, eventKey: 'probe.immediate' } })).toBe(1);
   });
 
   it('two workers draining at once deliver every event exactly once', async () => {
@@ -150,7 +167,7 @@ describe('chat', () => {
   it('unread counts include system messages', async () => {
     const s = await marketplaceScenario(t);
     const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
-    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(s.designer.auth).send({}).expect(201);
+    await acceptQuote(t, s.designer, quote).expect(201);
 
     const res = await t.http.get(`${API}/conversations`).set(s.jeweler.auth).expect(200);
     const conv = (res.body.data.items as Array<{ id: string; unreadCount: number }>).find((c) => c.id === s.conversation.id);

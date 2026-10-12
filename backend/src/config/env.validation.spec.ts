@@ -10,6 +10,7 @@ function productionEnv(overrides: Record<string, unknown> = {}): Record<string, 
     SMTP_URL: 'smtps://mailer:secret@smtp.example.com:465',
     CORS_ORIGINS: 'https://app.example.com',
     API_PUBLIC_URL: 'https://api.example.com',
+    TRUST_PROXY: '1',
     ...overrides,
   };
 }
@@ -54,6 +55,16 @@ describe('validateEnv', () => {
 
   it('refuses a low bcrypt cost in production', () => {
     expect(() => validateEnv(productionEnv({ BCRYPT_ROUNDS: '4' }))).toThrow(/BCRYPT_ROUNDS/);
+  });
+
+  it('requires an explicit proxy-trust decision in production', () => {
+    expect(() => validateEnv(productionEnv({ TRUST_PROXY: undefined }))).toThrow(/TRUST_PROXY/);
+    expect(() => validateEnv(productionEnv({ TRUST_PROXY: 'false' }))).not.toThrow();
+    expect(() => validateEnv(productionEnv({ TRUST_PROXY: '10.0.0.0/8' }))).not.toThrow();
+  });
+
+  it("refuses TRUST_PROXY=true in production (clients could choose their own IP)", () => {
+    expect(() => validateEnv(productionEnv({ TRUST_PROXY: 'true' }))).toThrow(/TRUST_PROXY/);
   });
 
   it('keeps local development friction-free', () => {

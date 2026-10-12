@@ -98,6 +98,14 @@ function productionProblems(config: Record<string, unknown>): string[] {
     problems.push('API_PUBLIC_URL must be the public https URL of this API (used in e-mailed links)');
   }
 
+  const trustProxy = String(config.TRUST_PROXY ?? '').trim().toLowerCase();
+  if (trustProxy === '' || trustProxy === 'true') {
+    problems.push(
+      'TRUST_PROXY must be set in production: the number of proxies in front of the API (e.g. 1), their addresses, ' +
+        'or false when it is exposed directly ("true" would let clients choose their own IP)',
+    );
+  }
+
   const rounds = config.BCRYPT_ROUNDS === undefined ? 12 : Number(config.BCRYPT_ROUNDS);
   if (!Number.isInteger(rounds) || rounds < MIN_PRODUCTION_BCRYPT_ROUNDS) {
     problems.push(`BCRYPT_ROUNDS must be an integer >= ${MIN_PRODUCTION_BCRYPT_ROUNDS} in production`);

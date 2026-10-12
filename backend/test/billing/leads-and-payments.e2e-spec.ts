@@ -1,5 +1,6 @@
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
+  acceptQuote,
   createPublishedDesign,
   createPublishedJeweler,
   createQuote,
@@ -163,7 +164,7 @@ describe('jewelry payment intents', () => {
   async function acceptedQuote() {
     const s = await marketplaceScenario(t);
     const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
-    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(s.designer.auth).send({}).expect(201);
+    await acceptQuote(t, s.designer, quote).expect(201);
     return { ...s, quote };
   }
 
@@ -233,7 +234,7 @@ describe('jewelry payment intents with a real provider key but no integration', 
   it('fails closed instead of returning a fake client secret', async () => {
     const s = await marketplaceScenario(t);
     const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
-    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(s.designer.auth).send({}).expect(201);
+    await acceptQuote(t, s.designer, quote).expect(201);
     const res = await t.http
       .post(`${API}/jewelry-payments/intents`)
       .set(s.designer.auth)

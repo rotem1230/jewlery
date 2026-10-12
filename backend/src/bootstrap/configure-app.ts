@@ -4,6 +4,7 @@ import { json, urlencoded } from 'express';
 import helmet from 'helmet';
 import { ApiFieldError } from '../common/dto/api-response.dto';
 import { AllExceptionsFilter, HttpExceptionFilter } from '../common/filters/all-exceptions.filter';
+import { parseTrustProxy } from './trust-proxy';
 
 /**
  * Global HTTP pipeline shared by main.ts and the e2e test harness, so tests exercise exactly
@@ -14,6 +15,9 @@ export function configureApp(app: INestApplication): void {
   const apiPrefix = config.get<string>('apiPrefix', 'api/v1');
   const corsOrigins = config.get<string[]>('corsOrigins', []);
   const bodyLimit = config.get<number>('bodySizeLimit', 1_048_576);
+
+  // Client IPs feed the per-client rate limits; an invalid value throws here, at boot.
+  app.getHttpAdapter().getInstance().set('trust proxy', parseTrustProxy(config.get<string>('trustProxy')));
 
   // Keep the exact bytes: webhook signatures are computed over the raw body.
   app.use(

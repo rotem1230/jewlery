@@ -1,5 +1,11 @@
 import { API, createTestApp, TestApp } from '../utils/test-app';
-import { createPublishedJeweler, createQuote, marketplaceScenario, registerVerified } from '../utils/factories';
+import {
+  acceptQuote,
+  createPublishedJeweler,
+  createQuote,
+  marketplaceScenario,
+  registerVerified,
+} from '../utils/factories';
 
 /**
  * Regression: anyone could post unlimited reviews (with any reviewer name) for any jeweler,
@@ -19,7 +25,7 @@ describe('reviews', () => {
   async function completedDeal() {
     const s = await marketplaceScenario(t);
     const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
-    await t.http.post(`${API}/quotes/${quote.id}/accept`).set(s.designer.auth).send({}).expect(201);
+    await acceptQuote(t, s.designer, quote).expect(201);
     return s;
   }
 

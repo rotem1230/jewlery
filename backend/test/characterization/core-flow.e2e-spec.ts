@@ -1,5 +1,6 @@
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
+  acceptQuote,
   createPublishedDesign,
   createPublishedJeweler,
   createQuote,
@@ -40,11 +41,7 @@ describe('core marketplace flow', () => {
     });
     expect(quote.totalPrice).toBe('150');
 
-    const accepted = await t.http
-      .post(`${API}/quotes/${quote.id}/accept`)
-      .set(designer.auth)
-      .send({})
-      .expect(201);
+    const accepted = await acceptQuote(t, designer, quote).expect(201);
     expect(accepted.body.data.status).toBe('ACCEPTED');
 
     const stored = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });

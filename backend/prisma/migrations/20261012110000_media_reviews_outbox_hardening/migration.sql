@@ -23,11 +23,9 @@ ALTER TABLE "visualization_jobs" ADD COLUMN "purgedAt" TIMESTAMP(3);
 
 -- Outbox: backoff, worker lease and dead-lettering.
 ALTER TABLE "outbox_events"
-  ADD COLUMN "nextAttemptAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ADD COLUMN "nextAttemptAt" TIMESTAMP(3),
   ADD COLUMN "lockedUntil" TIMESTAMP(3),
   ADD COLUMN "deadAt" TIMESTAMP(3);
--- Pending events stay due immediately (the column default would use the session time zone).
-UPDATE "outbox_events" SET "nextAttemptAt" = "createdAt" WHERE "processedAt" IS NULL;
 CREATE INDEX "outbox_events_processedAt_deadAt_nextAttemptAt_idx" ON "outbox_events"("processedAt", "deadAt", "nextAttemptAt");
 
 -- Voice notes: the seeded upload_limits row lacked audio types, so every recording was rejected.

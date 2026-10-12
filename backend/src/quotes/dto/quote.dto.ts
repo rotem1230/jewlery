@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsDateString,
   IsInt,
@@ -6,14 +7,16 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Length,
+  Matches,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
 
 /** Matches the Decimal(12, 2) columns. */
-const MAX_AMOUNT = 9_999_999_999.99;
+export const MAX_AMOUNT = 9_999_999_999.99;
+const CURRENCY = /^[A-Z]{3}$/;
+const upperCase = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().toUpperCase() : value);
 const MAX_NOTES = 2000;
 
 export class CreateQuoteDto {
@@ -66,10 +69,11 @@ export class CreateQuoteDto {
   @IsDateString()
   validUntil?: string;
 
-  @ApiPropertyOptional({ default: 'ILS' })
+  @ApiPropertyOptional({ default: 'ILS', description: 'ISO 4217 code; stored upper-case' })
   @IsOptional()
+  @Transform(upperCase)
   @IsString()
-  @Length(3, 3)
+  @Matches(CURRENCY, { message: 'currency must be a 3-letter ISO 4217 code' })
   currency?: string;
 }
 
@@ -113,21 +117,30 @@ export class UpdateQuoteDto {
   @IsDateString()
   validUntil?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'ISO 4217 code; stored upper-case' })
   @IsOptional()
+  @Transform(upperCase)
   @IsString()
-  @Length(3, 3)
+  @Matches(CURRENCY, { message: 'currency must be a 3-letter ISO 4217 code' })
   currency?: string;
 }
 
+/**
+ * The owner confirms the exact terms shown on the quote card. If the quote no longer has this
+ * price and currency when the accept is applied, it is refused with 409 QUOTE_CHANGED.
+ */
 export class AcceptQuoteDto {
-  @ApiPropertyOptional({
-    description: 'Total price the owner saw; if the quote now differs the accept is refused with 409 QUOTE_CHANGED',
-  })
-  @IsOptional()
+  @ApiProperty({ description: 'Total price shown to the owner' })
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  expectedTotalPrice?: number;
+  @Max(MAX_AMOUNT)
+  expectedTotalPrice!: number;
+
+  @ApiProperty({ description: 'Currency shown to the owner (ISO 4217)', example: 'ILS' })
+  @Transform(upperCase)
+  @IsString()
+  @Matches(CURRENCY, { message: 'expectedCurrency must be a 3-letter ISO 4217 code' })
+  expectedCurrency!: string;
 }
 
 export class DeclineQuoteDto {

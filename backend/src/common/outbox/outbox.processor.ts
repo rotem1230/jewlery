@@ -57,7 +57,7 @@ export class OutboxProcessor {
         SELECT "id" FROM "outbox_events"
          WHERE "processedAt" IS NULL
            AND "deadAt" IS NULL
-           AND "nextAttemptAt" <= ${sqlTimestamp(now)}
+           AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= ${sqlTimestamp(now)})
            AND ("lockedUntil" IS NULL OR "lockedUntil" < ${sqlTimestamp(now)})
          ORDER BY "createdAt" ASC
          LIMIT ${batchSize}

@@ -479,8 +479,9 @@ model OutboxEvent {
   processedAt   DateTime?
   attempts      Int       @default(0)
   lastError     String?
-  /// Earliest time the next delivery attempt may run (exponential backoff).
-  nextAttemptAt DateTime  @default(now())
+  /// Earliest time of the next retry (exponential backoff). NULL = due now: a new event carries no
+  /// timestamp, so clock differences between producer and worker can never delay it.
+  nextAttemptAt DateTime?
   /// Lease of the worker that claimed the event; an expired lease can be re-claimed.
   lockedUntil   DateTime?
   /// Set when the event exhausted its attempts (dead letter).

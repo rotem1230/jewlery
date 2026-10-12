@@ -11,6 +11,7 @@ import {
   DesignStatus,
   MessageType,
   Prisma,
+  Quote,
   QuoteStatus,
   User,
   UserRole,
@@ -22,9 +23,35 @@ import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, UpdateQuoteDto } from './dto/quote.dto';
+import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, MAX_AMOUNT, UpdateQuoteDto } from './dto/quote.dto';
 
 const DEFAULT_CURRENCY = 'ILS';
+const MAX_TOTAL = new Prisma.Decimal(MAX_AMOUNT);
+/** Waiting for the design lock counts toward the timeout; leave room for a busy design. */
+const DECISION_TX = { maxWait: 5_000, timeout: 15_000 };
+
+/** Total = materials + labor must still fit the Decimal(12, 2) column. */
+function assertStorableTotal(total: Prisma.Decimal): void {
+  if (total.greaterThan(MAX_TOTAL)) {
+    throw new BadRequestException({
+      success: false,
+      message: `The quote total may not exceed ${MAX_AMOUNT}`,
+      code: 'QUOTE_TOTAL_TOO_LARGE',
+    });
+  }
+}
+
+/** What open quote cards need to stay current (sent as the `quote:updated` socket event). */
+function quoteUpdate(quote: Pick<Quote, 'id' | 'status' | 'totalPrice' | 'currency' | 'etaBusinessDays' | 'validUntil'>) {
+  return {
+    quoteId: quote.id,
+    status: quote.status,
+    totalPrice: quote.totalPrice.toString(),
+    currency: quote.currency,
+    etaBusinessDays: quote.etaBusinessDays,
+    validUntil: quote.validUntil,
+  };
+}
 
 /** Thrown inside the accept transaction to roll it back with a client-facing conflict. */
 class AcceptConflict extends Error {
@@ -155,6 +182,7 @@ export class QuotesService {
     const materialsCost = new Prisma.Decimal(dto.materialsCost);
     const laborCost = new Prisma.Decimal(dto.laborCost);
     const totalPrice = materialsCost.add(laborCost);
+    assertStorableTotal(totalPrice);
 
     const disclaimer = await this.prisma.contentPage.findFirst({
       where: { slug: 'quote_disclaimer', locale: 'he', status: ContentPageStatus.PUBLISHED },
@@ -162,6 +190,18 @@ export class QuotesService {
     });
 
     const { quote, message } = await this.prisma.$transaction(async (tx) => {
+      // Shared lock: an accept on this design (FOR UPDATE) cannot interleave, so a quote is never
+      // added to a design that was completed after the checks above.
+      const [current] = await tx.$queryRaw<Array<{ status: string; deletedAt: Date | null }>>`
+        SELECT "status", "deletedAt" FROM "designs" WHERE "id" = ${dto.designId}::uuid FOR SHARE`;
+      if (!current || current.deletedAt || current.status !== DesignStatus.PUBLISHED) {
+        throw new ConflictException({
+          success: false,
+          message: 'This design is not open for quotes',
+          code: 'DESIGN_NOT_PUBLISHED',
+        });
+      }
+
       const createdQuote = await tx.quote.create({
         data: {
           conversationId: dto.conversationId,
@@ -281,11 +321,46 @@ export class QuotesService {
   }
 
   /**
-   * Accepting a quote is the design owner's decision alone. The design row is locked first, so
-   * concurrent accepts (same or competing quotes) serialize: exactly one quote is ACCEPTED, the
-   * design is COMPLETED once, and repeating an accept is idempotent.
+   * Refuses a quote that cannot be accepted on the terms the owner confirmed. Used as a fast check
+   * before the transaction and, inside it, to explain why the atomic claim did not match.
    */
-  async accept(id: string, user: User, dto: AcceptQuoteDto = {}) {
+  private assertAcceptable(
+    quote: Pick<Quote, 'status' | 'validUntil' | 'totalPrice' | 'currency'>,
+    expectedTotal: Prisma.Decimal,
+    expectedCurrency: string,
+    now: Date,
+  ): void {
+    if (quote.status !== QuoteStatus.PENDING) {
+      throw new ConflictException({
+        success: false,
+        message: `This quote is ${quote.status.toLowerCase()}`,
+        code: 'QUOTE_NOT_PENDING',
+      });
+    }
+    if (quote.validUntil && quote.validUntil.getTime() < now.getTime()) {
+      throw new ConflictException({ success: false, message: 'This quote has expired', code: 'QUOTE_EXPIRED' });
+    }
+    if (!expectedTotal.equals(quote.totalPrice) || expectedCurrency !== quote.currency.toUpperCase()) {
+      throw new ConflictException({
+        success: false,
+        message: 'The quote changed since you opened it; review the new terms',
+        code: 'QUOTE_CHANGED',
+        currentTotalPrice: quote.totalPrice.toString(),
+        currentCurrency: quote.currency,
+      });
+    }
+  }
+
+  /**
+   * Accepting a quote is the design owner's decision alone, on the exact terms they saw. The
+   * design row is locked first, so concurrent accepts (same or competing quotes) serialize:
+   * exactly one quote is ACCEPTED and the design is COMPLETED once. The quote is claimed with a
+   * compare-and-set on status, price, currency and validity, so an edit that lands meanwhile is
+   * refused (409 QUOTE_CHANGED) instead of being accepted unseen. Competing pending quotes are
+   * locked before they are declined, and the notifications are queued in the same transaction.
+   * Repeating an accept is idempotent.
+   */
+  async accept(id: string, user: User, dto: AcceptQuoteDto) {
     const existing = await this.loadForDecision(id);
     if (existing.design.ownerUserId !== user.id) {
       throw new ForbiddenException({ success: false, message: 'Only the design owner can accept a quote' });
@@ -293,34 +368,16 @@ export class QuotesService {
     if (existing.status === QuoteStatus.ACCEPTED) {
       return this.findOne(id, user);
     }
-    if (existing.status !== QuoteStatus.PENDING) {
-      throw new ConflictException({
-        success: false,
-        message: `This quote is ${existing.status.toLowerCase()}`,
-        code: 'QUOTE_NOT_PENDING',
-      });
-    }
-    if (existing.validUntil && existing.validUntil.getTime() < Date.now()) {
-      throw new ConflictException({ success: false, message: 'This quote has expired', code: 'QUOTE_EXPIRED' });
-    }
-    if (
-      dto.expectedTotalPrice !== undefined &&
-      !new Prisma.Decimal(dto.expectedTotalPrice).equals(existing.totalPrice)
-    ) {
-      throw new ConflictException({
-        success: false,
-        message: 'The quote changed since you opened it; review the new price',
-        code: 'QUOTE_CHANGED',
-        currentTotalPrice: existing.totalPrice.toString(),
-      });
-    }
+    const expectedTotal = new Prisma.Decimal(dto.expectedTotalPrice);
+    const expectedCurrency = dto.expectedCurrency.toUpperCase();
+    this.assertAcceptable(existing, expectedTotal, expectedCurrency, new Date());
 
     const acceptedAt = new Date();
     let result: {
+      accepted: Quote;
       acceptedMsg: Prisma.MessageGetPayload<object>;
       handoffMsg: Prisma.MessageGetPayload<object>;
-      otherPendingIds: string[];
-      otherAuthorIds: string[];
+      declined: Array<{ id: string; authorUserId: string; conversationId: string }>;
     };
     try {
       result = await this.prisma.$transaction(async (tx) => {
@@ -334,12 +391,21 @@ export class QuotesService {
         }
 
         const claimed = await tx.quote.updateMany({
-          where: { id, status: QuoteStatus.PENDING },
+          where: {
+            id,
+            status: QuoteStatus.PENDING,
+            totalPrice: expectedTotal,
+            currency: { equals: expectedCurrency, mode: 'insensitive' },
+            OR: [{ validUntil: null }, { validUntil: { gte: acceptedAt } }],
+          },
           data: { status: QuoteStatus.ACCEPTED, acceptedAt },
         });
         if (claimed.count !== 1) {
+          const current = await tx.quote.findUniqueOrThrow({ where: { id } });
+          this.assertAcceptable(current, expectedTotal, expectedCurrency, acceptedAt);
           throw new AcceptConflict('QUOTE_NOT_PENDING', 'This quote is no longer pending');
         }
+        const accepted = await tx.quote.findUniqueOrThrow({ where: { id } });
         await tx.quoteEvent.create({
           data: { quoteId: id, fromStatus: QuoteStatus.PENDING, toStatus: QuoteStatus.ACCEPTED, actorUserId: user.id },
         });
@@ -354,17 +420,20 @@ export class QuotesService {
           },
         });
 
-        const otherPending = await tx.quote.findMany({
-          where: { designId: existing.designId, id: { not: id }, status: QuoteStatus.PENDING },
-          select: { id: true, authorUserId: true },
-        });
-        if (otherPending.length > 0) {
+        // Locked before they are declined: a concurrent withdraw or edit either committed first
+        // (and is respected) or waits for this decision.
+        const declined = await tx.$queryRaw<Array<{ id: string; authorUserId: string; conversationId: string }>>`
+          SELECT "id", "authorUserId", "conversationId" FROM "quotes"
+           WHERE "designId" = ${existing.designId}::uuid AND "id" <> ${id}::uuid AND "status" = 'PENDING'
+           ORDER BY "id"
+           FOR UPDATE`;
+        if (declined.length > 0) {
           await tx.quote.updateMany({
-            where: { id: { in: otherPending.map((q) => q.id) }, status: QuoteStatus.PENDING },
+            where: { id: { in: declined.map((q) => q.id) } },
             data: { status: QuoteStatus.DECLINED, declinedAt: acceptedAt },
           });
           await tx.quoteEvent.createMany({
-            data: otherPending.map((other) => ({
+            data: declined.map((other) => ({
               quoteId: other.id,
               fromStatus: QuoteStatus.PENDING,
               toStatus: QuoteStatus.DECLINED,
@@ -426,18 +495,16 @@ export class QuotesService {
               designId: existing.designId,
               jewelerUserId: existing.authorUserId,
               acceptedAt,
-              declinedQuoteIds: otherPending.map((q) => q.id),
+              declinedQuoteIds: declined.map((q) => q.id),
             }),
           },
         });
+        const handoff = { quoteId: id, designId: existing.designId, jewelerUserId: existing.authorUserId };
+        await this.outbox.enqueue('quote.accepted', handoff, tx);
+        await this.outbox.enqueue('handoff.created', handoff, tx);
 
-        return {
-          acceptedMsg,
-          handoffMsg,
-          otherPendingIds: otherPending.map((q) => q.id),
-          otherAuthorIds: otherPending.map((q) => q.authorUserId),
-        };
-      });
+        return { accepted, acceptedMsg, handoffMsg, declined };
+      }, DECISION_TX);
     } catch (err) {
       if (err instanceof AcceptConflict) {
         if (err.code === 'ALREADY_ACCEPTED') {
@@ -450,17 +517,13 @@ export class QuotesService {
 
     this.gateway.emitToConversation(existing.conversationId, 'message:new', result.acceptedMsg);
     this.gateway.emitToConversation(existing.conversationId, 'message:new', result.handoffMsg);
-
-    await this.outbox.enqueue('quote.accepted', {
-      quoteId: id,
-      designId: existing.designId,
-      jewelerUserId: existing.authorUserId,
-    });
-    await this.outbox.enqueue('handoff.created', {
-      quoteId: id,
-      designId: existing.designId,
-      jewelerUserId: existing.authorUserId,
-    });
+    this.gateway.emitToConversation(existing.conversationId, 'quote:updated', quoteUpdate(result.accepted));
+    for (const other of result.declined) {
+      this.gateway.emitToConversation(other.conversationId, 'quote:updated', {
+        quoteId: other.id,
+        status: QuoteStatus.DECLINED,
+      });
+    }
 
     await this.notifications.createInApp(
       user.id,
@@ -469,13 +532,13 @@ export class QuotesService {
       'The quote was accepted. Check the conversation for handoff details.',
       { quoteId: id },
     );
-    for (const [index, declinedId] of result.otherPendingIds.entries()) {
+    for (const other of result.declined) {
       await this.notifications.createInApp(
-        result.otherAuthorIds[index],
+        other.authorUserId,
         'quote.declined',
         'Quote declined',
         'Another quote was accepted for this design; your quote was automatically declined.',
-        { quoteId: declinedId },
+        { quoteId: other.id },
       );
     }
 
@@ -509,6 +572,7 @@ export class QuotesService {
       },
     });
 
+    this.gateway.emitToConversation(quote.conversationId, 'quote:updated', { quoteId: id, status: QuoteStatus.DECLINED });
     await this.eventLog.record('quote.declined', 'Quote', id, { actorUserId: user.id, note: dto.note ?? null });
     await this.notifications.createInApp(
       quote.authorUserId,
@@ -540,6 +604,7 @@ export class QuotesService {
     await this.prisma.quoteEvent.create({
       data: { quoteId: id, fromStatus: QuoteStatus.PENDING, toStatus: QuoteStatus.WITHDRAWN, actorUserId: user.id },
     });
+    this.gateway.emitToConversation(quote.conversationId, 'quote:updated', { quoteId: id, status: QuoteStatus.WITHDRAWN });
     await this.eventLog.record('quote.withdrawn', 'Quote', id, { actorUserId: user.id });
     return this.findOne(id, user);
   }
@@ -562,6 +627,7 @@ export class QuotesService {
     const materialsCost = dto.materialsCost != null ? new Prisma.Decimal(dto.materialsCost) : quote.materialsCost;
     const laborCost = dto.laborCost != null ? new Prisma.Decimal(dto.laborCost) : quote.laborCost;
     const totalPrice = materialsCost.add(laborCost);
+    assertStorableTotal(totalPrice);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const changed = await tx.quote.updateMany({
@@ -589,6 +655,7 @@ export class QuotesService {
       return fresh;
     });
 
+    this.gateway.emitToConversation(updated.conversationId, 'quote:updated', quoteUpdate(updated));
     await this.eventLog.record('quote.updated', 'Quote', id, { actorUserId: user.id });
     await this.notifications.createInApp(
       quote.design.ownerUserId,
