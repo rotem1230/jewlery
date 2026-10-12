@@ -4,7 +4,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AuthScreenLayout } from '@/src/components/auth/AuthScreenLayout'
 import { GoogleAuthButton } from '@/src/components/auth/GoogleAuthButton'
 import { Button, Checkbox, Field } from '@/src/components/ui'
-import { login, oauthGoogle } from '@/src/api/auth'
+import { isEmailNotVerified, login, oauthGoogle, resendVerification } from '@/src/api/auth'
 import { parseApiError } from '@/src/lib/api'
 import { signInWithGoogleNative } from '@/src/lib/googleSignIn'
 import { sessionFromAuth } from '@/src/lib/session'
@@ -41,6 +41,20 @@ export function LoginScreen({ navigation, route }: Props) {
       const result = await login(trimmed, password)
       dispatch(setSession({ ...sessionFromAuth(result), persist: remember }))
     } catch (err) {
+      if (isEmailNotVerified(err)) {
+        Alert.alert(t('authVerifyEmailTitle'), t('authEmailNotVerified'), [
+          {
+            text: t('authResendVerification'),
+            onPress: () => {
+              resendVerification(trimmed)
+                .then(() => Alert.alert(t('authVerifyEmailTitle'), t('authVerificationResent')))
+                .catch((resendErr) => Alert.alert(t('authErrorTitle'), parseApiError(resendErr)))
+            },
+          },
+          { text: 'OK' },
+        ])
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
     } finally {
       setBusy(false)
@@ -51,7 +65,11 @@ export function LoginScreen({ navigation, route }: Props) {
     setBusy(true)
     try {
       const profile = await signInWithGoogleNative()
-      const result = await oauthGoogle(profile)
+      const result = await oauthGoogle({
+        idToken: profile.idToken,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+      })
       dispatch(setSession({ ...sessionFromAuth(result), persist: remember }))
     } catch (err) {
       const message =

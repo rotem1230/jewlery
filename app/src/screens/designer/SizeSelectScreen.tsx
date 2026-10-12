@@ -73,7 +73,7 @@ export function SizeSelectScreen() {
   const category = route.params.category as 'ring' | 'necklace' | 'bracelet'
   const isRing = category === 'ring'
   const isBracelet = category === 'bracelet'
-  const fallbackLengths = LENGTH_OPTIONS_BY_CATEGORY[category as 'necklace'] ?? []
+  const fallbackLengths = useMemo(() => LENGTH_OPTIONS_BY_CATEGORY[category as 'necklace'] ?? [], [category])
 
   const chartsQuery = useAsyncData(
     (signal) => listWizardSizeCharts(CATEGORY_CODE[category], signal),

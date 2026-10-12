@@ -33,6 +33,7 @@ import { pickChatPhoto } from '@/src/lib/chatAttachments'
 import { parseApiError } from '@/src/lib/api'
 import { formatHeTimeAgo } from '@/src/hooks/useMyBusinessProfile'
 import { uploadContentUrl } from '@/src/api/uploads'
+import { mediaUrl } from '@/src/lib/media'
 import { FilterOptionsSheet } from '@/src/components/chats/FilterOptionsSheet'
 import { colors, radii } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
@@ -79,6 +80,8 @@ export function BusinessProfileFormScreen() {
   const [busy, setBusy] = useState(false)
   const [regionOpen, setRegionOpen] = useState(false)
   const [logoUploadId, setLogoUploadId] = useState<string | null>(null)
+  /** Signed link for the (private until published) logo, from the API. */
+  const [logoLink, setLogoLink] = useState<string | null>(null)
   const [errors, setErrors] = useState<{
     name?: string
     region?: string
@@ -97,12 +100,15 @@ export function BusinessProfileFormScreen() {
       setEmail(raw.email ?? '')
       setBio(raw.bio ?? '')
       setLogoUploadId(raw.logoUploadId ?? raw.logoUpload?.id ?? null)
+      setLogoLink(raw.logoUrl ?? null)
       setGallery(
         raw.portfolio.map((item) => ({
           id: item.id,
-          image: item.uploadId
-            ? { uri: uploadContentUrl(item.uploadId) }
-            : { uri: item.upload?.url ?? '' },
+          image: item.contentUrl
+            ? { uri: mediaUrl(item.contentUrl) }
+            : item.uploadId
+              ? { uri: uploadContentUrl(item.uploadId) }
+              : { uri: item.upload?.url ?? '' },
           uploadId: item.uploadId,
           persisted: true,
         })),
@@ -130,7 +136,7 @@ export function BusinessProfileFormScreen() {
         ...prev,
         {
           id: `local-${upload.id}`,
-          image: { uri: uploadContentUrl(upload.id) },
+          image: { uri: mediaUrl(upload.contentUrl) ?? uploadContentUrl(upload.id) },
           uploadId: upload.id,
           persisted: false,
         },
@@ -170,6 +176,7 @@ export function BusinessProfileFormScreen() {
       if (!file) return
       const upload = await uploadChatFile(file)
       setLogoUploadId(upload.id)
+      setLogoLink(upload.contentUrl ?? null)
     } catch (err) {
       Alert.alert(t('authErrorTitle'), parseApiError(err))
     }
@@ -222,7 +229,7 @@ export function BusinessProfileFormScreen() {
           about: bio.trim(),
           gallery: gallery.map((g) => ({
             id: g.id,
-            uri: g.uploadId ? uploadContentUrl(g.uploadId) : undefined,
+            uri: typeof g.image === 'object' && g.image && 'uri' in g.image ? g.image.uri : undefined,
             title: name.trim(),
             uploadId: g.uploadId,
           })),
@@ -294,7 +301,7 @@ export function BusinessProfileFormScreen() {
             <TouchableOpacity style={styles.logoRow} onPress={() => void pickLogo()} activeOpacity={0.8}>
               {logoUploadId ? (
                 <Image
-                  source={{ uri: uploadContentUrl(logoUploadId) }}
+                  source={{ uri: mediaUrl(logoLink) ?? uploadContentUrl(logoUploadId) }}
                   style={styles.logoPreview}
                   resizeMode="cover"
                 />

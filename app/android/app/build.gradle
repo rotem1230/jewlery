@@ -92,15 +92,26 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            // Upload key from ~/.gradle/gradle.properties or CI secrets — never committed:
+            // MALINVOSKY_UPLOAD_STORE_FILE, MALINVOSKY_UPLOAD_STORE_PASSWORD,
+            // MALINVOSKY_UPLOAD_KEY_ALIAS, MALINVOSKY_UPLOAD_KEY_PASSWORD
+            if (project.hasProperty('MALINVOSKY_UPLOAD_STORE_FILE')) {
+                storeFile file(MALINVOSKY_UPLOAD_STORE_FILE)
+                storePassword MALINVOSKY_UPLOAD_STORE_PASSWORD
+                keyAlias MALINVOSKY_UPLOAD_KEY_ALIAS
+                keyPassword MALINVOSKY_UPLOAD_KEY_PASSWORD
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Signed with the upload key when configured; never with the public debug key
+            // (without it the release artifact is unsigned and cannot be installed or published).
+            signingConfig project.hasProperty('MALINVOSKY_UPLOAD_STORE_FILE') ? signingConfigs.release : null
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

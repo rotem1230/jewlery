@@ -8,6 +8,7 @@ import {
   sendImageMessage,
 } from '@/src/api/chat'
 import { uploadChatFile, uploadContentUrl, type LocalFile } from '@/src/api/uploads'
+import { mediaUrl } from '@/src/lib/media'
 import { connectConversationSocket, type ConversationSocket } from '@/src/lib/socket'
 import { formatClock, formatDayLabel, groupMessagesByDay } from '@/src/lib/chatTime'
 import { useAppSelector } from '@/src/store/hooks'
@@ -229,10 +230,10 @@ export function useConversationThread(conversationId: string) {
               return { ...base, kind: 'system', text: msg.body || msg.type }
             }
             if (msg.type === 'IMAGE' && msg.imageUploadId) {
-              return { ...base, kind: 'image', mediaUri: uploadContentUrl(msg.imageUploadId) }
+              return { ...base, kind: 'image', mediaUri: mediaUrl(msg.imageUpload?.contentUrl) ?? uploadContentUrl(msg.imageUploadId) }
             }
             if (msg.type === 'AUDIO' && msg.imageUploadId) {
-              return { ...base, kind: 'audio', mediaUri: uploadContentUrl(msg.imageUploadId) }
+              return { ...base, kind: 'audio', mediaUri: mediaUrl(msg.imageUpload?.contentUrl) ?? uploadContentUrl(msg.imageUploadId) }
             }
             return { ...base, kind: 'text' }
           }),

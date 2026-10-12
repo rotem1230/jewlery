@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import type { ImageSourcePropType } from 'react-native'
 import { getMyBusinessProfile } from '@/src/api/jewelerProfiles'
 import { uploadContentUrl } from '@/src/api/uploads'
+import { mediaUrl } from '@/src/lib/media'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation } from '@/src/i18n'
@@ -45,7 +46,10 @@ function resolveArtwork(
   uploadId: string | undefined,
   remoteUrl: string | null | undefined,
   index: number,
+  signedLink?: string | null,
 ): ImageSourcePropType {
+  const signed = mediaUrl(signedLink)
+  if (signed) return { uri: signed }
   if (uploadId) return { uri: uploadContentUrl(uploadId) }
   if (remoteUrl) return { uri: remoteUrl }
   if (title && FALLBACK_ARTWORK[title]) return FALLBACK_ARTWORK[title]
@@ -97,7 +101,7 @@ export function useMyBusinessProfile() {
       gallery: raw.portfolio.map((item, index) => ({
         id: item.id,
         title: item.title || t('businessProfileWork1Title'),
-        image: resolveArtwork(item.title, item.uploadId, item.upload?.url, index),
+        image: resolveArtwork(item.title, item.uploadId, item.upload?.url, index, item.contentUrl),
       })),
       reviews: raw.reviews.map((review) => ({
         id: review.id,

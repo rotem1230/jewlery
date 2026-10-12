@@ -15,7 +15,7 @@ import { FilterChip } from '@/src/components/designs/FilterChip'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { getMyOrders } from '@/src/api/jewelerProfiles'
 import { getHomeSummary } from '@/src/api/home'
-import { imageFromUpload, displayName } from '@/src/lib/format'
+import { imageFromUpload } from '@/src/lib/format'
 import { formatHeTimeAgo } from '@/src/hooks/useMyBusinessProfile'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
@@ -60,7 +60,7 @@ export function MyOrdersScreen() {
   const name = isDemo
     ? t('profileDemoName')
     : (homeQuery.data?.greeting?.name ?? user?.firstName ?? t('jeweler'))
-  const orders = data?.items ?? []
+  const orders = useMemo(() => data?.items ?? [], [data])
 
   const counts = useMemo(() => {
     const submitted = orders.filter((o) => uiStatus(o.status) === 'submitted').length

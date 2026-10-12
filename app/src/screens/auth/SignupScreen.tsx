@@ -5,7 +5,7 @@ import { AuthScreenLayout } from '@/src/components/auth/AuthScreenLayout'
 import { GoogleAuthButton } from '@/src/components/auth/GoogleAuthButton'
 import { PhoneField } from '@/src/components/auth/PhoneField'
 import { Button, Checkbox, Field } from '@/src/components/ui'
-import { oauthGoogle, register, updateMe } from '@/src/api/auth'
+import { oauthGoogle, register, resendVerification } from '@/src/api/auth'
 import { parseApiError } from '@/src/lib/api'
 import { signInWithGoogleNative } from '@/src/lib/googleSignIn'
 import { sessionFromAuth } from '@/src/lib/session'
@@ -59,17 +59,26 @@ export function SignupScreen({ navigation, route }: Props) {
     setBusy(true)
     try {
       const { firstName, lastName } = splitFullName(fullName)
-      const result = await register({
+      await register({
         email: trimmed,
         password,
         roles: [role],
         firstName: firstName || undefined,
         lastName,
+        phone: e164 ?? undefined,
       })
-      dispatch(setSession(sessionFromAuth(result)))
-      if (e164) {
-        await updateMe({ phone: e164 }).catch(() => undefined)
-      }
+      // No session yet: the account works once the e-mailed link has been opened.
+      Alert.alert(t('authVerifyEmailTitle'), t('authVerifyEmailBody').replace('{{email}}', trimmed), [
+        {
+          text: t('authResendVerification'),
+          onPress: () => {
+            resendVerification(trimmed)
+              .then(() => Alert.alert(t('authVerifyEmailTitle'), t('authVerificationResent')))
+              .catch((err) => Alert.alert(t('authErrorTitle'), parseApiError(err)))
+          },
+        },
+        { text: t('login'), onPress: () => navigation.navigate('Login', { role }) },
+      ])
     } catch (err) {
       Alert.alert(t('authErrorTitle'), parseApiError(err))
     } finally {
@@ -81,7 +90,11 @@ export function SignupScreen({ navigation, route }: Props) {
     setBusy(true)
     try {
       const profile = await signInWithGoogleNative()
-      const result = await oauthGoogle(profile)
+      const result = await oauthGoogle({
+        idToken: profile.idToken,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+      })
       dispatch(setSession({ ...sessionFromAuth(result), persist: true }))
     } catch (err) {
       const message =

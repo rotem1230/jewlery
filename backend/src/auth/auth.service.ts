@@ -252,6 +252,7 @@ export class AuthService implements OnModuleDestroy {
           passwordHash,
           firstName: dto.firstName,
           lastName: dto.lastName,
+          phone: dto.phone ?? null,
           roles,
           activeRole: roles[0],
           status: UserStatus.PENDING_VERIFICATION,

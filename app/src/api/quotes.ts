@@ -20,8 +20,15 @@ export function getQuote(id: string, signal?: AbortSignal): Promise<QuoteSummary
   return apiGet<QuoteSummary>(`/quotes/${id}`, { signal })
 }
 
-export function acceptQuote(id: string): Promise<QuoteSummary> {
-  return apiPost<QuoteSummary>(`/quotes/${id}/accept`, {})
+/**
+ * Accepts on the exact terms the user saw: if the jeweler changed the price meanwhile, the server
+ * refuses with 409 QUOTE_CHANGED (and the current terms) instead of accepting unseen terms.
+ */
+export function acceptQuote(quote: Pick<QuoteSummary, 'id' | 'totalPrice' | 'currency'>): Promise<QuoteSummary> {
+  return apiPost<QuoteSummary>(`/quotes/${quote.id}/accept`, {
+    expectedTotalPrice: Number(quote.totalPrice),
+    expectedCurrency: quote.currency,
+  })
 }
 
 export function updateQuote(

@@ -12,12 +12,8 @@ export type JewelryPaymentIntent = {
   createdAt: string
 }
 
-export function createJewelryPaymentIntent(payload: {
-  amount: number
-  currency: string
-  designId?: string
-  quoteId?: string
-}): Promise<JewelryPaymentIntent> {
+/** The server charges the accepted quote's total; the client only names the quote. */
+export function createJewelryPaymentIntent(payload: { quoteId: string }): Promise<JewelryPaymentIntent> {
   return apiPost<JewelryPaymentIntent>('/jewelry-payments/intents', payload)
 }
 

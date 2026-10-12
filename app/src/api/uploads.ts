@@ -3,9 +3,8 @@ import { API_BASE_URL, request } from '@/src/lib/api'
 import type { UploadRef } from '@/src/types/api'
 
 /**
- * Public dev-showcase content URL (see `GET /uploads/:id/content`).
- * UUID-addressed; only local-dev uploads resolve, S3 uploads stay behind
- * the presigned flow.
+ * URL of a PUBLIC upload (published logos, portfolio images, thumbnails of listed designs, seed
+ * art). Private media is only served through the signed links the API returns (see mediaUrl).
  */
 export function uploadContentUrl(uploadId: string): string {
   return `${API_BASE_URL}/uploads/${uploadId}/content`

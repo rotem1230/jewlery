@@ -1,5 +1,6 @@
 import type { ImageSourcePropType } from 'react-native'
 import { uploadContentUrl } from '@/src/api/uploads'
+import { mediaUrl } from '@/src/lib/media'
 
 export function displayName(
   first?: string | null,
@@ -21,6 +22,19 @@ export function imageFromUpload(
   fallback: ImageSourcePropType,
 ): ImageSourcePropType {
   return uploadId ? { uri: uploadContentUrl(uploadId) } : fallback
+}
+
+/**
+ * Prefers the signed link the API returned (private media such as a draft's thumbnail); otherwise
+ * the public upload URL (listed designs, published profiles), otherwise the bundled fallback.
+ */
+export function imageFromMedia(
+  link: string | null | undefined,
+  uploadId: string | null | undefined,
+  fallback: ImageSourcePropType,
+): ImageSourcePropType {
+  const signed = mediaUrl(link)
+  return signed ? { uri: signed } : imageFromUpload(uploadId, fallback)
 }
 
 export function splitFullName(fullName: string): { firstName: string; lastName?: string } {

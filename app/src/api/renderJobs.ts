@@ -9,6 +9,8 @@ export type RenderJob = {
   exportFormat: RenderExportFormat | null
   status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
   outputUploadId: string | null
+  /** Signed link to the exported file. */
+  outputUrl?: string | null
   errorMessage: string | null
 }
 

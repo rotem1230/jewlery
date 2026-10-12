@@ -17,6 +17,8 @@ export type UploadRef = {
   mimeType: string
   /** Presigned/absolute URL when the backend can serve the file. */
   url?: string | null
+  /** Short-lived signed link to the bytes (see mediaUrl); returned for the uploader. */
+  contentUrl?: string | null
 }
 
 export type PortfolioItem = {
@@ -28,6 +30,8 @@ export type PortfolioItem = {
   isSelectedWork: boolean
   createdAt: string
   upload?: UploadRef | null
+  /** Signed link, present on the owner's own profile (drafts are private). */
+  contentUrl?: string | null
 }
 
 export type JewelerReview = {
@@ -51,6 +55,8 @@ export type JewelerProfile = {
   region?: Region | null
   logoUploadId?: string | null
   logoUpload?: UploadRef | null
+  /** Signed logo link, present on the owner's own profile. */
+  logoUrl?: string | null
   portfolio: PortfolioItem[]
   reviews: JewelerReview[]
   ratingAvg: number | string
@@ -124,6 +130,8 @@ export type ChatMessage = {
   type: 'TEXT' | 'IMAGE' | 'AUDIO' | 'QUOTE_CARD' | 'SYSTEM'
   body: string | null
   imageUploadId: string | null
+  /** Image / voice note with its signed link (chat media is private to the participants). */
+  imageUpload?: { id: string; mimeType: string; contentUrl?: string | null } | null
   quoteId?: string | null
   quote?: QuoteSummary | null
   payload?: unknown
@@ -247,6 +255,8 @@ export type DesignListItem = {
   description: string | null
   status: DesignStatus
   thumbnailUploadId: string | null
+  /** Signed thumbnail link for the owner (a draft's thumbnail is private). */
+  thumbnailUrl?: string | null
   parameters: Record<string, unknown>
   publishedAt: string | null
   createdAt: string
@@ -274,6 +284,8 @@ export type DesignDetail = DesignListItem & {
   jewelerNotes?: string | null
   lockedFields?: string[]
   lockedAt?: string | null
+  /** Signed link to the design's generated AI model, for the owner. */
+  aiOutputUrl?: string | null
   versions?: Array<{ id: string; versionNumber: number; status: string; createdAt: string }>
 }
 

@@ -9,7 +9,7 @@ import { FilterChip } from '@/src/components/designs/FilterChip'
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { listDesigns } from '@/src/api/designs'
-import { imageFromUpload } from '@/src/lib/format'
+import { imageFromMedia } from '@/src/lib/format'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, spacing } from '@/src/theme/tokens'
@@ -144,7 +144,7 @@ export function MyDesignsScreen() {
                           ? t('quotesCount').replace('{{count}}', String(item.quoteCount))
                           : undefined
                       }
-                      image={imageFromUpload(item.thumbnailUploadId, heroRing)}
+                      image={imageFromMedia(item.thumbnailUrl, item.thumbnailUploadId, heroRing)}
                       onPress={() => navigation.navigate('DesignDetails', { designId: item.id })}
                     />
                   )

@@ -23,6 +23,9 @@ import heroRing from '../../../assets/images/home/hero-ring.png'
 type TabNav = BottomTabNavigationProp<JewelerTabParamList>
 type AtelierTab = 'jewelers' | 'designs'
 
+/** Search centre for "near me" until the device location is used. */
+const TEL_AVIV = { lat: 32.0853, lng: 34.7818 }
+
 export function AtelierScreen() {
   const { t, locale } = useTranslation()
   const navigation = useNavigation<NativeStackNavigationProp<AtelierStackParamList>>()
@@ -34,7 +37,6 @@ export function AtelierScreen() {
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [regionId, setRegionId] = useState<string | undefined>(undefined)
   const [nearby, setNearby] = useState(false)
-  const telAviv = { lat: 32.0853, lng: 34.7818 }
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 350)
@@ -47,7 +49,7 @@ export function AtelierScreen() {
   const jewelersLoad = useCallback(
     (signal: AbortSignal) =>
       nearby
-        ? listAtelierGeoSearch({ lat: telAviv.lat, lng: telAviv.lng, radiusKm: 25, page: 1 }, signal)
+        ? listAtelierGeoSearch({ lat: TEL_AVIV.lat, lng: TEL_AVIV.lng, radiusKm: 25, page: 1 }, signal)
         : listAtelierJewelers(
             { q: debouncedQuery || undefined, regionId, page: 1 },
             signal,

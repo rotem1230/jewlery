@@ -1,18 +1,17 @@
 /**
- * Shared HTTP transport for the local backend.
+ * Shared HTTP transport for the backend.
  *
- * - iOS Simulator shares the Mac network stack, so `http://localhost:3000`
- *   reaches `npm run start:dev` in `backend/`. On a physical device, point
- *   `API_BASE_URL` at your Mac's LAN IP instead.
+ * - The API URL is build-time configuration (src/config/env.ts): the local backend in
+ *   development, a required https URL in release builds.
  * - Backend wraps payloads in `{ success, data }` (see TransformInterceptor).
  * - Auth header is injected from the Redux session via `setAuthSessionBridge`
  *   so domain modules (`src/api/*`) stay token-free (DRY).
- * - 401 responses rotate `POST /auth/refresh` once, then retry.
+ * - 401 responses rotate `POST /auth/refresh` once, then retry. Only a refresh the server
+ *   rejects (401) signs the user out; an outage or timeout keeps the session for a later retry.
  */
+import { API_BASE_URL } from '@/src/config/env'
 
-export const API_BASE_URL = __DEV__
-  ? 'http://localhost:3000/api/v1'
-  : 'http://localhost:3000/api/v1'
+export { API_BASE_URL }
 
 const DEFAULT_TIMEOUT_MS = 15_000
 
@@ -41,8 +40,10 @@ type AuthSessionBridge = {
   onAuthLost: () => void
 }
 
+type RefreshOutcome = 'rotated' | 'rejected' | 'unavailable'
+
 let authBridge: AuthSessionBridge | null = null
-let refreshWaiter: Promise<boolean> | null = null
+let refreshWaiter: Promise<RefreshOutcome> | null = null
 
 /** Called once from the store bootstrap so requests carry the session JWT. */
 export function setAuthTokenProvider(provider: TokenProvider | null) {
@@ -87,25 +88,26 @@ function withTimeout(signal: AbortSignal | undefined, timeoutMs: number) {
   }
 }
 
-async function rotateAccessToken(): Promise<boolean> {
+async function rotateAccessToken(): Promise<RefreshOutcome> {
   const refreshToken = authBridge?.getRefreshToken() ?? null
-  if (!refreshToken || refreshToken === 'demo') return false
+  if (!refreshToken || refreshToken === 'demo') return 'unavailable'
   if (!refreshWaiter) {
-    refreshWaiter = (async () => {
+    refreshWaiter = (async (): Promise<RefreshOutcome> => {
       try {
         const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
         })
-        if (!res.ok) return false
+        if (res.status === 401) return 'rejected'
+        if (!res.ok) return 'unavailable'
         const json = (await res.json()) as { data?: { tokens?: AuthTokens } }
         const tokens = json.data?.tokens
-        if (!tokens?.accessToken || !tokens?.refreshToken) return false
+        if (!tokens?.accessToken || !tokens?.refreshToken) return 'unavailable'
         authBridge?.applyTokens(tokens)
-        return true
+        return 'rotated'
       } catch {
-        return false
+        return 'unavailable'
       }
     })().finally(() => {
       refreshWaiter = null
@@ -148,10 +150,9 @@ async function sendRequest<T>(path: string, options: RequestOptions, didRefresh:
       !didRefresh &&
       path !== '/auth/refresh'
     ) {
-      const rotated = await rotateAccessToken()
-      if (rotated) return sendRequest<T>(path, options, true)
-      const refreshToken = authBridge?.getRefreshToken()
-      if (refreshToken && refreshToken !== 'demo') authBridge?.onAuthLost()
+      const outcome = await rotateAccessToken()
+      if (outcome === 'rotated') return sendRequest<T>(path, options, true)
+      if (outcome === 'rejected') authBridge?.onAuthLost()
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -202,12 +203,28 @@ export function isPaywallError(err: unknown): boolean {
   }
 }
 
+/** Machine-readable `code` of an API error body (e.g. EMAIL_NOT_VERIFIED), if any. */
+export function apiErrorCode(err: unknown): string | undefined {
+  if (!(err instanceof ApiError)) return undefined
+  try {
+    const json = JSON.parse(err.body) as { code?: unknown }
+    return typeof json.code === 'string' ? json.code : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Best-effort message from `{ success, message }` JSON or the raw body. */
 export function parseApiError(err: unknown): string {
   if (err instanceof ApiError) {
     try {
-      const json = JSON.parse(err.body) as { message?: string | string[]; errors?: string[] }
-      if (Array.isArray(json.errors) && json.errors[0]) return String(json.errors[0])
+      const json = JSON.parse(err.body) as {
+        message?: string | string[]
+        errors?: Array<string | { field?: string; message?: string }>
+      }
+      const firstError = Array.isArray(json.errors) ? json.errors[0] : undefined
+      if (typeof firstError === 'string' && firstError) return firstError
+      if (firstError && typeof firstError === 'object' && firstError.message) return firstError.message
       if (typeof json.message === 'string' && json.message.trim()) return json.message
       if (Array.isArray(json.message) && json.message[0]) return String(json.message[0])
     } catch {

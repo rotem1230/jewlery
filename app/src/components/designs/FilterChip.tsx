@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
-import { colors, radii } from '@/src/theme/tokens'
+import { colors } from '@/src/theme/tokens'
 
 type FilterChipProps = {
   label: string

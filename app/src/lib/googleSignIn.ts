@@ -1,3 +1,5 @@
+import { GOOGLE_WEB_CLIENT_ID } from '@/src/config/env'
+
 export type GoogleSignInProfile = {
   idToken: string
   email?: string
@@ -26,7 +28,7 @@ export async function signInWithGoogleNative(): Promise<GoogleSignInProfile> {
   }
 
   GoogleSignin.configure({
-    webClientId: process.env.GOOGLE_WEB_CLIENT_ID,
+    webClientId: GOOGLE_WEB_CLIENT_ID,
   })
   await GoogleSignin.hasPlayServices()
   const userInfo = await GoogleSignin.signIn()

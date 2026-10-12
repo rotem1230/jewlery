@@ -141,3 +141,31 @@ describe('re-inviting accounts that never verified', () => {
     expect(t.mailbox.to(verified.email)).toHaveLength(0);
   });
 });
+
+describe('sign-up details', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('stores the phone number given at sign-up (there is no session yet to send it later)', async () => {
+    const email = uniqueEmail('phone');
+    await t.http
+      .post(`${API}/auth/register`)
+      .send({ email, password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER], phone: '+972501234567' })
+      .expect(201);
+    expect((await t.prisma.user.findUniqueOrThrow({ where: { email } })).phone).toBe('+972501234567');
+  });
+
+  it('refuses a malformed phone number', async () => {
+    await t.http
+      .post(`${API}/auth/register`)
+      .send({ email: uniqueEmail('phone'), password: DEFAULT_PASSWORD, roles: [UserRole.DESIGNER], phone: 'call me' })
+      .expect(400);
+  });
+});

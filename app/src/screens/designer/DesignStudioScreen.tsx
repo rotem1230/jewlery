@@ -16,7 +16,7 @@ import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
 import { getDesign, lockDesign, updateDesign } from '@/src/api/designs'
-import { createInspiration, getAiJob } from '@/src/api/ai'
+import { createInspiration, waitForAiJob } from '@/src/api/ai'
 import { createRenderJob, type RenderExportFormat } from '@/src/api/renderJobs'
 import { createVisualizationJob } from '@/src/api/visualization'
 import {
@@ -27,9 +27,10 @@ import {
   listStones,
   listWizardSizeCharts,
 } from '@/src/api/masterData'
-import { uploadChatFile, uploadContentUrl } from '@/src/api/uploads'
+import { uploadChatFile } from '@/src/api/uploads'
+import { mediaUrl } from '@/src/lib/media'
 import { pickChatPhoto } from '@/src/lib/chatAttachments'
-import { isPaywallError, parseApiError } from '@/src/lib/api'
+import { apiErrorCode, isPaywallError, parseApiError } from '@/src/lib/api'
 import {
   FALLBACK_ELEMENTS,
   FALLBACK_METALS,
@@ -110,6 +111,8 @@ export function DesignStudioScreen() {
   const [noteDraft, setNoteDraft] = useState<string | null>(null)
   const [jewelerNotesDraft, setJewelerNotesDraft] = useState<string | null>(null)
   const [inspirationUploadDraft, setInspirationUploadDraft] = useState<string | null>(null)
+  /** Signed link of a model generated in this session (the saved design carries aiOutputUrl). */
+  const [aiModelLink, setAiModelLink] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [previewUri, setPreviewUri] = useState<string | null>(null)
 
@@ -140,7 +143,7 @@ export function DesignStudioScreen() {
   const previewJewelerNotes = jewelerNotesDraft ?? design?.jewelerNotes ?? ''
   const previewInspiration = inspirationUploadDraft ?? inspirationUploadFromParameters(parameters)
   const previewAiOutput = aiOutputUploadFromParameters(parameters)
-  const aiModelUri = previewAiOutput ? uploadContentUrl(previewAiOutput) : undefined
+  const aiModelUri = previewAiOutput ? mediaUrl(aiModelLink ?? design?.aiOutputUrl) : undefined
   const markers = useMemo(
     () =>
       markersFromCatalog(
@@ -372,20 +375,27 @@ export function DesignStudioScreen() {
     const prompt = (previewNote.trim() || 'Sample jewelry inspiration').slice(0, 500)
     try {
       setBusy(true)
-      let job = await createInspiration({
+      const queued = await createInspiration({
         designId: design.id,
         prompt: prompt.length >= 3 ? prompt : 'Sample jewelry inspiration',
       })
-      for (let i = 0; i < 12 && (job.status === 'QUEUED' || job.status === 'RUNNING'); i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 400))
-        job = await getAiJob(job.id)
-      }
+      // Generation runs on the server in the background (up to ~90 s with the provider).
+      const job = await waitForAiJob(queued.id)
       if (job.status === 'SUCCEEDED' && job.outputUploadId) {
+        setAiModelLink(job.outputUrl ?? null)
         await persist({ ...parameters, aiOutputUploadId: job.outputUploadId })
+        return
+      }
+      if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+        Alert.alert(t('studioInspirationGenerate'), t('studioInspirationStillRunning'))
         return
       }
       Alert.alert(t('authErrorTitle'), job.errorMessage || t('studioInspirationGenerateFailed'))
     } catch (err) {
+      if (apiErrorCode(err) === 'AI_JOB_IN_PROGRESS') {
+        Alert.alert(t('studioInspirationGenerate'), t('studioInspirationStillRunning'))
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioInspirationGenerateFailed'))
     } finally {
       setBusy(false)
@@ -448,9 +458,9 @@ export function DesignStudioScreen() {
       setBusy(true)
       const upload = await uploadChatFile(file)
       const job = await createVisualizationJob({ designId: design.id, inputUploadId: upload.id })
-      const outputId = job.outputUploadId ?? job.inputUploadId
-      if (job.status === 'SUCCEEDED' && outputId) {
-        setPreviewUri(uploadContentUrl(outputId))
+      const output = mediaUrl(job.outputUrl)
+      if (job.status === 'SUCCEEDED' && output) {
+        setPreviewUri(output)
         return
       }
       Alert.alert(t('authErrorTitle'), t('studioTryOnFailed'))
@@ -477,11 +487,11 @@ export function DesignStudioScreen() {
     try {
       setBusy(true)
       const job = await createRenderJob({ designId: design.id, exportFormat })
-      if (job.status !== 'SUCCEEDED' || !job.outputUploadId) {
+      const uri = mediaUrl(job.outputUrl)
+      if (job.status !== 'SUCCEEDED' || !uri) {
         Alert.alert(t('authErrorTitle'), job.errorMessage || t('studioExportFailed'))
         return
       }
-      const uri = uploadContentUrl(job.outputUploadId)
       if (exportFormat === 'PNG_HD') {
         setPreviewUri(uri)
         return

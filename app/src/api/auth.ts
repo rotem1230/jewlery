@@ -1,6 +1,9 @@
 /** Auth endpoints (anonymous — no session token required). */
-import { apiGet, apiPatch, apiPost } from '@/src/lib/api'
+import { apiErrorCode, apiGet, apiPatch, apiPost } from '@/src/lib/api'
 import type { AuthResult, AuthTokens, SafeUser } from '@/src/types/api'
+
+/** Sign-up creates an account that must verify its e-mail before it can sign in. */
+export type RegisterResult = { user: SafeUser; requiresEmailVerification: true }
 
 export function login(email: string, password: string): Promise<AuthResult> {
   return apiPost<AuthResult>('/auth/login', { email, password }, { anonymous: true })
@@ -12,8 +15,20 @@ export function register(payload: {
   roles: Array<'DESIGNER' | 'JEWELER'>
   firstName?: string
   lastName?: string
-}): Promise<AuthResult> {
-  return apiPost<AuthResult>('/auth/register', payload, { anonymous: true })
+  /** E.164; stored with the account (there is no session to send it later). */
+  phone?: string
+}): Promise<RegisterResult> {
+  return apiPost<RegisterResult>('/auth/register', payload, { anonymous: true })
+}
+
+/** Mails a fresh verification link (always answers OK, whether or not the account exists). */
+export function resendVerification(email: string): Promise<{ ok?: boolean }> {
+  return apiPost('/auth/resend-verify', { email }, { anonymous: true })
+}
+
+/** Sign-in refused because the e-mail address has not been verified yet. */
+export function isEmailNotVerified(err: unknown): boolean {
+  return apiErrorCode(err) === 'EMAIL_NOT_VERIFIED'
 }
 
 export function forgotPassword(email: string): Promise<{ ok?: boolean }> {
@@ -51,9 +66,9 @@ export function switchRole(role: 'DESIGNER' | 'JEWELER'): Promise<AuthResult> {
   return apiPost<AuthResult>('/auth/switch-role', { role })
 }
 
+/** The server reads the identity (and a verified e-mail) from the ID token only. */
 export function oauthGoogle(payload: {
   idToken: string
-  email?: string
   firstName?: string
   lastName?: string
 }): Promise<AuthResult> {

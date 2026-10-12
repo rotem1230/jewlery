@@ -16,7 +16,7 @@ import { getDesign, duplicateDesign, transitionDesign, updateDesign } from '@/sr
 import { listConversations } from '@/src/api/chat'
 import { listMetals, metalChoices, parseMetalChoice } from '@/src/api/masterData'
 import { parseApiError } from '@/src/lib/api'
-import { displayName, formatMoney, imageFromUpload } from '@/src/lib/format'
+import { displayName, formatMoney, imageFromMedia } from '@/src/lib/format'
 import { specsFromDesign } from '@/src/lib/designSpecs'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
@@ -162,12 +162,12 @@ export function DesignDetailsScreen() {
             <>
               <DesignDetailsCard
                 sectionTitle={t('designDetailsShort')}
-                image={imageFromUpload(design.thumbnailUploadId, heroRing)}
+                image={imageFromMedia(design.thumbnailUrl, design.thumbnailUploadId, heroRing)}
                 title={design.title || t('designDetailsTitle')}
                 quote={design.description || ''}
                 specs={specs}
                 onMaximize={() => {
-                  const source = imageFromUpload(design.thumbnailUploadId, heroRing)
+                  const source = imageFromMedia(design.thumbnailUrl, design.thumbnailUploadId, heroRing)
                   if (typeof source === 'object' && source && 'uri' in source && source.uri) {
                     setViewerUri(source.uri)
                     return

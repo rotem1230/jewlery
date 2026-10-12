@@ -10,7 +10,7 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { QuoteApproveSuccessModal } from '@/src/components/ui/QuoteApproveSuccessModal'
 import { acceptQuote, declineQuote, getQuote } from '@/src/api/quotes'
 import { createJewelryPaymentIntent } from '@/src/api/jewelryPayments'
-import { parseApiError } from '@/src/lib/api'
+import { apiErrorCode, parseApiError } from '@/src/lib/api'
 import { contentBodyText, formatMoney, imageFromUpload } from '@/src/lib/format'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
@@ -65,10 +65,16 @@ export function QuoteDetailsScreen() {
     if (!quote) return
     setBusy(true)
     try {
-      await acceptQuote(quote.id)
+      // Accept exactly the terms on screen; a quote edited meanwhile is refused, never accepted unseen.
+      await acceptQuote(quote)
       await refresh()
       setSuccessVisible(true)
     } catch (err) {
+      if (apiErrorCode(err) === 'QUOTE_CHANGED') {
+        await refresh()
+        Alert.alert(t('quoteChangedTitle'), t('quoteChangedBody'))
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
     } finally {
       setBusy(false)
@@ -93,14 +99,13 @@ export function QuoteDetailsScreen() {
     if (!quote) return
     setBusy(true)
     try {
-      await createJewelryPaymentIntent({
-        amount: Number(quote.totalPrice),
-        currency: quote.currency,
-        designId: quote.designId,
-        quoteId: quote.id,
-      })
+      await createJewelryPaymentIntent({ quoteId: quote.id })
       Alert.alert(t('quotePayInApp'), t('quotePayInAppDone'))
     } catch (err) {
+      if (apiErrorCode(err) === 'PAYMENT_PROVIDER_NOT_CONFIGURED') {
+        Alert.alert(t('quotePayInApp'), t('paymentsUnavailable'))
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
     } finally {
       setBusy(false)

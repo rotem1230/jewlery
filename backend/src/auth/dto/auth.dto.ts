@@ -8,6 +8,7 @@ import {
   IsEnum,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -40,6 +41,11 @@ export class RegisterDto {
   @IsString()
   @MaxLength(MAX_NAME)
   lastName?: string;
+
+  @ApiPropertyOptional({ description: 'E.164 phone number', example: '+972501234567' })
+  @IsOptional()
+  @Matches(/^\+[1-9]\d{6,14}$/, { message: 'phone must be an E.164 number' })
+  phone?: string;
 
   @ApiProperty({ enum: UserRole, isArray: true, example: [UserRole.DESIGNER] })
   @IsArray()

@@ -9,7 +9,7 @@ import {
 } from 'react-native'
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
 import heroRing from '../../../assets/images/home/hero-ring.png'
-import { colors, radii, shadows } from '@/src/theme/tokens'
+import { radii, shadows } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 
 type HeroDesignCardProps = {

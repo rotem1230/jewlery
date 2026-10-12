@@ -7,7 +7,6 @@ import { BusinessProfileSummary } from '@/src/components/jeweler/BusinessProfile
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { addPortfolioItem, publishJewelerProfile } from '@/src/api/jewelerProfiles'
 import { parseApiError } from '@/src/lib/api'
-import { colors } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import type { ProfileStackParamList } from '@/src/navigation/types'
 import heroRing from '../../../assets/images/home/hero-ring.png'

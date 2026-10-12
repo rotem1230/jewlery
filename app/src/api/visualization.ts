@@ -6,6 +6,8 @@ export type VisualizationJob = {
   designId: string
   inputUploadId: string
   outputUploadId: string | null
+  /** Signed link to the try-on image. */
+  outputUrl?: string | null
   status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
 }
 
