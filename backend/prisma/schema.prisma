@@ -208,6 +208,7 @@ model User {
   jewelryPaymentIntents   JewelryPaymentIntent[]
 
   @@unique([authProvider, authProviderSub])
+  @@index([avatarUploadId])
   @@index([status])
   @@index([phone])
   @@map("users")
@@ -471,15 +472,22 @@ model IdempotencyKey {
 }
 
 model OutboxEvent {
-  id          String    @id @default(uuid()) @db.Uuid
-  type        String
-  payload     Json
-  createdAt   DateTime  @default(now())
-  processedAt DateTime?
-  attempts    Int       @default(0)
-  lastError   String?
+  id            String    @id @default(uuid()) @db.Uuid
+  type          String
+  payload       Json
+  createdAt     DateTime  @default(now())
+  processedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
+  /// Earliest time the next delivery attempt may run (exponential backoff).
+  nextAttemptAt DateTime  @default(now())
+  /// Lease of the worker that claimed the event; an expired lease can be re-claimed.
+  lockedUntil   DateTime?
+  /// Set when the event exhausted its attempts (dead letter).
+  deadAt        DateTime?
 
   @@index([processedAt, createdAt])
+  @@index([processedAt, deadAt, nextAttemptAt])
   @@map("outbox_events")
 }
 
@@ -731,6 +739,7 @@ model Design {
   galleryItems        GalleryItem[]
   usageEvents         UsageEvent[]
 
+  @@index([thumbnailUploadId])
   @@index([ownerUserId, status])
   @@index([status, publishedAt])
   @@index([itemTypeId])
@@ -838,6 +847,8 @@ model VisualizationJob {
   outputUploadId     String?   @db.Uuid
   status             JobStatus @default(QUEUED)
   retentionExpiresAt DateTime
+  /// Set once the retention purge deleted the stored files.
+  purgedAt           DateTime?
   errorMessage       String?
   createdAt          DateTime  @default(now())
   finishedAt         DateTime?
@@ -890,6 +901,7 @@ model JewelerProfile {
   targets    DesignRequestTarget[]
   crmNotes   JewelerCrmNote[]
 
+  @@index([logoUploadId])
   @@index([regionId, publishStatus])
   @@index([publishStatus, ratingAvg])
   @@index([latitude, longitude])
@@ -943,6 +955,7 @@ model PortfolioItem {
   profile JewelerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
   upload  Upload         @relation(fields: [uploadId], references: [id], onDelete: Restrict)
 
+  @@index([uploadId])
   @@index([profileId, sortOrder])
   @@map("portfolio_items")
 }
@@ -960,6 +973,7 @@ model Review {
   profile JewelerProfile @relation(fields: [jewelerProfileId], references: [id], onDelete: Cascade)
   author  User?          @relation("ReviewAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
 
+  @@unique([jewelerProfileId, authorUserId])
   @@index([jewelerProfileId, isFeatured])
   @@map("reviews")
 }
@@ -1075,6 +1089,7 @@ model Message {
   quote        Quote?       @relation(fields: [quoteId], references: [id], onDelete: SetNull)
   imageUpload  Upload?      @relation("MessageImage", fields: [imageUploadId], references: [id], onDelete: SetNull)
 
+  @@index([imageUploadId])
   @@index([conversationId, createdAt])
   @@map("messages")
 }
@@ -1100,14 +1115,14 @@ model Quote {
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
-  conversation      Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  design            Design         @relation("DesignQuotes", fields: [designId], references: [id], onDelete: Cascade)
-  designRequest     DesignRequest? @relation(fields: [designRequestId], references: [id], onDelete: SetNull)
-  author            User           @relation("QuoteAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
-  disclaimerPage    ContentPage?   @relation("QuoteDisclaimer", fields: [disclaimerPageId], references: [id], onDelete: SetNull)
+  conversation      Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  design            Design                 @relation("DesignQuotes", fields: [designId], references: [id], onDelete: Cascade)
+  designRequest     DesignRequest?         @relation(fields: [designRequestId], references: [id], onDelete: SetNull)
+  author            User                   @relation("QuoteAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+  disclaimerPage    ContentPage?           @relation("QuoteDisclaimer", fields: [disclaimerPageId], references: [id], onDelete: SetNull)
   events            QuoteEvent[]
   messages          Message[]
-  acceptedForDesign Design?                 @relation("DesignAcceptedQuote")
+  acceptedForDesign Design?                @relation("DesignAcceptedQuote")
   jewelryPayments   JewelryPaymentIntent[]
 
   @@index([designId, status])
@@ -1252,8 +1267,8 @@ model PaymentEvent {
   payload                Json
   processedAt            DateTime @default(now())
 
-  subscription         Subscription?          @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
-  jewelryPaymentIntent JewelryPaymentIntent?  @relation(fields: [jewelryPaymentIntentId], references: [id], onDelete: SetNull)
+  subscription         Subscription?         @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  jewelryPaymentIntent JewelryPaymentIntent? @relation(fields: [jewelryPaymentIntentId], references: [id], onDelete: SetNull)
 
   @@index([subscriptionId])
   @@index([jewelryPaymentIntentId])
@@ -1274,8 +1289,8 @@ model JewelryPaymentIntent {
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
 
-  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  quote  Quote?        @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quote  Quote?         @relation(fields: [quoteId], references: [id], onDelete: SetNull)
   events PaymentEvent[]
 
   @@index([userId, createdAt])

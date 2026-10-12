@@ -1,16 +1,22 @@
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { join, normalize, sep } from 'path';
 import { randomUUID } from 'crypto';
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
+  NotImplementedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Upload, UploadStatus } from '@prisma/client';
 import { AppConfigService } from '../cms/app-config.service';
 import { PrismaService } from '../database/prisma.service';
+import { contentMatchesMimeType } from './file-signature';
+import { UploadAccessService } from './upload-access.service';
 import { DEFAULT_UPLOAD_LIMITS, UploadLimits } from './uploads.constants';
 
 export type PresignResult = {
@@ -21,26 +27,38 @@ export type PresignResult = {
   expiresInSeconds: number;
 };
 
+export type ServableUpload = { upload: Upload; path: string };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class UploadsService {
+  private readonly logger = new Logger(UploadsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly appConfig: AppConfigService,
+    private readonly access: UploadAccessService,
   ) {}
 
+  /** AppConfig `upload_limits`, with every missing / malformed field taken from the defaults. */
   private async getLimits(): Promise<UploadLimits> {
     const configured = await this.appConfig.get('upload_limits');
-    if (
-      configured &&
-      typeof configured === 'object' &&
-      !Array.isArray(configured) &&
-      'maxBytes' in configured &&
-      'allowedMimeTypes' in configured
-    ) {
-      return configured as unknown as UploadLimits;
-    }
-    return DEFAULT_UPLOAD_LIMITS;
+    const c = configured && typeof configured === 'object' && !Array.isArray(configured)
+      ? (configured as Record<string, unknown>)
+      : {};
+    const number = (value: unknown, fallback: number) =>
+      typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+    return {
+      maxBytes: number(c.maxBytes, DEFAULT_UPLOAD_LIMITS.maxBytes),
+      allowedMimeTypes:
+        Array.isArray(c.allowedMimeTypes) && c.allowedMimeTypes.every((m) => typeof m === 'string')
+          ? (c.allowedMimeTypes as string[])
+          : DEFAULT_UPLOAD_LIMITS.allowedMimeTypes,
+      dailyMaxBytes: number(c.dailyMaxBytes, DEFAULT_UPLOAD_LIMITS.dailyMaxBytes),
+      dailyMaxFiles: number(c.dailyMaxFiles, DEFAULT_UPLOAD_LIMITS.dailyMaxFiles),
+    };
   }
 
   private extensionFor(mimeType: string): string {
@@ -60,12 +78,27 @@ export class UploadsService {
     return map[mimeType] ?? 'bin';
   }
 
+  /**
+   * Presigned direct-to-object-storage uploads need a real S3 driver, which does not exist yet.
+   * The fake presign flow is kept for local development only.
+   */
+  private assertPresignAvailable(): void {
+    if (this.config.get<string>('nodeEnv') === 'production') {
+      throw new NotImplementedException({
+        success: false,
+        message: 'Presigned uploads are not available; upload with POST /uploads',
+        code: 'PRESIGN_NOT_AVAILABLE',
+      });
+    }
+  }
+
   async createPresign(
     ownerUserId: string,
     mimeType: string,
     sizeBytes: number,
     checksumSha256?: string,
   ): Promise<PresignResult> {
+    this.assertPresignAvailable();
     const limits = await this.getLimits();
 
     if (!limits.allowedMimeTypes.includes(mimeType)) {
@@ -112,6 +145,7 @@ export class UploadsService {
   }
 
   async confirm(uploadId: string, userId: string): Promise<Upload> {
+    this.assertPresignAvailable();
     const upload = await this.prisma.upload.findUnique({ where: { id: uploadId } });
     if (!upload) {
       throw new NotFoundException({ success: false, message: 'Upload not found' });
@@ -135,15 +169,35 @@ export class UploadsService {
     });
   }
 
+  private async assertDailyQuota(ownerUserId: string, incomingBytes: number, limits: UploadLimits): Promise<void> {
+    const since = new Date(Date.now() - DAY_MS);
+    const usage = await this.prisma.upload.aggregate({
+      where: { ownerUserId, createdAt: { gt: since } },
+      _sum: { sizeBytes: true },
+      _count: { _all: true },
+    });
+    const usedBytes = usage._sum.sizeBytes ?? 0;
+    if (usage._count._all >= limits.dailyMaxFiles || usedBytes + incomingBytes > limits.dailyMaxBytes) {
+      throw new HttpException(
+        {
+          success: false,
+          message: 'Daily upload limit reached, please try again tomorrow',
+          code: 'UPLOAD_QUOTA_EXCEEDED',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
   /**
-   * Direct local upload (dev): persists a multipart file under
-   * `uploads-local/` and returns a READY upload row. Validated against the
-   * same `upload_limits` AppConfig as presigned uploads.
+   * Direct upload to local storage under `uploads-local/` (server-generated file name). The
+   * declared type must be allowed AND match the file's leading bytes; per-user daily volume is
+   * capped. Returns the READY row plus a signed `contentUrl` for the owner.
    */
   async createLocal(
     ownerUserId: string,
     file: { buffer: Buffer; mimetype: string; size: number; originalname: string },
-  ): Promise<Upload> {
+  ): Promise<Upload & { contentUrl: string }> {
     const limits = await this.getLimits();
     if (!limits.allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException({
@@ -159,14 +213,22 @@ export class UploadsService {
         code: 'UPLOAD_TOO_LARGE',
       });
     }
+    if (!contentMatchesMimeType(file.mimetype, file.buffer)) {
+      throw new BadRequestException({
+        success: false,
+        message: 'File content does not match its declared type',
+        code: 'UPLOAD_CONTENT_MISMATCH',
+      });
+    }
+    await this.assertDailyQuota(ownerUserId, file.size, limits);
 
     const dir = join(process.cwd(), 'uploads-local');
     mkdirSync(dir, { recursive: true });
     // Server-generated name only — never user input (traversal-safe).
     const filename = `${randomUUID()}.${this.extensionFor(file.mimetype)}`;
-    writeFileSync(join(dir, filename), file.buffer);
+    writeFileSync(join(dir, filename), file.buffer, { mode: 0o600 });
 
-    return this.prisma.upload.create({
+    const upload = await this.prisma.upload.create({
       data: {
         ownerUserId,
         bucket: 'local-dev',
@@ -177,6 +239,7 @@ export class UploadsService {
         readyAt: new Date(),
       },
     });
+    return this.access.withUrl(upload);
   }
 
   /** Server-written file (AI / render output). Skips the chat MIME allowlist. */
@@ -184,7 +247,7 @@ export class UploadsService {
     const dir = join(process.cwd(), 'uploads-local');
     mkdirSync(dir, { recursive: true });
     const filename = `${randomUUID()}.${this.extensionFor(mimeType)}`;
-    writeFileSync(join(dir, filename), bytes);
+    writeFileSync(join(dir, filename), bytes, { mode: 0o600 });
     return this.prisma.upload.create({
       data: {
         ownerUserId,
@@ -205,35 +268,65 @@ export class UploadsService {
     };
   }
 
-  /**
-   * Local file serving for dev uploads (`local-dev` bucket only):
-   * `seed/*` keys resolve under `seed-assets/`, chat uploads under
-   * `uploads-local/`. Real (S3) uploads stay behind the presigned flow —
-   * traversal-safe via normalized prefix checks.
-   */
-  async getSeedContent(uploadId: string): Promise<{ path: string; mimeType: string }> {
-    const upload = await this.prisma.upload.findUnique({ where: { id: uploadId } });
-    if (!upload || upload.bucket !== 'local-dev') {
-      throw new NotFoundException({ success: false, message: 'Upload content not found' });
+  /** Absolute path of a locally stored upload, confined to its storage root (traversal-safe). */
+  private resolveLocalPath(upload: Pick<Upload, 'bucket' | 'objectKey'>): string | null {
+    if (upload.bucket !== 'local-dev') {
+      return null;
     }
     const { seedDir, localDir } = this.localBaseDirs();
-    let resolved: string;
     if (upload.objectKey.startsWith('seed/')) {
-      resolved = normalize(join(seedDir, upload.objectKey.slice('seed/'.length)));
-      if (!resolved.startsWith(seedDir + sep)) {
-        throw new NotFoundException({ success: false, message: 'Upload content not found' });
-      }
-    } else if (upload.objectKey.startsWith('local/')) {
-      resolved = normalize(join(localDir, upload.objectKey.slice('local/'.length)));
-      if (!resolved.startsWith(localDir + sep)) {
-        throw new NotFoundException({ success: false, message: 'Upload content not found' });
-      }
-    } else {
-      throw new NotFoundException({ success: false, message: 'Upload content not found' });
+      const resolved = normalize(join(seedDir, upload.objectKey.slice('seed/'.length)));
+      return resolved.startsWith(seedDir + sep) ? resolved : null;
     }
-    if (!existsSync(resolved)) {
-      throw new NotFoundException({ success: false, message: 'Upload content not found' });
+    if (upload.objectKey.startsWith('local/')) {
+      const resolved = normalize(join(localDir, upload.objectKey.slice('local/'.length)));
+      return resolved.startsWith(localDir + sep) ? resolved : null;
     }
-    return { path: resolved, mimeType: upload.mimeType };
+    return null;
+  }
+
+  /** A READY, not-deleted, locally stored upload together with its file path; otherwise null. */
+  async findServable(uploadId: string): Promise<ServableUpload | null> {
+    const upload = await this.prisma.upload.findUnique({ where: { id: uploadId } });
+    if (!upload || upload.deletedAt || upload.status !== UploadStatus.READY) {
+      return null;
+    }
+    const path = this.resolveLocalPath(upload);
+    if (!path || !existsSync(path)) {
+      return null;
+    }
+    return { upload, path };
+  }
+
+  /** Removes the stored bytes of a locally stored, non-seed upload (seed assets are shared). */
+  deleteStoredFile(upload: Pick<Upload, 'bucket' | 'objectKey'>): void {
+    if (!upload.objectKey.startsWith('local/')) {
+      return;
+    }
+    const path = this.resolveLocalPath(upload);
+    if (path) {
+      try {
+        rmSync(path, { force: true });
+      } catch (err) {
+        this.logger.warn(`Could not delete stored file ${upload.objectKey}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Validates that `uploadId` can be attached to something the caller publishes (avatar,
+   * thumbnail, logo, portfolio): it must be the caller's own READY image.
+   */
+  async assertOwnedImage(uploadId: string, ownerUserId: string, field: string): Promise<void> {
+    const upload = await this.prisma.upload.findFirst({
+      where: { id: uploadId, ownerUserId, deletedAt: null, status: UploadStatus.READY },
+      select: { mimeType: true },
+    });
+    if (!upload || !upload.mimeType.startsWith('image/')) {
+      throw new BadRequestException({
+        success: false,
+        message: `${field} must reference an image uploaded by the current user`,
+      });
+    }
   }
 }

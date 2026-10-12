@@ -65,7 +65,10 @@ describe('public data exposure', () => {
     const published = await t.http.post(`${API}/jeweler-profiles/publish`).set(jeweler.auth).send({}).expect(201);
 
     const res = await t.http.get(`${API}/jeweler-profiles/${published.body.data.id}`).expect(200);
-    expect(res.body.data.logoUpload).toBeUndefined();
+    // The app reads logoUpload.id; storage location and owner must never be exposed.
+    expect(res.body.data.logoUpload?.objectKey).toBeUndefined();
+    expect(res.body.data.logoUpload?.ownerUserId).toBeUndefined();
+    expect(res.body.data.logoUpload?.bucket).toBeUndefined();
     expect(Number(res.body.data.latitude)).toBeCloseTo(32.09, 2);
     expect(String(res.body.data.latitude)).not.toContain('085312');
 

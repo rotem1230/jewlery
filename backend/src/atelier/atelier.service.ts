@@ -14,6 +14,7 @@ import { PrismaService } from '../database/prisma.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { toPublicJewelerProfile } from '../jeweler-profiles/public-profile';
 import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAtelierJewelersDto } from './dto/atelier.dto';
 
 const PAGE_SIZE = 20;
@@ -24,6 +25,29 @@ const MATCHING_FLAG = 'phase2_matching';
 const PROMOTION_RANKER_FLAG = 'phase2_promotion_ranker';
 const GEO_SEARCH_FLAG = 'phase3_postgis';
 const DEFAULT_MATCHING_WEIGHTS = { regionMatchWeight: 50, specialtyOverlapWeight: 10 };
+
+/** What the public design feed exposes; reviewer ids, locks and acceptance data stay internal. */
+const PUBLIC_DESIGN_SELECT = {
+  id: true,
+  title: true,
+  description: true,
+  status: true,
+  ownerUserId: true,
+  thumbnailUploadId: true,
+  parameters: true,
+  preferredRegionId: true,
+  publishedAt: true,
+  expiresAt: true,
+  createdAt: true,
+  itemType: true,
+  preferredRegion: true,
+} satisfies Prisma.DesignSelect;
+
+const PUBLIC_JEWELER_INCLUDE = {
+  region: true,
+  logoUpload: { select: { id: true, mimeType: true } },
+  portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 },
+} satisfies Prisma.JewelerProfileInclude;
 
 @Injectable()
 export class AtelierService {
@@ -87,7 +111,11 @@ export class AtelierService {
 
   async designs(query: QueryAtelierDesignsDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
-    const where: Prisma.DesignWhereInput = { status: DesignStatus.PUBLISHED, deletedAt: null };
+    const where: Prisma.DesignWhereInput = {
+      status: DesignStatus.PUBLISHED,
+      deletedAt: null,
+      owner: { deletedAt: null },
+    };
     if (query.regionId) {
       where.preferredRegionId = query.regionId;
     }
@@ -104,7 +132,7 @@ export class AtelierService {
         orderBy: { publishedAt: 'desc' },
         skip: (page - 1) * PAGE_SIZE,
         take: PAGE_SIZE,
-        include: { itemType: true, preferredRegion: true },
+        select: PUBLIC_DESIGN_SELECT,
       }),
       this.prisma.design.count({ where }),
       this.activeBanners(),
@@ -124,7 +152,10 @@ export class AtelierService {
 
   async jewelers(query: QueryAtelierJewelersDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
-    const where: Prisma.JewelerProfileWhereInput = { publishStatus: ProfilePublishStatus.PUBLISHED };
+    const where: Prisma.JewelerProfileWhereInput = {
+      publishStatus: ProfilePublishStatus.PUBLISHED,
+      user: { deletedAt: null },
+    };
     if (query.regionId) {
       where.regionId = query.regionId;
     }
@@ -144,11 +175,11 @@ export class AtelierService {
       const rows = await this.prisma.jewelerProfile.findMany({
         where,
         orderBy,
-        include: { region: true, portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 } },
+        include: PUBLIC_JEWELER_INCLUDE,
       });
       const matchScores = await this.computeMatchScores(rows, query);
       const ranked = rows
-        .map((row, i) => ({ ...row, matchScore: matchScores[i] }))
+        .map((row, i) => ({ ...toPublicJewelerProfile(row), matchScore: matchScores[i] }))
         .sort((a, b) => b.matchScore - a.matchScore || Number(b.ratingAvg) - Number(a.ratingAvg));
       const total = ranked.length;
       const items = ranked.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -164,13 +195,13 @@ export class AtelierService {
         orderBy,
         skip: (page - 1) * PAGE_SIZE,
         take: PAGE_SIZE,
-        include: { region: true, portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 } },
+        include: PUBLIC_JEWELER_INCLUDE,
       }),
       this.prisma.jewelerProfile.count({ where }),
     ]);
 
     const matchScores = await this.computeMatchScores(rows, query);
-    const items = rows.map((row, i) => ({ ...row, matchScore: matchScores[i] }));
+    const items = rows.map((row, i) => ({ ...toPublicJewelerProfile(row), matchScore: matchScores[i] }));
 
     return {
       items,
@@ -223,13 +254,13 @@ export class AtelierService {
     }
 
     const profiles = await this.prisma.jewelerProfile.findMany({
-      where: { id: { in: pageIds } },
-      include: { region: true, portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 } },
+      where: { id: { in: pageIds }, user: { deletedAt: null } },
+      include: PUBLIC_JEWELER_INCLUDE,
     });
     const byId = new Map(profiles.map((profile) => [profile.id, profile]));
     const ordered = pageIds.map((id) => byId.get(id)).filter((row): row is NonNullable<typeof row> => !!row);
     const matchScores = await this.computeMatchScores(ordered, { page });
-    const items = ordered.map((row, i) => ({ ...row, matchScore: matchScores[i] }));
+    const items = ordered.map((row, i) => ({ ...toPublicJewelerProfile(row), matchScore: matchScores[i] }));
 
     return {
       items,

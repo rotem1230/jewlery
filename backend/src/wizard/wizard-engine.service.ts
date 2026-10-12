@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ItemType, ItemTypeConfig } from '@prisma/client';
-import Ajv, { ErrorObject } from 'ajv';
+import Ajv, { ErrorObject, ValidateFunction } from 'ajv';
 import { PrismaService } from '../database/prisma.service';
 
 export type ItemTypeWithConfig = ItemType & { config: ItemTypeConfig | null };
@@ -16,11 +16,33 @@ type CompatibilityRule = {
   messageKey?: string;
 };
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+/** Bound on cached validators (one per item-type config version). */
+const MAX_CACHED_VALIDATORS = 100;
 
 @Injectable()
 export class WizardEngineService {
+  /**
+   * Compiled JSON-schema validators keyed by config id + updatedAt. Compiling on every design
+   * autosave was slow and grew Ajv's internal cache without bound (it caches by object identity,
+   * and Prisma returns a new object each time). Each entry owns its Ajv instance, so evicting the
+   * entry releases everything it compiled.
+   */
+  private readonly validators = new Map<string, ValidateFunction>();
+
   constructor(private readonly prisma: PrismaService) {}
+
+  private validatorFor(config: ItemTypeConfig): ValidateFunction {
+    const key = `${config.id}:${new Date(config.updatedAt).getTime()}`;
+    let validate = this.validators.get(key);
+    if (!validate) {
+      if (this.validators.size >= MAX_CACHED_VALIDATORS) {
+        this.validators.clear();
+      }
+      validate = new Ajv({ allErrors: true, strict: false }).compile(config.parametersSchema as object);
+      this.validators.set(key, validate);
+    }
+    return validate;
+  }
 
   async loadItemTypeByCode(code: string): Promise<ItemTypeWithConfig> {
     const itemType = await this.prisma.itemType.findUnique({
@@ -120,7 +142,7 @@ export class WizardEngineService {
     }
 
     if (itemType.config.parametersSchema) {
-      const validateFn = ajv.compile(itemType.config.parametersSchema as object);
+      const validateFn = this.validatorFor(itemType.config);
       const ok = validateFn(parameters);
       if (!ok) {
         errors.push(

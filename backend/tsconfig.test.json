@@ -3,7 +3,7 @@
   "compilerOptions": {
     "incremental": false,
     "sourceMap": true,
-    "types": ["node", "jest"]
+    "types": ["node", "jest", "multer"]
   },
   "include": ["src/**/*", "test/**/*", "prisma/seed.ts", "prisma/seed/**/*"]
 }

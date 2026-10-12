@@ -14,6 +14,7 @@ import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
+import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { CreateVisualizationJobDto, QueryVisualizationJobsDto } from './dto/visualization.dto';
 
@@ -36,7 +37,12 @@ export class VisualizationService {
     private readonly outbox: OutboxService,
     private readonly featureFlags: FeatureFlagsService,
     private readonly uploads: UploadsService,
+    private readonly access: UploadAccessService,
   ) {}
+
+  private view(job: VisualizationJob) {
+    return { ...job, outputUrl: this.access.urlFor(job.outputUploadId) };
+  }
 
   private assertOwnerOrAdmin(job: { requestedById: string }, user: User): void {
     if (job.requestedById !== user.id && !user.roles.includes(UserRole.ADMIN)) {
@@ -49,7 +55,7 @@ export class VisualizationService {
     return typeof raw === 'number' ? raw : DEFAULT_RETENTION_HOURS;
   }
 
-  async create(user: User, dto: CreateVisualizationJobDto): Promise<VisualizationJob> {
+  async create(user: User, dto: CreateVisualizationJobDto) {
     const flagOn = await this.featureFlags.isEnabled(VIZ_FLAG, user);
     if (!flagOn) {
       throw new ForbiddenException({
@@ -98,7 +104,7 @@ export class VisualizationService {
       after: toJsonValue(job),
     });
 
-    return this.process(job, user.id);
+    return this.view(await this.process(job, user.id));
   }
 
   /** Overlay catalog jewelry onto the selfie as a distinct output upload (never echo the input). */
@@ -139,8 +145,8 @@ export class VisualizationService {
     return job;
   }
 
-  async findOne(id: string, user: User): Promise<VisualizationJob> {
-    return this.getOwned(id, user);
+  async findOne(id: string, user: User) {
+    return this.view(await this.getOwned(id, user));
   }
 
   async findMany(user: User, query: QueryVisualizationJobsDto) {
@@ -158,16 +164,22 @@ export class VisualizationService {
     ]);
 
     return {
-      items,
+      items: items.map((job) => this.view(job)),
       pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
     };
   }
 
-  async purgeExpired(): Promise<{ purgedJobs: number; softDeletedUploads: number }> {
+  /**
+   * Retention for personal photos: after `viz_retention_hours` the selfie and the generated
+   * overlay are deleted from storage (not only flagged), stop being served, and the job is marked
+   * purged so it is never processed again.
+   */
+  async purgeExpired(batchSize = 500): Promise<{ purgedJobs: number; softDeletedUploads: number }> {
     const now = new Date();
     const expired = await this.prisma.visualizationJob.findMany({
-      where: { retentionExpiresAt: { lte: now } },
+      where: { retentionExpiresAt: { lte: now }, purgedAt: null },
       select: { id: true, inputUploadId: true, outputUploadId: true },
+      take: batchSize,
     });
 
     if (expired.length === 0) {
@@ -178,9 +190,20 @@ export class VisualizationService {
       new Set(expired.flatMap((job) => [job.inputUploadId, job.outputUploadId].filter((id): id is string => !!id))),
     );
 
+    const uploads = await this.prisma.upload.findMany({
+      where: { id: { in: uploadIds } },
+      select: { id: true, bucket: true, objectKey: true },
+    });
     const result = await this.prisma.upload.updateMany({
       where: { id: { in: uploadIds }, deletedAt: null },
       data: { deletedAt: now, status: UploadStatus.DELETED },
+    });
+    for (const upload of uploads) {
+      this.uploads.deleteStoredFile(upload);
+    }
+    await this.prisma.visualizationJob.updateMany({
+      where: { id: { in: expired.map((job) => job.id) } },
+      data: { purgedAt: now },
     });
 
     await this.audit.log({

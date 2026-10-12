@@ -5,8 +5,8 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Req,
@@ -15,7 +15,6 @@ import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagg
 import { User } from '@prisma/client';
 import { Request } from 'express';
 import { AllowUnverified } from '../authorization/decorators/allow-unverified.decorator';
-import { PrismaService } from '../database/prisma.service';
 import { ChangePasswordDto, RegisterDeviceDto, UpdateMeDto, UpdatePreferencesDto } from './dto/users.dto';
 import { UsersService } from './users.service';
 
@@ -25,10 +24,7 @@ type AuthedRequest = Request & { user: User };
 @ApiBearerAuth()
 @Controller('users')
 export class UsersController {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly usersService: UsersService,
-  ) {}
+  constructor(private readonly usersService: UsersService) {}
 
   @AllowUnverified()
   @Get('me')
@@ -89,26 +85,10 @@ export class UsersController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a public user profile by id' })
+  @ApiOperation({ summary: 'Get the public profile of a user (name, avatar, roles; never e-mail or status)' })
   @ApiResponse({ status: 200, description: 'Public user profile' })
   @ApiResponse({ status: 404, description: 'User not found' })
-  async findOne(@Param('id') id: string) {
-    const user = await this.prisma.user.findFirst({
-      where: { id, deletedAt: null },
-      select: {
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        roles: true,
-        activeRole: true,
-        status: true,
-        createdAt: true,
-      },
-    });
-    if (!user) {
-      throw new NotFoundException({ success: false, message: 'User not found' });
-    }
-    return user;
+  findOne(@Param('id', new ParseUUIDPipe({ errorHttpStatusCode: 404 })) id: string) {
+    return this.usersService.findPublic(id);
   }
 }

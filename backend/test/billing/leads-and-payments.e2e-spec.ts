@@ -65,6 +65,35 @@ describe('lead metering on design-request delivery', () => {
     expect(counts.available).toBe(2);
     expect(counts.consumed).toHaveLength(1);
     expect(counts.consumed[0].sourceRequestId).toBe(request.body.data.id);
+    // Regression: raw SQL dates were shifted by the database session time zone.
+    expect(Math.abs(counts.consumed[0].consumedAt!.getTime() - Date.now())).toBeLessThan(60_000);
+  });
+
+  it('a lead is still usable in the last hours of its billing period', async () => {
+    const jeweler = await subscribedJeweler();
+    await t.prisma.lead.updateMany({
+      where: { subscription: { userId: jeweler.id }, status: 'AVAILABLE' },
+      data: { periodEnd: new Date(Date.now() + 30 * 60_000) },
+    });
+    const designer = await registerVerified(t);
+    const request = await requestQuote(t, designer, jeweler);
+    expect(request.status).toBe(201);
+
+    const counts = await leadCounts(jeweler);
+    expect(counts.consumed).toHaveLength(1);
+  });
+
+  it('a lead whose billing period has ended is not consumed', async () => {
+    const jeweler = await subscribedJeweler();
+    await t.prisma.lead.updateMany({
+      where: { subscription: { userId: jeweler.id }, status: 'AVAILABLE' },
+      data: { periodEnd: new Date(Date.now() - 30 * 60_000) },
+    });
+    const designer = await registerVerified(t);
+    await requestQuote(t, designer, jeweler);
+
+    const counts = await leadCounts(jeweler);
+    expect(counts.consumed).toHaveLength(0);
   });
 
   it('never hands the last lead to two simultaneous requests', async () => {

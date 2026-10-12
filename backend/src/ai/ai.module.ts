@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CmsModule } from '../cms/cms.module';
 import { UploadsModule } from '../uploads/uploads.module';
 import { AI_ENGINE_ADAPTER } from './adapters/ai-engine.adapter';
 import { DummyAiEngineAdapter } from './adapters/dummy-ai-engine.adapter';
@@ -7,7 +8,7 @@ import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 
 @Module({
-  imports: [UploadsModule],
+  imports: [UploadsModule, CmsModule],
   controllers: [AiController],
   providers: [
     AiService,

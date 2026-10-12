@@ -89,15 +89,16 @@ describe('design editing integrity', () => {
     await t.close();
   });
 
-  it('two simultaneous saves from the same version: one wins, one is told it is stale', async () => {
+  it('simultaneous saves from the same version: exactly one wins, the rest are told they are stale', async () => {
     const owner = await registerVerified(t);
     const design = await createDraftDesign(t, owner);
     const results = await Promise.all(
-      ['A', 'B'].map((title) =>
+      ['A', 'B', 'C', 'D', 'E', 'F'].map((title) =>
         t.http.patch(`${API}/designs/${design.id}`).set(owner.auth).send({ version: 1, title }),
       ),
     );
-    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+    expect(results.filter((r) => r.status === 409)).toHaveLength(5);
     const stored = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
     expect(stored.version).toBe(2);
   });

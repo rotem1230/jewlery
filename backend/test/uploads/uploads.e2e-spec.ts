@@ -79,6 +79,19 @@ describe('upload content access', () => {
     await t.http.get(`${API}${url}`).expect(404);
   });
 
+  it('a participant cannot attach someone else\'s upload to a chat message', async () => {
+    const s = await marketplaceScenario(t);
+    const outsider = await registerVerified(t);
+    const foreign = await uploadFile(t, outsider, PNG_BYTES, 'image/png', 'private.png').expect(201);
+    await t.http
+      .post(`${API}/conversations/${s.conversation.id}/messages`)
+      .set(s.jeweler.auth)
+      .send({ type: 'IMAGE', imageUploadId: foreign.body.data.id })
+      .expect(400);
+    // and the outsider's private file stays unreachable for the conversation participants
+    await t.http.get(`${API}/uploads/${foreign.body.data.id}/content`).set(s.designer.auth).expect(404);
+  });
+
   it('keeps the logo of a published jeweler profile public', async () => {
     const jeweler = await registerVerified(t, { roles: ['JEWELER'] });
     const logo = await uploadFile(t, jeweler, PNG_BYTES, 'image/png', 'logo.png').expect(201);

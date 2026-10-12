@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { DEFAULT_UPLOAD_LIMITS } from '../uploads/uploads.constants';
 
 /** Config keys considered safe to expose via the unauthenticated public endpoint. */
 export const PUBLIC_CONFIG_KEYS = [
@@ -23,10 +24,7 @@ export const DEFAULT_APP_CONFIGS: DefaultConfigEntry[] = [
   },
   {
     key: 'upload_limits',
-    value: {
-      maxBytes: 10_485_760,
-      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'video/mp4'],
-    },
+    value: { ...DEFAULT_UPLOAD_LIMITS },
   },
   {
     key: 'token_ttls',

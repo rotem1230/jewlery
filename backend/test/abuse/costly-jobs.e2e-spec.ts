@@ -4,22 +4,32 @@ import { createDraftDesign, registerVerified, TestUser } from '../utils/factorie
 
 const GLB = Buffer.concat([Buffer.from('glTF', 'latin1'), Buffer.alloc(200, 7)]);
 
-/** AI engine fake whose generations finish only when the test says so. */
+/**
+ * AI engine fake: generations wait at a gate the test opens. Opening releases calls that are
+ * already waiting and lets later ones through, so the test never races the background job.
+ */
 class GatedAiEngine {
-  private releases: Array<() => void> = [];
+  private isOpen = false;
+  private waiting: Array<() => void> = [];
   calls = 0;
 
-  generate(_req: AiGenerateRequest): Promise<AiGenerateResult> {
+  async generate(_req: AiGenerateRequest): Promise<AiGenerateResult> {
     this.calls += 1;
-    return new Promise((resolve) => {
-      this.releases.push(() => resolve({ glb: GLB, providerRef: 'fake' }));
-    });
+    if (!this.isOpen) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    }
+    return { glb: GLB, providerRef: 'fake' };
   }
 
-  releaseAll() {
-    const pending = this.releases;
-    this.releases = [];
-    pending.forEach((release) => release());
+  open() {
+    this.isOpen = true;
+    const waiting = this.waiting;
+    this.waiting = [];
+    waiting.forEach((release) => release());
+  }
+
+  close() {
+    this.isOpen = false;
   }
 }
 
@@ -48,12 +58,16 @@ describe('AI generation limits', () => {
     });
   });
 
+  beforeEach(() => {
+    engine.close();
+  });
+
   afterEach(() => {
-    engine.releaseAll();
+    engine.open();
   });
 
   afterAll(async () => {
-    engine.releaseAll();
+    engine.open();
     await t.close();
   });
 
@@ -62,7 +76,7 @@ describe('AI generation limits', () => {
     const res = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ prompt: 'twisted gold band' }).expect(202);
     expect(['QUEUED', 'RUNNING']).toContain(res.body.data.status);
 
-    engine.releaseAll();
+    engine.open();
     const done = await waitForJob(t, user, res.body.data.id, 'SUCCEEDED');
     expect(done.outputUploadId).toBeTruthy();
     expect(done.outputUrl).toMatch(/^\/uploads\/.+\/content\?exp=/);
@@ -83,9 +97,9 @@ describe('AI generation limits', () => {
     });
     try {
       const user = await registerVerified(t);
+      engine.open();
       for (let i = 0; i < 2; i += 1) {
         const res = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ prompt: `idea ${i}` }).expect(202);
-        engine.releaseAll();
         await waitForJob(t, user, res.body.data.id, 'SUCCEEDED');
       }
       const third = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ prompt: 'idea 3' }).expect(429);

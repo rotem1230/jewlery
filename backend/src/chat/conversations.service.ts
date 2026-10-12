@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { DesignStatus, Prisma, ProfilePublishStatus, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { UploadAccessService } from '../uploads/upload-access.service';
 import { ChatGateway } from './chat.gateway';
 import { CreateConversationDto, CreateMessageDto, QueryConversationsDto, QueryMessagesDto } from './dto/chat.dto';
 
@@ -21,7 +22,8 @@ const PARTICIPANT_USER_SELECT = {
 
 const MESSAGE_INCLUDE = {
   sender: { select: PARTICIPANT_USER_SELECT },
-  imageUpload: { select: { id: true, bucket: true, objectKey: true, mimeType: true } },
+  // Storage location is internal; clients get a short-lived signed contentUrl instead.
+  imageUpload: { select: { id: true, mimeType: true } },
   quote: true,
 } satisfies Prisma.MessageInclude;
 
@@ -30,7 +32,13 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly gateway: ChatGateway,
+    private readonly access: UploadAccessService,
   ) {}
+
+  /** Attaches a signed, short-lived URL to message media for the participants who receive it. */
+  private withMedia<T extends { imageUpload: { id: string; mimeType: string } | null }>(message: T) {
+    return { ...message, imageUpload: message.imageUpload ? this.access.withUrl(message.imageUpload) : null };
+  }
 
   async assertParticipant(conversationId: string, userId: string) {
     const participant = await this.prisma.conversationParticipant.findUnique({
@@ -68,7 +76,7 @@ export class ConversationsService {
     const me = conversation.participants.find((p) => p.userId === userId);
     const unreadCount = await this.unreadCountFor(conversationId, userId, me?.lastReadAt ?? null);
     const { messages, ...rest } = conversation;
-    return { ...rest, lastMessage: messages[0] ?? null, unreadCount };
+    return { ...rest, lastMessage: messages[0] ? this.withMedia(messages[0]) : null, unreadCount };
   }
 
   async findMany(userId: string, query: QueryConversationsDto) {
@@ -119,7 +127,7 @@ export class ConversationsService {
         const me = conv.participants.find((p) => p.userId === userId);
         const unreadCount = await this.unreadCountFor(conv.id, userId, me?.lastReadAt ?? null);
         const { messages, ...rest } = conv;
-        return { ...rest, lastMessage: messages[0] ?? null, unreadCount };
+        return { ...rest, lastMessage: messages[0] ? this.withMedia(messages[0]) : null, unreadCount };
       }),
     );
 
@@ -239,7 +247,7 @@ export class ConversationsService {
     const page = hasMore ? rows.slice(0, limit) : rows;
     const nextCursor = hasMore ? page[page.length - 1].id : null;
 
-    return { items: page.reverse(), nextCursor };
+    return { items: page.reverse().map((message) => this.withMedia(message)), nextCursor };
   }
 
   async createMessage(conversationId: string, userId: string, dto: CreateMessageDto) {
@@ -255,7 +263,22 @@ export class ConversationsService {
       });
     }
 
-    const message = await this.prisma.message.create({
+    if (dto.imageUploadId) {
+      // Only the sender's own, ready media can be attached (no re-sharing of other users' files).
+      const media = await this.prisma.upload.findFirst({
+        where: { id: dto.imageUploadId, ownerUserId: userId, deletedAt: null, status: 'READY' },
+        select: { mimeType: true },
+      });
+      const expectedPrefix = dto.type === 'AUDIO' ? 'audio/' : 'image/';
+      if (!media || !media.mimeType.startsWith(expectedPrefix)) {
+        throw new BadRequestException({
+          success: false,
+          message: `imageUploadId must reference your own ${expectedPrefix.slice(0, -1)} upload`,
+        });
+      }
+    }
+
+    const created = await this.prisma.message.create({
       data: {
         conversationId,
         senderId: userId,
@@ -265,6 +288,7 @@ export class ConversationsService {
       },
       include: MESSAGE_INCLUDE,
     });
+    const message = this.withMedia(created);
 
     await this.prisma.conversation.update({
       where: { id: conversationId },

@@ -53,9 +53,9 @@ export class NotificationsService {
     }
 
     if ((preference?.notifyPushEnabled ?? true) && deviceTokens.length > 0) {
-      for (const token of deviceTokens) {
-        this.logger.debug(`[dev push] platform=${token.platform} token=${token.token} title="${title}"`);
-      }
+      // Push delivery is not wired yet. Device tokens are credentials for reaching a device and are
+      // never logged.
+      this.logger.debug(`[dev push] user=${userId} devices=${deviceTokens.length} title="${title}"`);
     }
   }
 

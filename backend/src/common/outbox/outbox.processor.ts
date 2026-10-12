@@ -1,7 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { sqlTimestamp } from '../../database/sql-time';
 import { NotificationsService } from '../../notifications/notifications.service';
+
+/** After this many failed deliveries an event is dead-lettered (deadAt set) and never retried. */
+export const OUTBOX_MAX_ATTEMPTS = 10;
+/** A claimed event is invisible to other workers for this long (crash safety). */
+const CLAIM_LEASE_MS = 60_000;
+const MAX_BACKOFF_MS = 30 * 60_000;
+
+type ClaimedEvent = { id: string; type: string; payload: Prisma.JsonValue; attempts: number };
 
 function asRecord(value: Prisma.JsonValue): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -18,6 +27,11 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
+/** 2s, 4s, 8s ... capped at 30 minutes. */
+export function outboxBackoffMs(attempts: number): number {
+  return Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.max(1, attempts));
+}
+
 @Injectable()
 export class OutboxProcessor {
   private readonly logger = new Logger(OutboxProcessor.name);
@@ -28,41 +42,60 @@ export class OutboxProcessor {
   ) {}
 
   /**
-   * Claims a batch of unprocessed outbox events and dispatches in-app notifications
-   * for frozen keys: quote.accepted, handoff.created, design.published,
-   * design_request.delivered, notification.push, and *.completed.
+   * Claims a batch of due events with FOR UPDATE SKIP LOCKED and a lease, so concurrent workers
+   * (several API instances, or overlapping ticks) never deliver the same event twice. Failures are
+   * retried with exponential backoff; a failing event never blocks newer ones and is
+   * dead-lettered after OUTBOX_MAX_ATTEMPTS.
    */
   async processPending(batchSize = 50): Promise<number> {
-    const pending = await this.prisma.outboxEvent.findMany({
-      where: { processedAt: null },
-      orderBy: { createdAt: 'asc' },
-      take: batchSize,
-    });
-
-    if (pending.length === 0) {
-      return 0;
-    }
+    const now = new Date();
+    const leaseUntil = new Date(now.getTime() + CLAIM_LEASE_MS);
+    // MATERIALIZED pins the locking SELECT to a single evaluation, so the leased rows are exactly the
+    // rows that were locked. Dates go through sqlTimestamp: the columns hold UTC wall-clock time.
+    const claimed = await this.prisma.$queryRaw<ClaimedEvent[]>`
+      WITH due AS MATERIALIZED (
+        SELECT "id" FROM "outbox_events"
+         WHERE "processedAt" IS NULL
+           AND "deadAt" IS NULL
+           AND "nextAttemptAt" <= ${sqlTimestamp(now)}
+           AND ("lockedUntil" IS NULL OR "lockedUntil" < ${sqlTimestamp(now)})
+         ORDER BY "createdAt" ASC
+         LIMIT ${batchSize}
+         FOR UPDATE SKIP LOCKED
+      )
+      UPDATE "outbox_events" AS o
+         SET "lockedUntil" = ${sqlTimestamp(leaseUntil)}
+        FROM due
+       WHERE o."id" = due."id"
+      RETURNING o."id", o."type", o."payload", o."attempts"`;
 
     let processed = 0;
-    for (const event of pending) {
+    for (const event of claimed) {
       try {
         await this.dispatch(event.type, asRecord(event.payload));
         await this.prisma.outboxEvent.update({
           where: { id: event.id },
-          data: { processedAt: new Date(), attempts: { increment: 1 } },
+          data: { processedAt: new Date(), attempts: { increment: 1 }, lockedUntil: null, lastError: null },
         });
         processed += 1;
       } catch (err) {
+        const attempts = event.attempts + 1;
+        const dead = attempts >= OUTBOX_MAX_ATTEMPTS;
         await this.prisma.outboxEvent
           .update({
             where: { id: event.id },
             data: {
-              attempts: { increment: 1 },
-              lastError: (err as Error).message,
+              attempts,
+              lastError: (err as Error).message.slice(0, 1000),
+              lockedUntil: null,
+              nextAttemptAt: new Date(Date.now() + outboxBackoffMs(attempts)),
+              deadAt: dead ? new Date() : null,
             },
           })
           .catch(() => undefined);
-        this.logger.warn(`Failed to process outbox event ${event.id}: ${(err as Error).message}`);
+        this.logger.warn(
+          `Outbox event ${event.id} (${event.type}) failed attempt ${attempts}${dead ? ' — dead-lettered' : ''}: ${(err as Error).message}`,
+        );
       }
     }
     return processed;

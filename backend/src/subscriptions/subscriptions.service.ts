@@ -10,6 +10,7 @@ import { LeadStatus, PlanCatalog, Prisma, Subscription, SubscriptionStatus, User
 import { EventLogService } from '../audit/event-log.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
+import { sqlTimestamp } from '../database/sql-time';
 import { EntitlementsService, entitledSubscriptionWhere } from '../entitlements/entitlements.service';
 import { billingCyclePeriodMs, DAY_MS } from './billing-periods';
 import { SubscribeDto } from './dto/subscription.dto';
@@ -232,12 +233,12 @@ export class SubscriptionsService {
 
     const claimed = await tx.$queryRaw<Array<{ id: string }>>`
       UPDATE "leads"
-         SET "status" = 'CONSUMED', "consumedAt" = ${now}, "sourceRequestId" = ${designRequestId}::uuid
+         SET "status" = 'CONSUMED', "consumedAt" = ${sqlTimestamp(now)}, "sourceRequestId" = ${designRequestId}::uuid
        WHERE "id" = (
          SELECT "id" FROM "leads"
           WHERE "subscriptionId" = ${subscription.id}::uuid
             AND "status" = 'AVAILABLE'
-            AND "periodEnd" >= ${now}
+            AND "periodEnd" >= ${sqlTimestamp(now)}
           ORDER BY "createdAt" ASC
           LIMIT 1
           FOR UPDATE SKIP LOCKED

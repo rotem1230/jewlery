@@ -12,6 +12,8 @@ import { AppConfigService } from '../cms/app-config.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
+import { UploadAccessService } from '../uploads/upload-access.service';
+import { UploadsService } from '../uploads/uploads.service';
 import { WizardEngineService } from '../wizard/wizard-engine.service';
 import { CreateDesignDto, LockDesignDto, QueryDesignsDto, UpdateDesignDto } from './dto/design.dto';
 
@@ -27,6 +29,8 @@ export class DesignsService {
     private readonly wizard: WizardEngineService,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
+    private readonly uploads: UploadsService,
+    private readonly access: UploadAccessService,
   ) {}
 
   private assertOwnerOrAdmin(design: { ownerUserId: string }, user: User): void {
@@ -83,19 +87,43 @@ export class DesignsService {
     return (last?.versionNumber ?? 0) + 1;
   }
 
+  /** Snapshots the design; retries when a concurrent snapshot took the same version number. */
   private async snapshotVersion(design: Design, actorUserId: string, reason: string) {
-    const versionNumber = await this.nextVersionNumber(design.id);
-    return this.prisma.designVersion.create({
-      data: {
-        designId: design.id,
-        versionNumber,
-        status: design.status,
-        parameters: design.parameters as Prisma.InputJsonValue,
-        jewelerNotes: design.jewelerNotes,
-        createdById: actorUserId,
-        reason,
-      },
-    });
+    for (let attempt = 0; ; attempt += 1) {
+      const versionNumber = await this.nextVersionNumber(design.id);
+      try {
+        return await this.prisma.designVersion.create({
+          data: {
+            designId: design.id,
+            versionNumber,
+            status: design.status,
+            parameters: design.parameters as Prisma.InputJsonValue,
+            jewelerNotes: design.jewelerNotes,
+            createdById: actorUserId,
+            reason,
+          },
+        });
+      } catch (err) {
+        const duplicate = err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+        if (!duplicate || attempt >= 4) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private assertLockedFieldsUnchanged(design: Design, nextParameters: unknown): void {
+    for (const field of design.lockedFields) {
+      const oldValue = this.getByPath(design.parameters, field);
+      const newValue = this.getByPath(nextParameters, field);
+      if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+        throw new ForbiddenException({
+          success: false,
+          message: `Field "${field}" is locked and cannot be edited`,
+          code: 'FIELD_LOCKED',
+        });
+      }
+    }
   }
 
   private async tabCounts(ownerUserId: string) {
@@ -174,6 +202,7 @@ export class DesignsService {
 
     const items = rows.map(({ _count, completedBy, ...design }) => ({
       ...design,
+      thumbnailUrl: this.access.urlFor(design.thumbnailUploadId),
       quoteCount: _count.quotes,
       completedBy: completedBy ? { id: completedBy.id, name: this.fullName(completedBy) } : null,
     }));
@@ -216,6 +245,7 @@ export class DesignsService {
     const { _count, completedBy, ...rest } = design;
     return {
       ...rest,
+      thumbnailUrl: this.access.urlFor(rest.thumbnailUploadId),
       quoteCount: _count.quotes,
       completedBy: completedBy ? { id: completedBy.id, name: this.fullName(completedBy) } : null,
       versions,
@@ -234,17 +264,16 @@ export class DesignsService {
       });
     }
 
-    if (dto.parameters !== undefined && design.lockedFields.length > 0) {
-      for (const field of design.lockedFields) {
-        const oldValue = this.getByPath(design.parameters, field);
-        const newValue = this.getByPath(dto.parameters, field);
-        if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
-          throw new ForbiddenException({
-            success: false,
-            message: `Field "${field}" is locked and cannot be edited`,
-            code: 'FIELD_LOCKED',
-          });
-        }
+    if (dto.parameters !== undefined) {
+      this.assertLockedFieldsUnchanged(design, dto.parameters);
+    }
+    if (dto.thumbnailUploadId) {
+      await this.uploads.assertOwnedImage(dto.thumbnailUploadId, design.ownerUserId, 'thumbnailUploadId');
+    }
+    if (dto.preferredRegionId) {
+      const region = await this.prisma.region.findUnique({ where: { id: dto.preferredRegionId } });
+      if (!region) {
+        throw new NotFoundException({ success: false, message: 'Unknown region' });
       }
     }
 
@@ -259,8 +288,9 @@ export class DesignsService {
       }
     }
 
-    const updated = await this.prisma.design.update({
-      where: { id },
+    // Conditional on the version the client edited, so two concurrent saves cannot both win.
+    const claimed = await this.prisma.design.updateMany({
+      where: { id, version: dto.version, deletedAt: null },
       data: {
         title: dto.title,
         description: dto.description,
@@ -271,6 +301,16 @@ export class DesignsService {
         version: { increment: 1 },
       },
     });
+    if (claimed.count !== 1) {
+      const current = await this.prisma.design.findUnique({ where: { id }, select: { version: true } });
+      throw new ConflictException({
+        success: false,
+        message: 'Design was modified since it was last loaded; refresh and retry',
+        code: 'STALE_VERSION',
+        currentVersion: current?.version,
+      });
+    }
+    const updated = await this.prisma.design.findUniqueOrThrow({ where: { id } });
 
     if (dto.parameters !== undefined) {
       await this.snapshotVersion(updated, user.id, 'autosave');
@@ -404,7 +444,7 @@ export class DesignsService {
   }
 
   async restoreVersion(id: string, versionNumber: number, user: User): Promise<Design> {
-    await this.getOwned(id, user);
+    const design = await this.getOwned(id, user);
     const version = await this.prisma.designVersion.findUnique({
       where: { designId_versionNumber: { designId: id, versionNumber } },
     });
@@ -412,14 +452,25 @@ export class DesignsService {
       throw new NotFoundException({ success: false, message: `Version ${versionNumber} not found` });
     }
 
-    const updated = await this.prisma.design.update({
-      where: { id },
+    // Restoring is an edit: locked fields (e.g. size / metal agreed with a jeweler) stay locked.
+    this.assertLockedFieldsUnchanged(design, version.parameters);
+
+    const claimed = await this.prisma.design.updateMany({
+      where: { id, version: design.version, deletedAt: null },
       data: {
         parameters: version.parameters as Prisma.InputJsonValue,
         jewelerNotes: version.jewelerNotes,
         version: { increment: 1 },
       },
     });
+    if (claimed.count !== 1) {
+      throw new ConflictException({
+        success: false,
+        message: 'Design was modified meanwhile; refresh and retry',
+        code: 'STALE_VERSION',
+      });
+    }
+    const updated = await this.prisma.design.findUniqueOrThrow({ where: { id } });
 
     await this.snapshotVersion(updated, user.id, `restore:${versionNumber}`);
     await this.audit.log({

@@ -1,8 +1,9 @@
 /**
  * e2e global setup: a real PostgreSQL for the whole run.
  *  - TEST_DATABASE_URL set (CI service container) -> use it as-is.
- *  - otherwise start an embedded PostgreSQL in backend/.tmp-test-pg (removed on teardown).
- * Then apply the real migrations and the reference seed, exactly like a deployment would.
+ *  - otherwise start an embedded PostgreSQL in the OS temp dir (removed on teardown).
+ * The database is pinned to a non-UTC time zone (see TEST_DB_TIMEZONE), then the real migrations
+ * and the reference seed are applied, exactly like a deployment would.
  */
 const fs = require('fs');
 const net = require('net');
@@ -26,6 +27,10 @@ const ROOT = path.join(__dirname, '..', '..');
 // initdb cannot handle non-ASCII data-dir paths on Windows, so the throwaway cluster lives in the
 // OS temp dir rather than next to the sources.
 const TMP_DIR = process.env.TEST_PG_DIR || path.join(os.tmpdir(), `malinvosky-test-pg-${process.pid}`);
+// Prisma keeps DateTime columns as UTC wall-clock time. CI databases usually run in UTC, where raw
+// SQL that lets PostgreSQL convert a date through the session time zone looks correct. A zone with
+// a real offset makes that class of bug fail the suite instead of shipping.
+const TEST_DB_TIMEZONE = process.env.TEST_DB_TIMEZONE || 'Asia/Jerusalem';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -74,6 +79,16 @@ module.exports = async function globalSetup() {
   };
 
   const prismaCli = require.resolve('prisma/build/index.js', { paths: [ROOT] });
+  if (!/^[A-Za-z0-9_+\-/]+$/.test(TEST_DB_TIMEZONE)) {
+    throw new Error(`TEST_DB_TIMEZONE is not a time zone name: ${TEST_DB_TIMEZONE}`);
+  }
+  const pinTimezone = `DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET timezone TO %L', current_database(), '${TEST_DB_TIMEZONE}'); END $$;`;
+  execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--url', databaseUrl, '--stdin'], {
+    cwd: ROOT,
+    env,
+    input: pinTimezone,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
   execFileSync(process.execPath, [prismaCli, 'migrate', 'deploy'], { cwd: ROOT, env, stdio: 'pipe' });
 
   execFileSync(

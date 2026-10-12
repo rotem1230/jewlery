@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   DesignRequestStatus,
   JewelerOnboardingDraft,
@@ -6,6 +6,7 @@ import {
   Prisma,
   ProfilePublishStatus,
   User,
+  UserRole,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
@@ -13,6 +14,9 @@ import { AppConfigService } from '../cms/app-config.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
+import { UploadAccessService } from '../uploads/upload-access.service';
+import { UploadsService } from '../uploads/uploads.service';
+import { PUBLIC_PORTFOLIO_SELECT, PUBLIC_REVIEW_SELECT, toPublicJewelerProfile } from './public-profile';
 import {
   CreateCrmNoteDto,
   CreatePortfolioItemDto,
@@ -34,6 +38,8 @@ export class JewelerProfilesService {
     private readonly stateMachine: StateMachineService,
     private readonly audit: AuditService,
     private readonly entitlements: EntitlementsService,
+    private readonly uploads: UploadsService,
+    private readonly access: UploadAccessService,
   ) {}
 
   private async getOwnProfile(userId: string): Promise<JewelerProfile> {
@@ -44,20 +50,35 @@ export class JewelerProfilesService {
     return profile;
   }
 
+  /** The owner's own profile, with signed URLs for its (possibly not yet public) media. */
   async me(userId: string) {
-    return this.prisma.jewelerProfile.findUnique({
+    const profile = await this.prisma.jewelerProfile.findUnique({
       where: { userId },
       include: {
         region: true,
-        logoUpload: true,
-        portfolio: { orderBy: { sortOrder: 'asc' }, include: { upload: true } },
+        logoUpload: { select: { id: true, mimeType: true } },
+        portfolio: { orderBy: { sortOrder: 'asc' }, include: { upload: { select: { id: true, mimeType: true } } } },
         reviews: {
           where: { isFeatured: true },
           orderBy: { createdAt: 'desc' },
           take: 10,
+          select: PUBLIC_REVIEW_SELECT,
         },
       },
     });
+    if (!profile) {
+      return null;
+    }
+    return {
+      ...profile,
+      logoUpload: profile.logoUpload ? this.access.withUrl(profile.logoUpload) : null,
+      logoUrl: this.access.urlFor(profile.logoUploadId),
+      portfolio: profile.portfolio.map((item) => ({
+        ...item,
+        upload: this.access.withUrl(item.upload),
+        contentUrl: this.access.signedContentPath(item.uploadId),
+      })),
+    };
   }
 
   // JewelerOnboardingDraft.userId is indexed but not a unique column, so upsert-by-user is manual.
@@ -74,6 +95,10 @@ export class JewelerProfilesService {
       if (!region) {
         throw new NotFoundException({ success: false, message: 'Unknown region' });
       }
+    }
+
+    if (dto.logoUploadId) {
+      await this.uploads.assertOwnedImage(dto.logoUploadId, userId, 'logoUploadId');
     }
 
     const payload = toJsonValue(dto.payload);
@@ -151,6 +176,9 @@ export class JewelerProfilesService {
   }
 
   async publish(user: User): Promise<JewelerProfile> {
+    if (!user.roles.includes(UserRole.JEWELER)) {
+      throw new ForbiddenException({ success: false, message: 'Only jeweler accounts can publish a business profile' });
+    }
     const draft = await this.getDraft(user.id);
     const payload = (draft.payload ?? {}) as Record<string, unknown>;
     const regionId = draft.regionId ?? (payload.regionId as string | undefined);
@@ -220,22 +248,23 @@ export class JewelerProfilesService {
 
   async findPublic(id: string) {
     const profile = await this.prisma.jewelerProfile.findFirst({
-      where: { id, publishStatus: ProfilePublishStatus.PUBLISHED },
+      where: { id, publishStatus: ProfilePublishStatus.PUBLISHED, user: { deletedAt: null } },
       include: {
         region: true,
-        logoUpload: true,
-        portfolio: { orderBy: { sortOrder: 'asc' } },
+        logoUpload: { select: { id: true, mimeType: true } },
+        portfolio: { orderBy: { sortOrder: 'asc' }, select: PUBLIC_PORTFOLIO_SELECT },
         reviews: {
           where: { isFeatured: true },
           orderBy: { createdAt: 'desc' },
           take: 10,
+          select: PUBLIC_REVIEW_SELECT,
         },
       },
     });
     if (!profile) {
       throw new NotFoundException({ success: false, message: 'Jeweler profile not found' });
     }
-    return profile;
+    return toPublicJewelerProfile(profile);
   }
 
   async orders(userId: string, query: QueryOrdersDto) {
@@ -285,21 +314,16 @@ export class JewelerProfilesService {
 
   async listPortfolio(userId: string) {
     const profile = await this.getOwnProfile(userId);
-    return this.prisma.portfolioItem.findMany({
+    const items = await this.prisma.portfolioItem.findMany({
       where: { profileId: profile.id },
       orderBy: { sortOrder: 'asc' },
     });
+    return items.map((item) => ({ ...item, contentUrl: this.access.signedContentPath(item.uploadId) }));
   }
 
   async createPortfolioItem(userId: string, dto: CreatePortfolioItemDto) {
     const profile = await this.getOwnProfile(userId);
-    const upload = await this.prisma.upload.findFirst({ where: { id: dto.uploadId, ownerUserId: userId } });
-    if (!upload) {
-      throw new BadRequestException({
-        success: false,
-        message: 'uploadId must reference an upload owned by the current user',
-      });
-    }
+    await this.uploads.assertOwnedImage(dto.uploadId, userId, 'uploadId');
 
     return this.prisma.portfolioItem.create({
       data: {

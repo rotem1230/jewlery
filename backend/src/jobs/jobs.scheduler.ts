@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AiService } from '../ai/ai.service';
 import { OutboxProcessor } from '../common/outbox/outbox.processor';
 import { SubscriptionLifecycleService } from '../subscriptions/subscription-lifecycle.service';
 import { VisualizationService } from '../visualization/visualization.service';
@@ -9,8 +10,8 @@ const SUBSCRIPTION_SWEEP_MS = 10 * 60 * 1000;
 const VIZ_PURGE_MS = 60 * 60 * 1000;
 
 /**
- * Process-local timers for the outbox drain, the subscription lifecycle sweep and the
- * visualization retention purge. Each job runs at most once at a time per process (a slow run is
+ * Process-local timers for the outbox drain, the subscription lifecycle sweep, the
+ * visualization retention purge and failing AI jobs left behind by a restart. Each job runs at most once at a time per process (a slow run is
  * never overlapped by the next tick); cross-instance safety comes from the jobs themselves
  * (outbox rows are claimed with SKIP LOCKED, sweeps use conditional updates).
  * Disabled with JOBS_ENABLED=false (tests drive the jobs directly).
@@ -26,6 +27,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly outbox: OutboxProcessor,
     private readonly subscriptions: SubscriptionLifecycleService,
     private readonly visualization: VisualizationService,
+    private readonly ai: AiService,
   ) {}
 
   onModuleInit(): void {
@@ -36,6 +38,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
     this.schedule('outbox', OUTBOX_MS, () => this.outbox.processPending(), true);
     this.schedule('subscriptions', SUBSCRIPTION_SWEEP_MS, () => this.subscriptions.runOnce(), true);
     this.schedule('viz-purge', VIZ_PURGE_MS, () => this.visualization.purgeExpired(), false);
+    this.schedule('ai-stale', SUBSCRIPTION_SWEEP_MS, () => this.ai.failStaleJobs(), true);
   }
 
   onModuleDestroy(): void {

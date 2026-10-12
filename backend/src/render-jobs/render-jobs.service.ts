@@ -1,8 +1,18 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { JobStatus, Prisma, RenderJob, User, UserRole } from '@prisma/client';
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Design, JobStatus, Prisma, RenderJob, User, UserRole } from '@prisma/client';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { AuditService } from '../audit/audit.service';
+import { AppConfigService } from '../cms/app-config.service';
+import { UploadAccessService } from '../uploads/upload-access.service';
 import { toJsonValue } from '../audit/json.util';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
@@ -13,6 +23,10 @@ import { CreateRenderJobDto } from './dto/render-job.dto';
 
 const DEFAULT_PRIORITY = 100;
 const PRIORITY_CLOUD_PROCESSING = 10;
+const DEFAULT_DAILY_RENDERS_PER_USER = 50;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export type RenderJobView = RenderJob & { outputUrl: string | null };
 
 @Injectable()
 export class RenderJobsService {
@@ -24,7 +38,19 @@ export class RenderJobsService {
     @Inject(RENDER_ENGINE_ADAPTER)
     private readonly engine: RenderEngineAdapter,
     private readonly uploads: UploadsService,
+    private readonly access: UploadAccessService,
+    private readonly appConfig: AppConfigService,
   ) {}
+
+  private view(job: RenderJob): RenderJobView {
+    return { ...job, outputUrl: this.access.urlFor(job.outputUploadId) };
+  }
+
+  private async dailyLimit(): Promise<number> {
+    const raw = await this.appConfig.get('render_limits');
+    const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).dailyPerUser : null;
+    return typeof value === 'number' && value >= 0 ? value : DEFAULT_DAILY_RENDERS_PER_USER;
+  }
 
   private assertOwnerOrAdmin(design: { ownerUserId: string }, user: User): void {
     if (design.ownerUserId !== user.id && !user.roles.includes(UserRole.ADMIN)) {
@@ -32,11 +58,9 @@ export class RenderJobsService {
     }
   }
 
-  private async ensureLatestVersion(designId: string, actorUserId: string) {
-    const design = await this.prisma.design.findFirst({ where: { id: designId, deletedAt: null } });
-    if (!design) {
-      throw new NotFoundException({ success: false, message: 'Design not found' });
-    }
+  /** Callers must have authorized `design` first: this may create a version row. */
+  private async ensureLatestVersion(design: Design, actorUserId: string) {
+    const designId = design.id;
 
     const latest = await this.prisma.designVersion.findFirst({
       where: { designId },
@@ -60,9 +84,26 @@ export class RenderJobsService {
     return { design, version };
   }
 
-  async create(user: User, dto: CreateRenderJobDto): Promise<RenderJob> {
-    const { design, version } = await this.ensureLatestVersion(dto.designId, user.id);
-    this.assertOwnerOrAdmin(design, user);
+  async create(user: User, dto: CreateRenderJobDto): Promise<RenderJobView> {
+    const found = await this.prisma.design.findFirst({ where: { id: dto.designId, deletedAt: null } });
+    if (!found) {
+      throw new NotFoundException({ success: false, message: 'Design not found' });
+    }
+    // Authorize before any write.
+    this.assertOwnerOrAdmin(found, user);
+
+    const limit = await this.dailyLimit();
+    const today = await this.prisma.renderJob.count({
+      where: { design: { ownerUserId: found.ownerUserId }, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
+    });
+    if (today >= limit) {
+      throw new HttpException(
+        { success: false, message: 'Daily export limit reached', code: 'RENDER_QUOTA_EXCEEDED' },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const { design, version } = await this.ensureLatestVersion(found, user.id);
 
     const [hasPriority, hasNoWatermark] = await Promise.all([
       this.entitlements.has(user.id, 'priority_cloud_processing'),
@@ -88,7 +129,7 @@ export class RenderJobsService {
       after: toJsonValue(job),
     });
 
-    return this.process(job, design.parameters, design.ownerUserId);
+    return this.view(await this.process(job, design.parameters, design.ownerUserId));
   }
 
   /** Stub processor: runs synchronously so callers see the terminal status immediately. */
@@ -135,7 +176,7 @@ export class RenderJobsService {
         where: { id: job.id },
         data: {
           status: JobStatus.FAILED,
-          errorMessage: (err as Error).message,
+          errorMessage: 'Render failed',
           finishedAt: new Date(),
         },
       });
@@ -154,9 +195,9 @@ export class RenderJobsService {
     return job;
   }
 
-  async findOne(id: string, user: User): Promise<RenderJob> {
+  async findOne(id: string, user: User): Promise<RenderJobView> {
     const { design: _design, ...job } = await this.getOwned(id, user);
-    return job;
+    return this.view(job);
   }
 
   async cancel(id: string, user: User): Promise<RenderJob> {
