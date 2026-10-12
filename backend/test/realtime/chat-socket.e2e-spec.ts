@@ -110,6 +110,64 @@ describe('chat WebSocket gateway', () => {
     expect(leaked).toEqual([]);
   });
 
+  function closedWithin(socket: Socket, ms = 2_000): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), ms);
+      socket.on('disconnect', () => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  }
+
+  it('deleting the account closes its live sockets', async () => {
+    const user = await registerVerified(t);
+    const socket = connect({ token: user.accessToken });
+    expect(await outcome(socket, 150)).toBe('connected');
+    const closed = closedWithin(socket);
+    await t.http.delete(`${API}/users/me`).set(user.auth).expect(200);
+    expect(await closed).toBe(true);
+  });
+
+  it('signing out everywhere closes live sockets', async () => {
+    const user = await registerVerified(t);
+    const socket = connect({ token: user.accessToken });
+    expect(await outcome(socket, 150)).toBe('connected');
+    const closed = closedWithin(socket);
+    await t.http.post(`${API}/auth/revoke-all`).set(user.auth).send({}).expect(200);
+    expect(await closed).toBe(true);
+  });
+
+  it('a password reset closes live sockets', async () => {
+    const user = await registerVerified(t);
+    const socket = connect({ token: user.accessToken });
+    expect(await outcome(socket, 150)).toBe('connected');
+    const closed = closedWithin(socket);
+    await t.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
+    const token = await t.mailbox.tokenFor(user.email, 'reset');
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: 'N3w-Strong-Pass' }).expect(200);
+    expect(await closed).toBe(true);
+  });
+
+  it('a suspended account cannot join a conversation and receives nothing', async () => {
+    const s = await marketplaceScenario(t);
+    const socket = connect({ token: s.designer.accessToken });
+    expect(await outcome(socket, 150)).toBe('connected');
+    await t.prisma.user.update({ where: { id: s.designer.id }, data: { status: 'SUSPENDED' } });
+
+    socket.emit('conversation:join', { conversationId: s.conversation.id });
+    await new Promise((r) => setTimeout(r, 300));
+    const received: unknown[] = [];
+    socket.on('message:new', (m: unknown) => received.push(m));
+    await t.http
+      .post(`${API}/conversations/${s.conversation.id}/messages`)
+      .set(s.jeweler.auth)
+      .send({ type: 'TEXT', body: 'are you there?' })
+      .expect(201);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(received).toEqual([]);
+  });
+
   it('tells the conversation when a quote changes, so nobody acts on a stale card', async () => {
     const s = await marketplaceScenario(t);
     const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
@@ -128,5 +186,33 @@ describe('chat WebSocket gateway', () => {
       expect.objectContaining({ quoteId: quote.id, status: 'PENDING', totalPrice: '1000', currency: 'ILS' }),
       expect.objectContaining({ quoteId: quote.id, status: 'WITHDRAWN' }),
     ]);
+  });
+});
+
+describe('chat WebSocket gateway with long-lived access tokens', () => {
+  let t: TestApp;
+  let baseUrl: string;
+  let socket: Socket | undefined;
+
+  beforeAll(async () => {
+    t = await createTestApp({ env: { JWT_EXPIRES_IN: '30d' } });
+    const { port } = t.app.getHttpServer().address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${port}/ws`;
+  });
+
+  afterAll(async () => {
+    socket?.disconnect();
+    await t.close();
+  });
+
+  it('stays connected (an expiry beyond the timer range used to fire at once)', async () => {
+    const user = await registerVerified(t);
+    socket = io(baseUrl, { transports: ['websocket'], reconnection: false, auth: { token: user.accessToken } });
+    const state = await new Promise<string>((resolve) => {
+      socket!.on('connect', () => setTimeout(() => resolve(socket!.connected ? 'connected' : 'dropped'), 700));
+      socket!.on('disconnect', () => resolve('dropped'));
+      socket!.on('connect_error', () => resolve('refused'));
+    });
+    expect(state).toBe('connected');
   });
 });

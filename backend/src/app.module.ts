@@ -15,6 +15,7 @@ import { ChatModule } from './chat/chat.module';
 import { CmsModule } from './cms/cms.module';
 import { OutboxModule } from './common/outbox/outbox.module';
 import { RateLimitModule } from './common/rate-limit/rate-limit.module';
+import { SessionEventsModule } from './common/session-events/session-events.module';
 import { StateMachineModule } from './common/state-machine/state-machine.module';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import { configuration } from './config/configuration';
@@ -81,6 +82,7 @@ import { WizardModule } from './wizard/wizard.module';
     PrismaModule,
     RedisModule,
     RateLimitModule,
+    SessionEventsModule,
     AuditModule,
     StateMachineModule,
     OutboxModule,

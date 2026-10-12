@@ -18,17 +18,20 @@ function list(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Local web clients; production lists its origins explicitly (no default). */
+const DEVELOPMENT_CORS_ORIGINS = 'http://localhost:3000,http://localhost:8081';
+
 export const configuration = () => {
   const port = int(process.env.PORT, 3000);
+  const production = process.env.NODE_ENV === 'production';
   return {
     nodeEnv: process.env.NODE_ENV ?? 'development',
     port,
     apiPrefix: process.env.API_PREFIX ?? 'api/v1',
     timezone: process.env.APP_TIMEZONE ?? 'Asia/Jerusalem',
-    appUrl: process.env.APP_URL ?? 'http://localhost:8081',
     /** Public base URL of this API; e-mailed links point at pages it hosts. */
     apiPublicUrl: (process.env.API_PUBLIC_URL || `http://localhost:${port}`).replace(/\/+$/, ''),
-    corsOrigins: list(process.env.CORS_ORIGINS ?? 'http://localhost:3000,http://localhost:8081'),
+    corsOrigins: list(process.env.CORS_ORIGINS ?? (production ? '' : DEVELOPMENT_CORS_ORIGINS)),
     /** Express `trust proxy` (e.g. "1" behind one load balancer); unset = do not trust headers. */
     trustProxy: process.env.TRUST_PROXY ?? '',
     bodySizeLimit: int(process.env.BODY_SIZE_LIMIT, 1_048_576),
@@ -60,6 +63,8 @@ export const configuration = () => {
       secretKey: process.env.STRIPE_SECRET_KEY,
     },
     payments: {
+      /** "mock" enables the fake provider (never in production); unset = payments fail closed. */
+      provider: process.env.PAYMENTS_PROVIDER ?? '',
       /** HMAC secret shared with the payment provider for webhook signatures. */
       webhookSecret: process.env.PAYMENT_WEBHOOK_SECRET ?? '',
       webhookToleranceSeconds: int(process.env.PAYMENT_WEBHOOK_TOLERANCE_SECONDS, 300),

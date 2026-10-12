@@ -20,6 +20,9 @@ export type VerifiedOauthIdentity = {
 
 type ProviderSpec = { jwksUri: string; issuers: string[]; audienceConfigKey: string };
 
+/** A token with an unknown key id may force a key refetch at most this often per provider. */
+const FORCED_REFRESH_COOLDOWN_MS = 60_000;
+
 const PROVIDERS: Partial<Record<AuthProvider, ProviderSpec>> = {
   [AuthProvider.GOOGLE]: {
     jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
@@ -52,6 +55,8 @@ function isTrue(value: unknown): boolean {
  */
 @Injectable()
 export class OAuthTokenVerifier {
+  private readonly lastForcedRefresh = new Map<string, number>();
+
   constructor(
     @Inject(JWKS_PROVIDER) private readonly jwks: JwksProvider,
     private readonly config: ConfigService,
@@ -75,6 +80,10 @@ export class OAuthTokenVerifier {
     }
 
     const claims = await this.verifyWithRotation(spec, idToken, audiences);
+    // The authorized party (the app the token was issued to) must be one of ours as well.
+    if (claims.azp !== undefined && (typeof claims.azp !== 'string' || !audiences.includes(claims.azp))) {
+      throw invalidToken();
+    }
     const email = typeof claims.email === 'string' && isTrue(claims.email_verified) ? claims.email : undefined;
     return {
       subject: claims.sub,
@@ -90,6 +99,10 @@ export class OAuthTokenVerifier {
       return verifyRs256Jwt(idToken, await this.keys(spec.jwksUri, false), options);
     } catch (err) {
       if (err instanceof JwtVerificationError && err.reason === 'unknown_key') {
+        // Key rotation: refetch once, but made-up key ids must not trigger a fetch per request.
+        if (!this.claimForcedRefresh(spec.jwksUri)) {
+          throw invalidToken();
+        }
         try {
           return verifyRs256Jwt(idToken, await this.keys(spec.jwksUri, true), options);
         } catch (retryErr) {
@@ -104,6 +117,16 @@ export class OAuthTokenVerifier {
       }
       throw err;
     }
+  }
+
+  private claimForcedRefresh(jwksUri: string): boolean {
+    const now = Date.now();
+    const last = this.lastForcedRefresh.get(jwksUri);
+    if (last !== undefined && now - last < FORCED_REFRESH_COOLDOWN_MS) {
+      return false;
+    }
+    this.lastForcedRefresh.set(jwksUri, now);
+    return true;
   }
 
   private async keys(jwksUri: string, forceRefresh: boolean) {

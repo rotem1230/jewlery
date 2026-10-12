@@ -12,6 +12,7 @@ import { AUTH_ERROR } from '../auth/constants';
 import { SafeUser } from '../auth/interfaces/auth-user.interface';
 import { PasswordService } from '../auth/services/password.service';
 import { TokenService } from '../auth/services/token.service';
+import { SessionEvents } from '../common/session-events/session-events.service';
 import { PrismaService } from '../database/prisma.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { ChangePasswordDto, RegisterDeviceDto, UpdateMeDto, UpdatePreferencesDto } from './dto/users.dto';
@@ -34,6 +35,7 @@ export class UsersService {
     private readonly tokens: TokenService,
     private readonly audit: AuditService,
     private readonly uploads: UploadsService,
+    private readonly sessionEvents: SessionEvents,
   ) {}
 
   private sanitize(user: User): SafeUser {
@@ -164,6 +166,7 @@ export class UsersService {
       await tx.deviceToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
       await tx.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
     });
+    this.sessionEvents.sessionsRevoked(userId);
 
     await this.audit.log({
       actorUserId: userId,

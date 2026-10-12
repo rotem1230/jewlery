@@ -215,6 +215,36 @@ describe('jewelry payment intents', () => {
   });
 });
 
+describe('jewelry payment intents without an explicitly chosen provider', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    // Development or a forgotten NODE_ENV must not hand out fake client secrets by default.
+    t = await createTestApp({ env: { PAYMENTS_PROVIDER: undefined, NODE_ENV: 'development' } });
+    await t.prisma.featureFlag.upsert({
+      where: { key: 'phase3_jewelry_pay' },
+      update: { enabled: true, rolloutPct: 100 },
+      create: { key: 'phase3_jewelry_pay', enabled: true, rolloutPct: 100 },
+    });
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('fails closed', async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    await acceptQuote(t, s.designer, quote).expect(201);
+    const res = await t.http
+      .post(`${API}/jewelry-payments/intents`)
+      .set(s.designer.auth)
+      .send({ quoteId: quote.id })
+      .expect(503);
+    expect(res.body.code).toBe('PAYMENT_PROVIDER_NOT_CONFIGURED');
+  });
+});
+
 describe('jewelry payment intents with a real provider key but no integration', () => {
   let t: TestApp;
 

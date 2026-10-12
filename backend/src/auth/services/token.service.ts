@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Prisma, UserStatus } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { AppConfigService } from '../../cms/app-config.service';
+import { SessionEvents } from '../../common/session-events/session-events.service';
 import { PrismaService } from '../../database/prisma.service';
 import { AuthTokens, JwtPayload, SafeUser } from '../interfaces/auth-user.interface';
 import { generateSecureToken, hashToken } from '../utils/crypto.util';
@@ -31,6 +32,7 @@ export class TokenService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly appConfig: AppConfigService,
+    private readonly sessionEvents: SessionEvents,
   ) {}
 
   /** Issues an access token and a refresh token; `familyId` keeps a rotation chain together. */
@@ -117,6 +119,7 @@ export class TokenService {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    this.sessionEvents.sessionsRevoked(userId);
   }
 
   private async revokeFamily(familyId: string): Promise<void> {

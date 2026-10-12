@@ -1,24 +1,29 @@
 import { plainToInstance } from 'class-transformer';
-import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, validateSync } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, validateSync } from 'class-validator';
 
 /** Secrets that appear in this repository (examples, scripts, dev fallback) and so are public. */
 export const KNOWN_PUBLIC_JWT_SECRETS: ReadonlySet<string> = new Set([
   'change-me-in-production-min-32-chars!!',
   'dev-only-secret-change-in-production-min-32-chars',
   'e2e-test-secret-min-32-characters!!',
+  'test-only-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz',
 ]);
 
 export const MIN_JWT_SECRET_LENGTH = 32;
 export const MIN_PRODUCTION_BCRYPT_ROUNDS = 10;
+/** Each extra round doubles the cost; beyond this every sign-in becomes a denial of service. */
+export const MAX_BCRYPT_ROUNDS = 15;
+export const MIN_SIGNING_SECRET_LENGTH = 32;
+const NODE_ENVS = ['development', 'test', 'production'];
+const PAYMENT_PROVIDERS = ['mock'];
 
 class EnvironmentVariables {
   @IsString()
   @IsNotEmpty()
   DATABASE_URL!: string;
 
-  @IsOptional()
-  @IsString()
-  NODE_ENV?: string;
+  @IsIn(NODE_ENVS, { message: `NODE_ENV must be one of ${NODE_ENVS.join(', ')}` })
+  NODE_ENV!: string;
 
   @IsOptional()
   @IsInt()
@@ -89,8 +94,12 @@ function productionProblems(config: Record<string, unknown>): string[] {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
-  if (origins.some((origin) => origin === '*' || /localhost|127\.0\.0\.1|\[::1\]/i.test(origin))) {
-    problems.push('CORS_ORIGINS must list explicit https origins (no "*" and no localhost)');
+  if (
+    origins.some(
+      (origin) => !origin.startsWith('https://') || /localhost|127\.0\.0\.1|\[::1\]/i.test(origin),
+    )
+  ) {
+    problems.push('CORS_ORIGINS must list explicit https origins (no "*", no plain http and no localhost)');
   }
 
   const publicUrl = String(config.API_PUBLIC_URL ?? '');
@@ -111,6 +120,16 @@ function productionProblems(config: Record<string, unknown>): string[] {
     problems.push(`BCRYPT_ROUNDS must be an integer >= ${MIN_PRODUCTION_BCRYPT_ROUNDS} in production`);
   }
 
+  if (config.PAYMENTS_PROVIDER === 'mock') {
+    problems.push('PAYMENTS_PROVIDER=mock hands out fake payment secrets and is refused in production');
+  }
+  for (const key of ['PAYMENT_WEBHOOK_SECRET', 'UPLOAD_URL_SECRET']) {
+    const value = typeof config[key] === 'string' ? (config[key] as string) : '';
+    if (value && value.length < MIN_SIGNING_SECRET_LENGTH) {
+      problems.push(`${key} must be at least ${MIN_SIGNING_SECRET_LENGTH} random characters`);
+    }
+  }
+
   return problems;
 }
 
@@ -120,6 +139,13 @@ export function validateEnv(config: Record<string, unknown>) {
   });
   const errors = validateSync(validated, { skipMissingProperties: false });
   const problems = errors.map((e) => Object.values(e.constraints ?? {}).join(', '));
+
+  if (config.BCRYPT_ROUNDS !== undefined && Number(config.BCRYPT_ROUNDS) > MAX_BCRYPT_ROUNDS) {
+    problems.push(`BCRYPT_ROUNDS must be at most ${MAX_BCRYPT_ROUNDS}`);
+  }
+  if (config.PAYMENTS_PROVIDER && !PAYMENT_PROVIDERS.includes(String(config.PAYMENTS_PROVIDER))) {
+    problems.push(`PAYMENTS_PROVIDER must be unset or one of: ${PAYMENT_PROVIDERS.join(', ')}`);
+  }
 
   if (config.NODE_ENV === 'production') {
     problems.push(...productionProblems(config));

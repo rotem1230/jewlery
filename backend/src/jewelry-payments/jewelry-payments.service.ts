@@ -46,14 +46,15 @@ export class JewelryPaymentsService {
   ) {}
 
   /**
-   * The mock provider exists for development only. A configured real provider key without an
-   * integration fails closed rather than handing the app a fake client secret.
+   * The mock provider must be chosen explicitly (PAYMENTS_PROVIDER=mock) and never runs in
+   * production. A configured real provider key without an integration fails closed rather than
+   * handing the app a fake client secret.
    */
   private resolveProvider(): 'mock' {
     if (this.config.get<string>('stripe.secretKey')) {
       throw providerNotConfigured();
     }
-    if (this.config.get<string>('nodeEnv') === 'production') {
+    if (this.config.get<string>('payments.provider') !== 'mock' || this.config.get<string>('nodeEnv') === 'production') {
       throw providerNotConfigured();
     }
     return 'mock';

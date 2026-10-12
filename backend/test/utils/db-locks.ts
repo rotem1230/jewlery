@@ -65,3 +65,40 @@ export async function waitForLockWaiters(t: TestApp, count: number, timeoutMs = 
   }
   throw new Error(`timed out waiting for ${count} statement(s) blocked on a lock`);
 }
+
+/**
+ * Runs `work` in a transaction and keeps it open (uncommitted, holding its locks) until released,
+ * e.g. an insert another request will collide with only once this transaction commits.
+ */
+export async function holdInTransaction(t: TestApp, work: (tx: Tx) => Promise<unknown>): Promise<HeldLock> {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let onReady!: () => void;
+  let onFailed!: (err: unknown) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    onReady = resolve;
+    onFailed = reject;
+  });
+  const done = t.prisma
+    .$transaction(
+      async (tx) => {
+        await work(tx);
+        onReady();
+        await released;
+      },
+      { maxWait: 5_000, timeout: 30_000 },
+    )
+    .catch((err: unknown) => {
+      onFailed(err);
+      throw err;
+    });
+  await ready;
+  return {
+    release: async () => {
+      release();
+      await done;
+    },
+  };
+}

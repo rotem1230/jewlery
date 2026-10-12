@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import {
   ConnectedSocket,
@@ -12,17 +12,21 @@ import {
 import { UserStatus } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { JwtPayload } from '../auth/interfaces/auth-user.interface';
+import { SessionEvents } from '../common/session-events/session-events.service';
 import { PrismaService } from '../database/prisma.service';
+import { isAllowedSocketOrigin } from './socket-cors';
 
-const corsOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+/** setTimeout cannot wait longer than this (~24.8 days); a longer delay fires immediately. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function conversationRoom(conversationId: string): string {
   return `conversation:${conversationId}`;
+}
+
+function userRoom(userId: string): string {
+  return `user:${userId}`;
 }
 
 type AuthedSocketData = { userId?: string; authPromise?: Promise<string>; expiryTimer?: NodeJS.Timeout };
@@ -37,17 +41,52 @@ type AuthedSocketData = { userId?: string; authPromise?: Promise<string>; expiry
  * string, which ends up in proxy logs). The same issuer/audience/algorithm rules as HTTP apply,
  * unverified / suspended accounts are refused, and the socket is closed when the token expires.
  */
-@WebSocketGateway({ namespace: '/ws', cors: { origin: corsOrigins, credentials: true } })
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+@WebSocketGateway({
+  namespace: '/ws',
+  cors: {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) =>
+      callback(null, isAllowedSocketOrigin(origin)),
+    credentials: true,
+  },
+})
+export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
   @WebSocketServer()
   server!: Server;
 
   private readonly logger = new Logger(ChatGateway.name);
 
+  private readonly stopListening: () => void;
+
   constructor(
     private readonly jwt: JwtService,
     private readonly prisma: PrismaService,
-  ) {}
+    sessionEvents: SessionEvents,
+  ) {
+    // Revoked sessions (sign out everywhere, password reset, deletion) lose their sockets now,
+    // not when the access token expires.
+    this.stopListening = sessionEvents.onSessionsRevoked((userId) => this.disconnectUser(userId));
+  }
+
+  onModuleDestroy(): void {
+    this.stopListening();
+  }
+
+  disconnectUser(userId: string): void {
+    this.server?.in(userRoom(userId)).disconnectSockets(true);
+  }
+
+  /** Closes the socket when the access token expires, re-arming for expiries beyond the timer range. */
+  private armExpiry(client: Socket, expiresAtMs: number): void {
+    const data = client.data as AuthedSocketData;
+    const msLeft = expiresAtMs - Date.now();
+    if (msLeft <= 0) {
+      client.emit('error', { message: 'Session expired' });
+      client.disconnect(true);
+      return;
+    }
+    data.expiryTimer = setTimeout(() => this.armExpiry(client, expiresAtMs), Math.min(msLeft, MAX_TIMER_MS));
+    data.expiryTimer.unref?.();
+  }
 
   private extractToken(client: Socket): string | null {
     const authToken = (client.handshake.auth as Record<string, unknown> | undefined)?.token;
@@ -69,13 +108,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
     const data = client.data as AuthedSocketData;
     if (typeof payload.exp === 'number') {
-      const msLeft = payload.exp * 1000 - Date.now();
-      data.expiryTimer = setTimeout(() => {
-        client.emit('error', { message: 'Session expired' });
-        client.disconnect(true);
-      }, Math.max(0, msLeft));
-      data.expiryTimer.unref?.();
+      this.armExpiry(client, payload.exp * 1000);
     }
+    await client.join(userRoom(user.id));
     data.userId = user.id;
     return user.id;
   }
@@ -126,6 +161,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
     if (!userId || typeof conversationId !== 'string' || !UUID.test(conversationId)) {
+      return;
+    }
+    // The account may have been suspended or deleted since the socket was opened.
+    const active = await this.prisma.user.count({
+      where: { id: userId, deletedAt: null, status: UserStatus.ACTIVE },
+    });
+    if (active === 0) {
+      client.emit('error', { message: 'Unauthorized' });
+      client.disconnect(true);
       return;
     }
     const participant = await this.prisma.conversationParticipant.findUnique({

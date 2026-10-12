@@ -67,6 +67,37 @@ describe('validateEnv', () => {
     expect(() => validateEnv(productionEnv({ TRUST_PROXY: 'true' }))).toThrow(/TRUST_PROXY/);
   });
 
+  it('refuses plain-http CORS origins in production', () => {
+    expect(() => validateEnv(productionEnv({ CORS_ORIGINS: 'http://app.example.com' }))).toThrow(/CORS_ORIGINS/);
+  });
+
+  it('refuses the test-suite secret in production', () => {
+    expect(() =>
+      validateEnv(productionEnv({ JWT_SECRET: 'test-only-jwt-secret-0123456789-abcdefghijklmnopqrstuvwxyz' })),
+    ).toThrow(/JWT_SECRET/);
+  });
+
+  it('refuses a bcrypt cost so high that every sign-in becomes a denial of service', () => {
+    expect(() => validateEnv(productionEnv({ BCRYPT_ROUNDS: '20' }))).toThrow(/BCRYPT_ROUNDS/);
+    expect(() =>
+      validateEnv({ NODE_ENV: 'development', DATABASE_URL: 'postgresql://localhost/dev', BCRYPT_ROUNDS: '20' }),
+    ).toThrow(/BCRYPT_ROUNDS/);
+  });
+
+  it('requires NODE_ENV to be explicit (an unset value silently enabled development behaviour)', () => {
+    expect(() => validateEnv({ DATABASE_URL: 'postgresql://localhost/dev' })).toThrow(/NODE_ENV/);
+    expect(() => validateEnv({ NODE_ENV: 'prod', DATABASE_URL: 'postgresql://localhost/dev' })).toThrow(/NODE_ENV/);
+  });
+
+  it('refuses the mock payment provider in production', () => {
+    expect(() => validateEnv(productionEnv({ PAYMENTS_PROVIDER: 'mock' }))).toThrow(/PAYMENTS_PROVIDER/);
+  });
+
+  it('refuses short signing secrets for payment webhooks and media URLs', () => {
+    expect(() => validateEnv(productionEnv({ PAYMENT_WEBHOOK_SECRET: 'short' }))).toThrow(/PAYMENT_WEBHOOK_SECRET/);
+    expect(() => validateEnv(productionEnv({ UPLOAD_URL_SECRET: 'short' }))).toThrow(/UPLOAD_URL_SECRET/);
+  });
+
   it('keeps local development friction-free', () => {
     expect(() =>
       validateEnv({ NODE_ENV: 'development', DATABASE_URL: 'postgresql://localhost:5433/dev' }),

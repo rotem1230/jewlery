@@ -544,12 +544,18 @@ export class AuthService implements OnModuleDestroy {
           },
         });
       } catch (err) {
-        // A concurrent first sign-in with the same identity created the row first.
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          user = await this.prisma.user.findFirst({ where: { authProvider: provider, authProviderSub: subject } });
-        }
-        if (!user) {
+        if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
           throw err;
+        }
+        // Either a concurrent first sign-in with this identity created the row first, or the
+        // e-mail was just taken by another sign-up.
+        user = await this.prisma.user.findFirst({ where: { authProvider: provider, authProviderSub: subject } });
+        if (!user) {
+          throw new ConflictException({
+            success: false,
+            message: 'Email already registered with a different sign-in method',
+            code: AUTH_ERROR.EMAIL_EXISTS,
+          });
         }
       }
     }
@@ -559,6 +565,21 @@ export class AuthService implements OnModuleDestroy {
         success: false,
         message: 'Account is not active',
         code: AUTH_ERROR.ACCOUNT_SUSPENDED,
+      });
+    }
+    if (user.status === UserStatus.PENDING_VERIFICATION) {
+      // An account created before sign-in verified e-mails: activated only when the provider
+      // vouches for the same address.
+      if (!identity.email || identity.email.toLowerCase() !== user.email.toLowerCase()) {
+        throw new ForbiddenException({
+          success: false,
+          message: 'Please verify your email before signing in',
+          code: AUTH_ERROR.EMAIL_NOT_VERIFIED,
+        });
+      }
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: { status: UserStatus.ACTIVE, emailVerifiedAt: user.emailVerifiedAt ?? new Date() },
       });
     }
 
