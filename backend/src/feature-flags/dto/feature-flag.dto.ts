@@ -1,6 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, Min, MinLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  MinLength,
+} from 'class-validator';
 
 export class CreateFeatureFlagDto {
   @ApiProperty({ example: 'phase2_visualization' })
@@ -23,6 +33,7 @@ export class CreateFeatureFlagDto {
   @ApiPropertyOptional({ enum: UserRole, isArray: true })
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(10)
   roles?: UserRole[];
 }
 
@@ -42,5 +53,6 @@ export class UpdateFeatureFlagDto {
   @ApiPropertyOptional({ enum: UserRole, isArray: true })
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(10)
   roles?: UserRole[];
 }

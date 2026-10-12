@@ -1,7 +1,8 @@
 /**
- * Local e2e harness: embedded Postgres + Nest API + flag-on smoke tests.
- * Usage: node --experimental-vm-modules scripts/e2e-local.mjs
- * Or:    npx ts-node --transpile-only scripts/e2e-local.ts
+ * Local smoke run: embedded Postgres + the built API (dist/) + the demo seed, driving the main
+ * flows over real HTTP. The regression suites live in test/ (npm test); this checks a whole
+ * deployment-like boot end to end.
+ * Usage: npm run test:e2e:local   (builds first)
  */
 const path = require('path');
 const fs = require('fs');
@@ -96,7 +97,8 @@ async function runCmd(cmd, args, env) {
       cwd: ROOT,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
+      // No shell: the commands are node + absolute script paths, which may contain spaces.
+      shell: false,
     });
     let out = '';
     let err = '';
@@ -148,13 +150,17 @@ async function main() {
     JWT_SECRET: 'e2e-test-secret-min-32-characters!!',
     REGISTRATION_OPEN: 'true',
     API_PREFIX: 'api/v1',
+    // Demo accounts and showcase data (never in production) and the fake payment provider.
+    SEED_DEMO_DATA: 'true',
+    PAYMENTS_PROVIDER: 'mock',
   };
+  const prismaCli = require.resolve('prisma/build/index.js', { paths: [ROOT] });
 
   console.log('\n=== Migrate ===\n');
-  await runCmd('npx', ['prisma', 'migrate', 'deploy'], env);
+  await runCmd(process.execPath, [prismaCli, 'migrate', 'deploy'], env);
 
   console.log('\n=== Seed ===\n');
-  await runCmd('npx', ['prisma', 'db', 'seed'], env);
+  await runCmd(process.execPath, [prismaCli, 'db', 'seed'], env);
 
   console.log('\n=== Enable all phase flags (temporary) ===\n');
   const { Client } = require('pg');
@@ -460,11 +466,16 @@ async function main() {
               notes: 'E2E quote',
             },
           });
-          quoteId = unwrap(q.json)?.id;
+          const quote = unwrap(q.json);
+          quoteId = quote?.id;
           ok('quote create', quoteId);
 
           if (quoteId) {
-            await api('POST', `/quotes/${quoteId}/accept`, { token: designerToken, body: {} });
+            // The owner confirms the exact terms shown on the quote card.
+            await api('POST', `/quotes/${quoteId}/accept`, {
+              token: designerToken,
+              body: { expectedTotalPrice: Number(quote.totalPrice), expectedCurrency: quote.currency },
+            });
             ok('quote accept');
             const notes = unwrap((await api('GET', '/notifications', { token: designerToken })).json);
             const items = notes?.items || [];
@@ -535,12 +546,17 @@ async function main() {
     }
 
     try {
+      if (!quoteId) throw new Error('no accepted quote to pay');
+      // Amount and currency come from the accepted quote, never from the client.
       const r = await api('POST', '/jewelry-payments/intents', {
         token: designerToken,
-        body: { amount: 100, currency: 'ILS' },
+        body: { quoteId },
       });
       const created = unwrap(r.json);
       if (!created?.id) throw new Error('intent not persisted');
+      if (created.amount !== 150 || created.currency !== 'ILS') {
+        throw new Error(`intent amount ${created.amount} ${created.currency} is not the quote total`);
+      }
       const got = unwrap(
         (await api('GET', `/jewelry-payments/intents/${created.id}`, { token: designerToken })).json,
       );

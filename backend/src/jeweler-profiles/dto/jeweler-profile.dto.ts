@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsEmail,
@@ -10,6 +11,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
   MinLength,
   ValidateNested,
@@ -22,10 +24,12 @@ export class JewelerBusinessHourDto {
 
   @ApiProperty({ example: '09:00' })
   @IsString()
+  @MaxLength(5)
   open!: string;
 
   @ApiProperty({ example: '18:00' })
   @IsString()
+  @MaxLength(5)
   close!: string;
 }
 
@@ -34,27 +38,33 @@ export class JewelerDraftPayloadDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(120)
   businessName?: string;
 
   @ApiPropertyOptional({ type: [String] })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(20)
+  @MaxLength(50, { each: true })
   specialties?: string[];
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   bio?: string;
 
   @ApiPropertyOptional({ description: 'E.164 phone number' })
   @IsOptional()
   @IsString()
+  @MaxLength(32)
   phone?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsEmail()
+  @MaxLength(254)
   email?: string;
 
   @ApiPropertyOptional({ type: [JewelerBusinessHourDto] })
@@ -62,11 +72,13 @@ export class JewelerDraftPayloadDto {
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => JewelerBusinessHourDto)
+  @ArrayMaxSize(14)
   businessHours?: JewelerBusinessHourDto[];
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   serviceAreaText?: string;
 
   @ApiPropertyOptional({ description: 'Workshop latitude (WGS84)' })
@@ -105,6 +117,7 @@ export class CreatePortfolioItemDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   title?: string;
 
   @ApiPropertyOptional({ default: 0 })
@@ -122,6 +135,7 @@ export class UpdatePortfolioItemDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   title?: string;
 
   @ApiPropertyOptional()
@@ -171,6 +185,7 @@ export class CreateCrmNoteDto {
   @ApiPropertyOptional({ example: 'IN_PRODUCTION', description: 'RECEIVED|IN_PRODUCTION|READY|SHIPPED|DONE' })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   productionStatus?: string;
 }
 

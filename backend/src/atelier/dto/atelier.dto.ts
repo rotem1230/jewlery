@@ -14,6 +14,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -21,6 +22,7 @@ export class QueryAtelierDesignsDto {
   @ApiPropertyOptional({ description: 'Free-text search on title/description' })
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   q?: string;
 
   @ApiPropertyOptional({ description: 'Region id filter (Design.preferredRegionId)' })
@@ -39,6 +41,7 @@ export class QueryAtelierJewelersDto {
   @ApiPropertyOptional({ description: 'Free-text search on business name/bio/specialties' })
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   q?: string;
 
   @ApiPropertyOptional()
@@ -61,6 +64,8 @@ export class QueryAtelierJewelersDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.split(',').map((v) => v.trim()).filter(Boolean) : value))
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(20)
+  @MaxLength(50, { each: true })
   specialties?: string[];
 
   @ApiPropertyOptional({ default: 1, minimum: 1 })
@@ -112,5 +117,6 @@ export class CreateAtelierRequestDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   message?: string;
 }

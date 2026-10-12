@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { MessageType } from '@prisma/client';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsDateString,
@@ -10,6 +11,7 @@ import {
   IsString,
   IsUUID,
   Max,
+  MaxLength,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -18,6 +20,7 @@ export class QueryConversationsDto {
   @ApiPropertyOptional({ description: 'Free-text search over design title and message body' })
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   q?: string;
 
   @ApiPropertyOptional()
@@ -73,6 +76,7 @@ export class CreateConversationDto {
   @IsArray()
   @ArrayMinSize(1)
   @IsUUID('4', { each: true })
+  @ArrayMaxSize(10)
   participantUserIds!: string[];
 }
 
@@ -84,6 +88,7 @@ export class CreateMessageDto {
   @ApiPropertyOptional()
   @ValidateIf((o) => o.type === MessageType.TEXT)
   @IsString()
+  @MaxLength(4000)
   body?: string;
 
   @ApiPropertyOptional({ description: 'Attachment upload id for IMAGE / AUDIO messages' })

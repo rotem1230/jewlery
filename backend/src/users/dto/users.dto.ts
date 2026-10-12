@@ -1,20 +1,30 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class UpdateMeDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   firstName?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   lastName?: string;
 
   @ApiPropertyOptional({ description: 'E.164 phone number' })
   @IsOptional()
   @IsString()
+  @MaxLength(32)
   phone?: string;
 
   @ApiPropertyOptional({ description: 'Upload id of a ready image owned by the current user' })
@@ -39,16 +49,19 @@ export class UpdatePreferencesDto {
   @ApiPropertyOptional({ example: 'he' })
   @IsOptional()
   @IsString()
+  @MaxLength(10)
   locale?: string;
 
   @ApiPropertyOptional({ description: 'US|EU|UK|IL' })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   preferredSizeStandard?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   preferredRingSizeCode?: string;
 
   @ApiPropertyOptional()
@@ -86,5 +99,6 @@ export class RegisterDeviceDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(32)
   appVersion?: string;
 }

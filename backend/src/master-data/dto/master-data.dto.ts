@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDefined,
@@ -8,6 +9,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   MinLength,
 } from 'class-validator';
 
@@ -20,11 +22,13 @@ export class CreateItemTypeDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   labelHe!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelEn?: string;
 
   @ApiPropertyOptional({ default: 0 })
@@ -49,11 +53,13 @@ export class CreateMetalDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   labelHe!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelEn?: string;
 
   @ApiPropertyOptional({ default: 0 })
@@ -83,6 +89,7 @@ export class CreateMetalPurityDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelHe?: string;
 
   @ApiPropertyOptional({ default: true })
@@ -102,11 +109,13 @@ export class CreateSettingDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   labelHe!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelEn?: string;
 
   @ApiPropertyOptional({ description: 'Minimum band width (mm) this setting requires' })
@@ -133,6 +142,7 @@ export class CreateSettingDto {
   @IsOptional()
   @IsArray()
   @IsUUID('4', { each: true })
+  @ArrayMaxSize(50)
   itemTypeIds?: string[];
 }
 
@@ -152,6 +162,7 @@ export class CreateStoneDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   nameEn?: string;
 
   @ApiPropertyOptional()
@@ -186,6 +197,7 @@ export class CreateStoneOptionDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelHe?: string;
 
   @ApiPropertyOptional({ default: 0 })
@@ -210,11 +222,13 @@ export class CreateFinishTypeDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   labelHe!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelEn?: string;
 
   @ApiPropertyOptional({ default: true })
@@ -234,11 +248,13 @@ export class CreateElementDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   labelHe!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelEn?: string;
 
   @ApiPropertyOptional()
@@ -263,11 +279,13 @@ export class CreateRegionDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(200)
   labelHe!: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   labelEn?: string;
 
   @ApiPropertyOptional({ default: 0 })
@@ -334,6 +352,7 @@ export class CreateMeasurementGuideDto {
   @ApiPropertyOptional({ default: 'he' })
   @IsOptional()
   @IsString()
+  @MaxLength(10)
   locale?: string;
 
   @ApiProperty()
@@ -359,5 +378,6 @@ export class EtlImportDto {
 
   @ApiProperty({ type: [Object], description: 'Rows to upsert by `code`' })
   @IsArray()
+  @ArrayMaxSize(500)
   rows!: Record<string, unknown>[];
 }

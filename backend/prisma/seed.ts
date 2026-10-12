@@ -1,20 +1,24 @@
-import { NestFactory } from '@nestjs/core';
+/**
+ * Database seed.
+ *  - Reference data (regions, catalogs, plans, feature flags, templates, defaults) is always seeded
+ *    and idempotent. Rows an operator controls (feature flags, plan prices, app config) are
+ *    created when missing and never overwritten.
+ *  - Demo data (accounts with published passwords, showcase profiles, chats, promotions) is seeded
+ *    only with SEED_DEMO_DATA=true, and refused in production.
+ */
 import { BillingCycle, ContentPageStatus, DesignStatus, Prisma, PrismaClient, ProfilePublishStatus, PromotionEntityType, PromotionSource, SubscriptionStatus, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { AppModule } from '../src/app.module';
-import { AppConfigService } from '../src/cms/app-config.service';
+import { DEFAULT_APP_CONFIGS } from '../src/cms/app-config.constants';
 
 const prisma = new PrismaClient();
+const SEED_DEMO_DATA = process.env.SEED_DEMO_DATA === 'true';
 
 async function seedAppConfigDefaults() {
-  const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
-  try {
-    const appConfigService = app.get(AppConfigService);
-    await appConfigService.seedDefaults();
-    console.log('Seed complete: default AppConfig rows');
-  } finally {
-    await app.close();
-  }
+  const created = await prisma.appConfig.createMany({
+    data: DEFAULT_APP_CONFIGS.map((entry) => ({ key: entry.key, value: entry.value })),
+    skipDuplicates: true,
+  });
+  console.log(`Seed complete: ${created.count} default AppConfig rows added`);
 }
 
 async function seedUsers() {
@@ -542,25 +546,28 @@ async function seedMeasurementGuides(itemTypeIds: Record<string, string>) {
   console.log('Seed complete: RING measurement guide (he)');
 }
 
+const FEATURE_FLAGS = [
+  'phase2_visualization',
+  'phase2_promotion_ranker',
+  'phase2_matching',
+  'phase3_oauth',
+  'phase3_postgis',
+  'phase3_jewelry_pay',
+];
+
+/** Flags start disabled and are never flipped by a re-seed: turning a feature on is an operator decision. */
 async function seedFeatureFlags() {
-  const flags: { key: string; enabled: boolean }[] = [
-    { key: 'phase2_visualization', enabled: true },
-    { key: 'phase2_promotion_ranker', enabled: true },
-    { key: 'phase2_matching', enabled: true },
-    { key: 'phase3_oauth', enabled: true },
-    { key: 'phase3_postgis', enabled: true },
-    { key: 'phase3_jewelry_pay', enabled: true },
-  ];
+  const created = await prisma.featureFlag.createMany({
+    data: FEATURE_FLAGS.map((key) => ({ key, enabled: false, rolloutPct: 100 })),
+    skipDuplicates: true,
+  });
+  console.log(`Seed complete: ${created.count} feature flags added (disabled)`);
+}
 
-  for (const flag of flags) {
-    await prisma.featureFlag.upsert({
-      where: { key: flag.key },
-      update: { enabled: flag.enabled, rolloutPct: 100 },
-      create: { key: flag.key, enabled: flag.enabled, rolloutPct: 100 },
-    });
-  }
-
-  console.log(`Seed complete: ${flags.length} feature flags (Phase 2/3 on for local)`);
+/** Local development: every phase 2/3 feature on. */
+async function enableDemoFeatureFlags() {
+  await prisma.featureFlag.updateMany({ where: { key: { in: FEATURE_FLAGS } }, data: { enabled: true, rolloutPct: 100 } });
+  console.log('Seed complete: demo feature flags enabled');
 }
 
 async function seedEntitlementDefinitions(): Promise<Record<string, string>> {
@@ -666,19 +673,10 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
   ];
 
   for (const plan of plans) {
+    // Prices, quotas and trials are business settings: created once, never overwritten here.
     const row = await prisma.planCatalog.upsert({
       where: { code: plan.code },
-      update: {
-        nameHe: plan.nameHe,
-        nameEn: plan.nameEn,
-        billingCycle: plan.billingCycle,
-        price: plan.price,
-        leadQuota: plan.leadQuota,
-        extraLeadPrice: plan.extraLeadPrice,
-        trialDays: plan.trialDays,
-        sortOrder: plan.sortOrder,
-        inclusions: plan.inclusions,
-      },
+      update: {},
       create: {
         code: plan.code,
         role: plan.role,
@@ -1192,7 +1190,10 @@ async function seedAtelierPromotions() {
 }
 
 async function main() {
-  await seedUsers();
+  if (SEED_DEMO_DATA && process.env.NODE_ENV === 'production') {
+    throw new Error('Refusing to seed demo data (accounts with published passwords) in production');
+  }
+
   await seedRegions();
   const itemTypeIds = await seedItemTypes();
   await seedMetalsAndPurities();
@@ -1203,14 +1204,20 @@ async function main() {
   await seedFeatureFlags();
   const entitlementIds = await seedEntitlementDefinitions();
   await seedPlanCatalog(entitlementIds);
-  await seedDesignerProTrial();
   await seedSystemMessageTemplates();
   await seedContentPages();
+  await seedAppConfigDefaults();
+
+  if (!SEED_DEMO_DATA) {
+    console.log('Demo data skipped (set SEED_DEMO_DATA=true for local development)');
+    return;
+  }
+  await seedUsers();
+  await enableDemoFeatureFlags();
+  await seedDesignerProTrial();
   await seedJewelerProfileShowcase();
   await seedJewelerChatShowcase(itemTypeIds);
   await seedAtelierPromotions();
-
-  await seedAppConfigDefaults();
 }
 
 main()

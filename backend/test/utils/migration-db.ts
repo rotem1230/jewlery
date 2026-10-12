@@ -15,6 +15,8 @@ export function migrationNames(): string[] {
 }
 
 export type ScratchDatabase = {
+  /** Connection string of the scratch database. */
+  url: string;
   /** Raw SQL only: the schema at an older migration does not match the generated client. */
   sql: PrismaClient;
   /** Applies every migration up to and including `lastMigration`, exactly like a deployment. */
@@ -51,6 +53,7 @@ export async function scratchDatabase(name: string): Promise<ScratchDatabase> {
   const sql = new PrismaClient({ datasourceUrl: url.toString() });
 
   return {
+    url: url.toString(),
     sql,
     migrateTo(lastMigration) {
       if (!migrationNames().includes(lastMigration)) {

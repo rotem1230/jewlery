@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { DesignStatus, FeasibilityStatus } from '@prisma/client';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
   Equals,
   IsArray,
@@ -9,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
@@ -21,6 +23,7 @@ export class CreateDesignDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   title?: string;
 
   @ApiPropertyOptional({ description: 'Atelier region filter for jeweler discovery' })
@@ -65,11 +68,13 @@ export class UpdateDesignDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(200)
   title?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   description?: string;
 
   @ApiPropertyOptional()
@@ -79,6 +84,7 @@ export class UpdateDesignDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   jewelerNotes?: string;
 
   @ApiPropertyOptional()
@@ -103,6 +109,8 @@ export class LockDesignDto {
   @IsArray()
   @ArrayMinSize(1)
   @IsString({ each: true })
+  @ArrayMaxSize(50)
+  @MaxLength(100, { each: true })
   fields!: string[];
 
   @ApiProperty({ description: 'Must be true to confirm the (irreversible-by-designer) lock action' })
@@ -118,5 +126,6 @@ export class AdminFeasibilityDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   note?: string;
 }
