@@ -12,6 +12,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   Min,
 } from 'class-validator';
 
@@ -77,9 +78,10 @@ export class GeoSearchDto {
   @IsLongitude()
   lng!: number;
 
-  @ApiProperty({ description: 'Search radius in kilometers' })
+  @ApiProperty({ description: 'Search radius in kilometers (rounded up to whole km, at least 1)' })
   @IsNumber()
   @Min(0)
+  @Max(500)
   radiusKm!: number;
 
   @ApiPropertyOptional({ default: 1, minimum: 1 })

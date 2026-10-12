@@ -243,4 +243,42 @@ describe('design requests', () => {
       .expect(409);
     expect(res.body.code).toBe('DESIGN_NOT_PUBLISHED');
   });
+
+  it("a targeted jeweler sees their own quote on a request, not the competitors' prices", async () => {
+    const designer = await registerVerified(t);
+    const design = await createPublishedDesign(t, designer);
+    const a = await createPublishedJeweler(t);
+    const b = await createPublishedJeweler(t);
+    const request = await t.http
+      .post(`${API}/atelier/requests`)
+      .set(designer.auth)
+      .send({ designId: design.id, mode: 'TARGETED', targetJewelerProfileIds: [a.profileId, b.profileId] })
+      .expect(201);
+    const requestId = request.body.data.id as string;
+    const quoteA = await createQuote(t, a, (await openConversation(t, a, design.id, [designer.id])).id, design.id, {
+      designRequestId: requestId,
+    });
+    const quoteB = await createQuote(t, b, (await openConversation(t, b, design.id, [designer.id])).id, design.id, {
+      designRequestId: requestId,
+      laborCost: 75,
+    });
+
+    const seenByA = await t.http.get(`${API}/atelier/requests/${requestId}`).set(a.auth).expect(200);
+    expect((seenByA.body.data.quotes as Array<{ id: string }>).map((q) => q.id)).toEqual([quoteA.id]);
+    const seenByOwner = await t.http.get(`${API}/atelier/requests/${requestId}`).set(designer.auth).expect(200);
+    expect((seenByOwner.body.data.quotes as Array<{ id: string }>).map((q) => q.id).sort()).toEqual(
+      [quoteA.id, quoteB.id].sort(),
+    );
+  });
+
+  it('a participant who left a conversation can no longer read it', async () => {
+    const s = await marketplaceScenario(t);
+    await t.prisma.conversationParticipant.update({
+      where: { conversationId_userId: { conversationId: s.conversation.id, userId: s.jeweler.id } },
+      data: { leftAt: new Date() },
+    });
+    await t.http.get(`${API}/conversations/${s.conversation.id}/messages`).set(s.jeweler.auth).expect(403);
+    const list = await t.http.get(`${API}/conversations`).set(s.jeweler.auth).expect(200);
+    expect((list.body.data.items as Array<{ id: string }>).some((c) => c.id === s.conversation.id)).toBe(false);
+  });
 });

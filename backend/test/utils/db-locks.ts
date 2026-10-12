@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { TestApp } from './test-app';
 
-type LockableTable = 'designs' | 'quotes' | 'conversations' | 'users';
+type LockableTable = 'designs' | 'quotes' | 'conversations' | 'users' | 'jeweler_profiles';
 type Tx = Prisma.TransactionClient;
 
 export type HeldLock = {

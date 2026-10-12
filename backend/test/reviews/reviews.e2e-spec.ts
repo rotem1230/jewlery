@@ -1,10 +1,14 @@
+import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
   acceptQuote,
+  createPublishedDesign,
   createPublishedJeweler,
   createQuote,
   marketplaceScenario,
+  openConversation,
   registerVerified,
+  TestJeweler,
 } from '../utils/factories';
 
 /**
@@ -32,6 +36,36 @@ describe('reviews', () => {
   function review(jewelerProfileId: string, rating = 5) {
     return { jewelerProfileId, reviewerName: 'Dana', rating, comment: 'Beautiful work' };
   }
+
+  async function customerOf(jeweler: TestJeweler) {
+    const designer = await registerVerified(t);
+    const design = await createPublishedDesign(t, designer);
+    const conversation = await openConversation(t, jeweler, design.id, [designer.id]);
+    const quote = await createQuote(t, jeweler, conversation.id, design.id);
+    await acceptQuote(t, designer, quote).expect(201);
+    return designer;
+  }
+
+  it('two customers reviewing the same jeweler at the same moment both succeed', async () => {
+    const jeweler = await createPublishedJeweler(t);
+    const first = await customerOf(jeweler);
+    const second = await customerOf(jeweler);
+
+    // Both requests reach the profile row at once, the interleaving that used to deadlock.
+    const lock = await lockRow(t, 'jeweler_profiles', jeweler.profileId);
+    const posting = [
+      t.http.post(`${API}/reviews`).set(first.auth).send(review(jeweler.profileId, 5)).then((r) => r),
+      t.http.post(`${API}/reviews`).set(second.auth).send(review(jeweler.profileId, 3)).then((r) => r),
+    ];
+    await waitForLockWaiters(t, 2);
+    await lock.release();
+
+    const results = await Promise.all(posting);
+    expect(results.map((r) => r.status)).toEqual([201, 201]);
+    const profile = await t.prisma.jewelerProfile.findUniqueOrThrow({ where: { id: jeweler.profileId } });
+    expect(profile.reviewCount).toBe(2);
+    expect(profile.ratingAvg.toString()).toBe('4');
+  });
 
   it('a user without a completed deal with the jeweler cannot review', async () => {
     const jeweler = await createPublishedJeweler(t);

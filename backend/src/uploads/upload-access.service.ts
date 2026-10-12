@@ -59,20 +59,26 @@ export class UploadAccessService {
     return { ...upload, contentUrl: this.signedContentPath(upload.id) };
   }
 
-  async isPublic(upload: Pick<Upload, 'id' | 'objectKey'>): Promise<boolean> {
+  /**
+   * Public only when the upload's own owner publishes it (avatar, published logo / portfolio,
+   * thumbnail of a listed design). A reference from someone else's record never publishes it.
+   */
+  async isPublic(upload: Pick<Upload, 'id' | 'objectKey' | 'ownerUserId'>): Promise<boolean> {
     if (upload.objectKey.startsWith('seed/')) {
       return true;
     }
+    const owner = upload.ownerUserId;
     const [avatars, logos, portfolio, thumbnails] = await Promise.all([
-      this.prisma.user.count({ where: { avatarUploadId: upload.id, deletedAt: null } }),
+      this.prisma.user.count({ where: { id: owner, avatarUploadId: upload.id, deletedAt: null } }),
       this.prisma.jewelerProfile.count({
-        where: { logoUploadId: upload.id, publishStatus: ProfilePublishStatus.PUBLISHED },
+        where: { userId: owner, logoUploadId: upload.id, publishStatus: ProfilePublishStatus.PUBLISHED },
       }),
       this.prisma.portfolioItem.count({
-        where: { uploadId: upload.id, profile: { publishStatus: ProfilePublishStatus.PUBLISHED } },
+        where: { uploadId: upload.id, profile: { userId: owner, publishStatus: ProfilePublishStatus.PUBLISHED } },
       }),
       this.prisma.design.count({
         where: {
+          ownerUserId: owner,
           thumbnailUploadId: upload.id,
           deletedAt: null,
           status: { in: [DesignStatus.PUBLISHED, DesignStatus.COMPLETED] },
@@ -86,9 +92,11 @@ export class UploadAccessService {
     if (upload.ownerUserId === user.id || user.roles.includes(UserRole.ADMIN)) {
       return true;
     }
+    // Shared only by its owner's own message in a conversation the reader still takes part in.
     const shared = await this.prisma.message.count({
       where: {
         imageUploadId: upload.id,
+        senderId: upload.ownerUserId,
         conversation: { participants: { some: { userId: user.id, leftAt: null } } },
       },
     });

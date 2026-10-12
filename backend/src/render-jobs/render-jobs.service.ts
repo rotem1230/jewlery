@@ -59,10 +59,10 @@ export class RenderJobsService {
   }
 
   /** Callers must have authorized `design` first: this may create a version row. */
-  private async ensureLatestVersion(design: Design, actorUserId: string) {
+  private async ensureLatestVersion(design: Design, actorUserId: string, db: Prisma.TransactionClient = this.prisma) {
     const designId = design.id;
 
-    const latest = await this.prisma.designVersion.findFirst({
+    const latest = await db.designVersion.findFirst({
       where: { designId },
       orderBy: { versionNumber: 'desc' },
     });
@@ -70,7 +70,7 @@ export class RenderJobsService {
       return { design, version: latest };
     }
 
-    const version = await this.prisma.designVersion.create({
+    const version = await db.designVersion.create({
       data: {
         designId: design.id,
         versionNumber: 1,
@@ -93,32 +93,36 @@ export class RenderJobsService {
     this.assertOwnerOrAdmin(found, user);
 
     const limit = await this.dailyLimit();
-    const today = await this.prisma.renderJob.count({
-      where: { design: { ownerUserId: found.ownerUserId }, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
-    });
-    if (today >= limit) {
-      throw new HttpException(
-        { success: false, message: 'Daily export limit reached', code: 'RENDER_QUOTA_EXCEEDED' },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
-
-    const { design, version } = await this.ensureLatestVersion(found, user.id);
-
     const [hasPriority, hasNoWatermark] = await Promise.all([
       this.entitlements.has(user.id, 'priority_cloud_processing'),
       this.entitlements.has(user.id, 'no_watermark'),
     ]);
 
-    const job = await this.prisma.renderJob.create({
-      data: {
-        designId: design.id,
-        designVersionId: version.id,
-        status: JobStatus.QUEUED,
-        priority: hasPriority ? PRIORITY_CLOUD_PROCESSING : DEFAULT_PRIORITY,
-        exportFormat: dto.exportFormat ?? null,
-        applyWatermark: !hasNoWatermark,
-      },
+    // Count and create under the owner's row lock: simultaneous requests cannot all pass the
+    // daily check (each job costs an engine run).
+    const { design, job } = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${found.ownerUserId}::uuid FOR UPDATE`;
+      const today = await tx.renderJob.count({
+        where: { design: { ownerUserId: found.ownerUserId }, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
+      });
+      if (today >= limit) {
+        throw new HttpException(
+          { success: false, message: 'Daily export limit reached', code: 'RENDER_QUOTA_EXCEEDED' },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      const { version } = await this.ensureLatestVersion(found, user.id, tx);
+      const created = await tx.renderJob.create({
+        data: {
+          designId: found.id,
+          designVersionId: version.id,
+          status: JobStatus.QUEUED,
+          priority: hasPriority ? PRIORITY_CLOUD_PROCESSING : DEFAULT_PRIORITY,
+          exportFormat: dto.exportFormat ?? null,
+          applyWatermark: !hasNoWatermark,
+        },
+      });
+      return { design: found, job: created };
     });
 
     await this.audit.log({

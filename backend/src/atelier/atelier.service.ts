@@ -14,7 +14,7 @@ import { PrismaService } from '../database/prisma.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
-import { toPublicJewelerProfile } from '../jeweler-profiles/public-profile';
+import { PUBLIC_PORTFOLIO_SELECT, toPublicJewelerProfile } from '../jeweler-profiles/public-profile';
 import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAtelierJewelersDto } from './dto/atelier.dto';
 
 const PAGE_SIZE = 20;
@@ -24,6 +24,12 @@ const DESIGNS_FEED_PLACEMENT = 'atelier_designs_feed';
 const MATCHING_FLAG = 'phase2_matching';
 const PROMOTION_RANKER_FLAG = 'phase2_promotion_ranker';
 const GEO_SEARCH_FLAG = 'phase3_postgis';
+/**
+ * Geo search must not reveal more than the published, rounded location (2 decimals, about 1 km):
+ * distances are measured from the rounded point and the radius is whole kilometers, so shrinking
+ * the radius around a guess cannot pinpoint a workshop.
+ */
+const MIN_GEO_RADIUS_KM = 1;
 const DEFAULT_MATCHING_WEIGHTS = { regionMatchWeight: 50, specialtyOverlapWeight: 10 };
 
 /** What the public design feed exposes; reviewer ids, locks and acceptance data stay internal. */
@@ -46,7 +52,7 @@ const PUBLIC_DESIGN_SELECT = {
 const PUBLIC_JEWELER_INCLUDE = {
   region: true,
   logoUpload: { select: { id: true, mimeType: true } },
-  portfolio: { orderBy: { sortOrder: 'asc' }, take: 4 },
+  portfolio: { orderBy: { sortOrder: 'asc' }, take: 4, select: PUBLIC_PORTFOLIO_SELECT },
 } satisfies Prisma.JewelerProfileInclude;
 
 @Injectable()
@@ -228,20 +234,26 @@ export class AtelierService {
     }
 
     const page = query.page && query.page > 0 ? query.page : 1;
+    const radiusKm = Math.max(MIN_GEO_RADIUS_KM, Math.ceil(query.radiusKm));
     const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM jeweler_profiles
-      WHERE "publishStatus" = 'PUBLISHED'
-        AND latitude IS NOT NULL
-        AND longitude IS NOT NULL
-        AND (
-          6371 * acos(
-            LEAST(1.0, GREATEST(-1.0,
-              cos(radians(${query.lat})) * cos(radians(latitude::double precision))
-              * cos(radians(longitude::double precision) - radians(${query.lng}))
-              + sin(radians(${query.lat})) * sin(radians(latitude::double precision))
-            ))
-          )
-        ) <= ${query.radiusKm}
+      SELECT id FROM (
+        SELECT id,
+               round(latitude, 2)::double precision AS lat,
+               round(longitude, 2)::double precision AS lng
+          FROM jeweler_profiles
+         WHERE "publishStatus" = 'PUBLISHED'
+           AND latitude IS NOT NULL
+           AND longitude IS NOT NULL
+      ) AS published
+      WHERE (
+        6371 * acos(
+          LEAST(1.0, GREATEST(-1.0,
+            cos(radians(${query.lat})) * cos(radians(published.lat))
+            * cos(radians(published.lng) - radians(${query.lng}))
+            + sin(radians(${query.lat})) * sin(radians(published.lat))
+          ))
+        )
+      ) <= ${radiusKm}
     `;
     const ids = rows.map((row) => row.id);
     const total = ids.length;
@@ -409,6 +421,10 @@ export class AtelierService {
       throw new ForbiddenException({ success: false, message: 'Not authorized to view this request' });
     }
 
+    // Competing jewelers never see each other's prices; the requester sees every quote.
+    if (!isRequester && !isAdmin) {
+      return { ...request, quotes: request.quotes.filter((quote) => quote.authorUserId === user.id) };
+    }
     return request;
   }
 }

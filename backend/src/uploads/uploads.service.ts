@@ -12,7 +12,7 @@ import {
   NotImplementedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Upload, UploadStatus } from '@prisma/client';
+import { Prisma, Upload, UploadStatus } from '@prisma/client';
 import { AppConfigService } from '../cms/app-config.service';
 import { PrismaService } from '../database/prisma.service';
 import { contentMatchesMimeType } from './file-signature';
@@ -30,6 +30,8 @@ export type PresignResult = {
 export type ServableUpload = { upload: Upload; path: string };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Object keys of server-generated outputs (stored under uploads-local/generated/). */
+const GENERATED_PREFIX = 'local/generated/';
 
 @Injectable()
 export class UploadsService {
@@ -169,10 +171,19 @@ export class UploadsService {
     });
   }
 
-  private async assertDailyQuota(ownerUserId: string, incomingBytes: number, limits: UploadLimits): Promise<void> {
+  /**
+   * Personal uploads in the last 24 h. Generated outputs (exports, AI models, try-ons) are capped by
+   * their own job quotas and do not use up the user's upload budget.
+   */
+  private async assertDailyQuota(
+    db: Prisma.TransactionClient,
+    ownerUserId: string,
+    incomingBytes: number,
+    limits: UploadLimits,
+  ): Promise<void> {
     const since = new Date(Date.now() - DAY_MS);
-    const usage = await this.prisma.upload.aggregate({
-      where: { ownerUserId, createdAt: { gt: since } },
+    const usage = await db.upload.aggregate({
+      where: { ownerUserId, createdAt: { gt: since }, NOT: { objectKey: { startsWith: GENERATED_PREFIX } } },
       _sum: { sizeBytes: true },
       _count: { _all: true },
     });
@@ -220,45 +231,61 @@ export class UploadsService {
         code: 'UPLOAD_CONTENT_MISMATCH',
       });
     }
-    await this.assertDailyQuota(ownerUserId, file.size, limits);
-
     const dir = join(process.cwd(), 'uploads-local');
     mkdirSync(dir, { recursive: true });
     // Server-generated name only — never user input (traversal-safe).
     const filename = `${randomUUID()}.${this.extensionFor(file.mimetype)}`;
-    writeFileSync(join(dir, filename), file.buffer, { mode: 0o600 });
+    const path = join(dir, filename);
 
-    const upload = await this.prisma.upload.create({
-      data: {
-        ownerUserId,
-        bucket: 'local-dev',
-        objectKey: `local/${filename}`,
-        mimeType: file.mimetype,
-        sizeBytes: file.size,
-        status: UploadStatus.READY,
-        readyAt: new Date(),
-      },
-    });
-    return this.access.withUrl(upload);
+    // Quota check, file and row under the user's row lock: simultaneous uploads cannot all pass
+    // the check, and a failed save removes the file instead of leaving an untracked orphan.
+    try {
+      const upload = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${ownerUserId}::uuid FOR UPDATE`;
+        await this.assertDailyQuota(tx, ownerUserId, file.size, limits);
+        writeFileSync(path, file.buffer, { mode: 0o600 });
+        return tx.upload.create({
+          data: {
+            ownerUserId,
+            bucket: 'local-dev',
+            objectKey: `local/${filename}`,
+            mimeType: file.mimetype,
+            sizeBytes: file.size,
+            status: UploadStatus.READY,
+            readyAt: new Date(),
+          },
+        });
+      });
+      return this.access.withUrl(upload);
+    } catch (err) {
+      rmSync(path, { force: true });
+      throw err;
+    }
   }
 
-  /** Server-written file (AI / render output). Skips the chat MIME allowlist. */
+  /** Server-written file (AI / render / try-on output). Skips the chat MIME allowlist. */
   async createGeneratedLocal(ownerUserId: string, bytes: Buffer, mimeType: string): Promise<Upload> {
-    const dir = join(process.cwd(), 'uploads-local');
+    const dir = join(process.cwd(), 'uploads-local', 'generated');
     mkdirSync(dir, { recursive: true });
     const filename = `${randomUUID()}.${this.extensionFor(mimeType)}`;
-    writeFileSync(join(dir, filename), bytes, { mode: 0o600 });
-    return this.prisma.upload.create({
-      data: {
-        ownerUserId,
-        bucket: 'local-dev',
-        objectKey: `local/${filename}`,
-        mimeType,
-        sizeBytes: bytes.length,
-        status: UploadStatus.READY,
-        readyAt: new Date(),
-      },
-    });
+    const path = join(dir, filename);
+    writeFileSync(path, bytes, { mode: 0o600 });
+    try {
+      return await this.prisma.upload.create({
+        data: {
+          ownerUserId,
+          bucket: 'local-dev',
+          objectKey: `${GENERATED_PREFIX}${filename}`,
+          mimeType,
+          sizeBytes: bytes.length,
+          status: UploadStatus.READY,
+          readyAt: new Date(),
+        },
+      });
+    } catch (err) {
+      rmSync(path, { force: true });
+      throw err;
+    }
   }
 
   private localBaseDirs(): { seedDir: string; localDir: string } {

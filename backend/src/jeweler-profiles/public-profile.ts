@@ -29,18 +29,41 @@ function coarse(value: Prisma.Decimal | number | null): number | null {
   return Math.round(Number(value) * 100) / 100;
 }
 
+type PublicProfileSource<TRegion, TPortfolio, TReview> = JewelerProfile & {
+  region?: TRegion;
+  logoUpload?: { id: string; mimeType: string } | null;
+  portfolio?: TPortfolio[];
+  reviews?: TReview[];
+};
+
 /**
- * Public shape of a jeweler business listing: exact coordinates are coarsened and an attached
- * logo upload is reduced to its id and type (storage location and owner stay internal).
+ * Public shape of a jeweler business listing, built from an allow-list so a new column is never
+ * published by accident. Contact details (phone, e-mail) are not part of it: they reach a
+ * customer through the handoff after a quote is accepted. Exact coordinates are coarsened and
+ * an attached logo upload is reduced to its id and type.
  */
-export function toPublicJewelerProfile<
-  T extends Pick<JewelerProfile, 'latitude' | 'longitude'> & { logoUpload?: { id: string; mimeType: string } | null },
->(profile: T) {
-  const { latitude, longitude, logoUpload, ...rest } = profile;
+export function toPublicJewelerProfile<TRegion, TPortfolio, TReview>(
+  profile: PublicProfileSource<TRegion, TPortfolio, TReview>,
+) {
   return {
-    ...rest,
-    latitude: coarse(latitude),
-    longitude: coarse(longitude),
-    logoUpload: logoUpload ? { id: logoUpload.id, mimeType: logoUpload.mimeType } : null,
+    id: profile.id,
+    userId: profile.userId,
+    businessName: profile.businessName,
+    regionId: profile.regionId,
+    specialties: profile.specialties,
+    bio: profile.bio,
+    businessHours: profile.businessHours,
+    serviceAreaText: profile.serviceAreaText,
+    ratingAvg: profile.ratingAvg,
+    reviewCount: profile.reviewCount,
+    verifiedBadge: profile.verifiedBadge,
+    publishedAt: profile.publishedAt,
+    latitude: coarse(profile.latitude),
+    longitude: coarse(profile.longitude),
+    logoUploadId: profile.logoUploadId,
+    logoUpload: profile.logoUpload ? { id: profile.logoUpload.id, mimeType: profile.logoUpload.mimeType } : null,
+    ...(profile.region !== undefined ? { region: profile.region } : {}),
+    ...(profile.portfolio !== undefined ? { portfolio: profile.portfolio } : {}),
+    ...(profile.reviews !== undefined ? { reviews: profile.reviews } : {}),
   };
 }

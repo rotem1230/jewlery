@@ -59,14 +59,17 @@ module.exports = async function globalSetup() {
       port,
       persistent: false,
       initdbFlags: ['--encoding=UTF8', '--locale=C'],
-      onLog: () => undefined,
+      // Server output is kept for diagnosing failed runs (removed with the cluster on teardown).
+      onLog: (message) => fs.appendFileSync(path.join(TMP_DIR, 'postgres.log'), `${String(message)}\n`),
     });
     await pg.initialise();
     await pg.start();
     await pg.createDatabase('malinvosky_test');
     globalThis.__MALINVOSKY_EMBEDDED_PG__ = pg;
     globalThis.__MALINVOSKY_EMBEDDED_PG_DIR__ = TMP_DIR;
-    databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/malinvosky_test?schema=public`;
+    // Every PostgreSQL connection is a new process (slow to start on Windows under load): allow a
+    // generous connect timeout and keep the pool bounded, above the tests' peak concurrency.
+    databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/malinvosky_test?schema=public&connection_limit=24&connect_timeout=30&pool_timeout=30`;
   }
 
   process.env.DATABASE_URL = databaseUrl;

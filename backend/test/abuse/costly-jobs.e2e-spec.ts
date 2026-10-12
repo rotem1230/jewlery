@@ -147,6 +147,28 @@ describe('render job limits and ownership', () => {
     }
   });
 
+  it('the daily render quota holds under simultaneous requests', async () => {
+    await t.prisma.appConfig.upsert({
+      where: { key: 'render_limits' },
+      update: { value: { dailyPerUser: 2 }, version: { increment: 1 } },
+      create: { key: 'render_limits', value: { dailyPerUser: 2 } },
+    });
+    try {
+      const user = await registerVerified(t);
+      const design = await createDraftDesign(t, user);
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'STL' }),
+        ),
+      );
+      expect(results.filter((r) => r.status === 201)).toHaveLength(2);
+      expect(results.filter((r) => r.status === 429)).toHaveLength(6);
+      expect(await t.prisma.renderJob.count({ where: { designId: design.id } })).toBe(2);
+    } finally {
+      await t.prisma.appConfig.delete({ where: { key: 'render_limits' } });
+    }
+  });
+
   it('a non-owner is refused before anything is written', async () => {
     const owner = await registerVerified(t);
     const design = await createDraftDesign(t, owner);

@@ -104,13 +104,16 @@ export async function firstRegionId(t: TestApp): Promise<string> {
 }
 
 /** A jeweler account with a PUBLISHED business profile. */
-export async function createPublishedJeweler(t: TestApp): Promise<TestJeweler> {
+export async function createPublishedJeweler(
+  t: TestApp,
+  profile: Record<string, unknown> = {},
+): Promise<TestJeweler> {
   const jeweler = await registerVerified(t, { roles: [UserRole.JEWELER] });
   const regionId = await firstRegionId(t);
   await t.http
     .put(`${API}/jeweler-profiles/draft`)
     .set(jeweler.auth)
-    .send({ regionId, payload: { businessName: 'Test Atelier', phone: '+972501234567' } })
+    .send({ regionId, payload: { businessName: 'Test Atelier', phone: '+972501234567', ...profile } })
     .expect(200);
   const published = await t.http
     .post(`${API}/jeweler-profiles/publish`)

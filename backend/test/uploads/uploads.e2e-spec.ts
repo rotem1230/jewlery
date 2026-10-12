@@ -1,4 +1,4 @@
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { UploadAccessService } from '../../src/uploads/upload-access.service';
 import { VisualizationService } from '../../src/visualization/visualization.service';
@@ -70,6 +70,23 @@ describe('upload content access', () => {
     await t.http.get(`${API}/uploads/${uploadId}/content`).set(designer.auth).expect(200);
     const outsider = await registerVerified(t);
     await t.http.get(`${API}/uploads/${uploadId}/content`).set(outsider.auth).expect(404);
+  });
+
+  it("a legacy reference to someone else's upload neither publishes nor shares it", async () => {
+    const victim = await registerVerified(t);
+    const upload = await uploadFile(t, victim, PNG_BYTES, 'image/png', 'private.png').expect(201);
+    const id = upload.body.data.id as string;
+    // Rows written before ownership checks existed: another user's published design and chat
+    // message point at the victim's private upload.
+    const s = await marketplaceScenario(t);
+    await t.prisma.design.update({ where: { id: s.design.id }, data: { thumbnailUploadId: id } });
+    await t.prisma.message.create({
+      data: { conversationId: s.conversation.id, senderId: s.designer.id, type: 'IMAGE', imageUploadId: id },
+    });
+
+    await t.http.get(`${API}/uploads/${id}/content`).expect(404);
+    await t.http.get(`${API}/uploads/${id}/content`).set(s.jeweler.auth).expect(404);
+    await t.http.get(`${API}/uploads/${id}/content`).set(victim.auth).expect(200);
   });
 
   it('never serves a deleted upload, even with a valid signature', async () => {
@@ -158,6 +175,68 @@ describe('upload validation', () => {
         data: { value: limits as object, version: { increment: 1 } },
       });
     }
+  });
+
+  async function withLimits(patchLimits: Record<string, unknown>, run: () => Promise<void>) {
+    const before = await t.prisma.appConfig.findUniqueOrThrow({ where: { key: 'upload_limits' } });
+    const limits = before.value as Record<string, unknown>;
+    await t.prisma.appConfig.update({
+      where: { key: 'upload_limits' },
+      data: { value: { ...limits, ...patchLimits } as object, version: { increment: 1 } },
+    });
+    try {
+      await run();
+    } finally {
+      await t.prisma.appConfig.update({
+        where: { key: 'upload_limits' },
+        data: { value: limits as object, version: { increment: 1 } },
+      });
+    }
+  }
+
+  it('the daily quota holds under simultaneous uploads', async () => {
+    await withLimits({ dailyMaxFiles: 3 }, async () => {
+      const user = await registerVerified(t);
+      const results = await Promise.all(
+        Array.from({ length: 12 }, () => uploadFile(t, user, PNG_BYTES, 'image/png')),
+      );
+      expect(results.filter((r) => r.status === 201)).toHaveLength(3);
+      expect(results.filter((r) => r.status === 429)).toHaveLength(9);
+      expect(await t.prisma.upload.count({ where: { ownerUserId: user.id } })).toBe(3);
+    });
+  });
+
+  it('a failed save leaves no orphan file on disk', async () => {
+    const user = await registerVerified(t);
+    const dir = join(process.cwd(), 'uploads-local');
+    const filesBefore = existsSync(dir) ? readdirSync(dir).length : 0;
+    await t.prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_upload_insert() RETURNS trigger AS $$
+      BEGIN
+        IF NEW."ownerUserId" = '${user.id}'::uuid THEN RAISE EXCEPTION 'injected upload failure'; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await t.prisma.$executeRawUnsafe(`
+      CREATE TRIGGER test_fail_upload_insert BEFORE INSERT ON "uploads"
+      FOR EACH ROW EXECUTE FUNCTION test_fail_upload_insert()`);
+    try {
+      const res = await uploadFile(t, user, PNG_BYTES, 'image/png');
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_upload_insert ON "uploads"`);
+      await t.prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_upload_insert()`);
+    }
+    expect(readdirSync(dir).length).toBe(filesBefore);
+  });
+
+  it('generated outputs (exports, AI models) do not use up the personal upload quota', async () => {
+    await withLimits({ dailyMaxFiles: 2 }, async () => {
+      const user = await registerVerified(t);
+      const design = await createDraftDesign(t, user);
+      await t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'PNG_HD' }).expect(201);
+      await uploadFile(t, user, PNG_BYTES, 'image/png').expect(201);
+      await uploadFile(t, user, PNG_BYTES, 'image/png').expect(201);
+    });
   });
 
   it('refuses to reference another user\'s upload as a design thumbnail or jeweler logo', async () => {

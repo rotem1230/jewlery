@@ -75,6 +75,39 @@ describe('public data exposure', () => {
     const list = await t.http.get(`${API}/atelier/jewelers`).query({ q: 'Geo Atelier' }).expect(200);
     const row = (list.body.data.items as Array<Record<string, unknown>>).find((i) => i.id === published.body.data.id);
     expect(String(row?.longitude)).not.toContain('781768');
+
+    // Contact details are shared through the post-acceptance handoff, not scraped from listings.
+    for (const view of [res.body.data, row]) {
+      expect(view).toBeDefined();
+      for (const field of ['phone', 'email', 'publishStatus']) {
+        expect(view).not.toHaveProperty(field);
+      }
+      expect(view).toHaveProperty('businessName', 'Geo Atelier');
+    }
+  });
+
+  it('geo search cannot locate a workshop more precisely than its published (rounded) location', async () => {
+    await t.prisma.featureFlag.upsert({
+      where: { key: 'phase3_postgis' },
+      update: { enabled: true, rolloutPct: 100 },
+      create: { key: 'phase3_postgis', enabled: true, rolloutPct: 100 },
+    });
+    // Two workshops whose exact coordinates differ but round to the same published point.
+    const a = await createPublishedJeweler(t, { latitude: -45.0812, longitude: 170.7812 });
+    const b = await createPublishedJeweler(t, { latitude: -45.0838, longitude: 170.7838 });
+    const found = async (lat: number, lng: number, radiusKm: number) => {
+      const res = await t.http.get(`${API}/atelier/geo/search`).query({ lat, lng, radiusKm }).expect(200);
+      return (res.body.data.items as Array<{ id: string }>)
+        .map((item) => item.id)
+        .filter((id) => id === a.profileId || id === b.profileId)
+        .sort();
+    };
+
+    // A tiny radius around either exact spot must not tell the two apart.
+    const nearA = await found(-45.0812, 170.7812, 0.05);
+    const nearB = await found(-45.0838, 170.7838, 0.05);
+    expect(nearA).toEqual(nearB);
+    expect(nearA).toEqual([a.profileId, b.profileId].sort());
   });
 
   it('public reviews do not expose author user ids', async () => {

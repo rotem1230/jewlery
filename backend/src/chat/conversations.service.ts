@@ -44,7 +44,7 @@ export class ConversationsService {
     const participant = await this.prisma.conversationParticipant.findUnique({
       where: { conversationId_userId: { conversationId, userId } },
     });
-    if (!participant) {
+    if (!participant || participant.leftAt) {
       throw new ForbiddenException({ success: false, message: 'Not a participant of this conversation' });
     }
     return participant;
@@ -82,7 +82,7 @@ export class ConversationsService {
   async findMany(userId: string, query: QueryConversationsDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
 
-    const filters: Prisma.ConversationWhereInput[] = [{ participants: { some: { userId } } }];
+    const filters: Prisma.ConversationWhereInput[] = [{ participants: { some: { userId, leftAt: null } } }];
     if (query.peerUserId) {
       filters.push({ participants: { some: { userId: query.peerUserId } } });
     }

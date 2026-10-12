@@ -61,6 +61,9 @@ export class ReviewsService {
     let review;
     try {
       review = await this.prisma.$transaction(async (tx) => {
+        // Profile row first: inserting takes a key-share lock on it (foreign key), so locking it
+        // only afterwards made two simultaneous reviews of one jeweler deadlock.
+        await tx.$queryRaw`SELECT id FROM "jeweler_profiles" WHERE id = ${dto.jewelerProfileId}::uuid FOR UPDATE`;
         const created = await tx.review.create({
           data: {
             jewelerProfileId: dto.jewelerProfileId,
@@ -71,8 +74,6 @@ export class ReviewsService {
           },
           select: PUBLIC_REVIEW_SELECT,
         });
-        // Serialize aggregate recomputation per profile so concurrent reviews cannot lose a write.
-        await tx.$queryRaw`SELECT id FROM "jeweler_profiles" WHERE id = ${dto.jewelerProfileId}::uuid FOR UPDATE`;
         await this.recomputeAggregates(tx, dto.jewelerProfileId);
         return created;
       });
