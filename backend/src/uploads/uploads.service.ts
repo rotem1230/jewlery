@@ -18,6 +18,7 @@ import { PrismaService } from '../database/prisma.service';
 import { contentMatchesMimeType } from './file-signature';
 import { UploadAccessService } from './upload-access.service';
 import { DEFAULT_UPLOAD_LIMITS, UploadLimits } from './uploads.constants';
+import { lockUser } from '../database/row-locks';
 
 export type PresignResult = {
   uploadId: string;
@@ -241,7 +242,7 @@ export class UploadsService {
     // the check, and a failed save removes the file instead of leaving an untracked orphan.
     try {
       const upload = await this.prisma.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${ownerUserId}::uuid FOR UPDATE`;
+        await lockUser(tx, ownerUserId);
         await this.assertDailyQuota(tx, ownerUserId, file.size, limits);
         writeFileSync(path, file.buffer, { mode: 0o600 });
         return tx.upload.create({

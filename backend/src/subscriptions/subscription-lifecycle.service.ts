@@ -7,7 +7,8 @@ import { SubscriptionsService } from './subscriptions.service';
 /**
  * Moves subscriptions through time: ended trials expire, cancelled subscriptions end at period
  * end, free plans renew, unpaid paid plans become PAST_DUE and then EXPIRED after the grace
- * period. Entitlement checks are time-bound on their own; this sweep keeps statuses truthful.
+ * period. Free or paid is the price agreed for the subscription, not today's catalog price.
+ * Entitlement checks are time-bound on their own; this sweep keeps statuses truthful.
  */
 @Injectable()
 export class SubscriptionLifecycleService {
@@ -36,7 +37,7 @@ export class SubscriptionLifecycleService {
         status: SubscriptionStatus.ACTIVE,
         cancelAtPeriodEnd: false,
         currentPeriodEnd: { lte: now },
-        plan: { is: { price: { gt: 0 } } },
+        price: { gt: 0 },
       },
       data: { status: SubscriptionStatus.PAST_DUE },
     });
@@ -64,7 +65,7 @@ export class SubscriptionLifecycleService {
         status: SubscriptionStatus.ACTIVE,
         cancelAtPeriodEnd: false,
         currentPeriodEnd: { lte: now },
-        plan: { is: { price: { equals: new Prisma.Decimal(0) } } },
+        price: { equals: new Prisma.Decimal(0) },
       },
       include: { plan: true },
     });

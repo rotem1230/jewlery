@@ -2,6 +2,8 @@
 -- unique per provider, one renewal per paid invoice, server-side checkout sessions for paid plans,
 -- trial grants that survive account deletion, and the design request behind an overage charge.
 
+SET lock_timeout = '10s';
+
 -- CreateEnum
 CREATE TYPE "CheckoutStatus" AS ENUM ('OPEN', 'COMPLETED');
 
@@ -11,9 +13,11 @@ DROP INDEX "payment_events_providerEventId_key";
 -- AlterTable
 ALTER TABLE "lead_overage_charges" ADD COLUMN     "designRequestId" UUID;
 
--- AlterTable
+-- AlterTable: events recorded before outcomes existed are LEGACY (whether they were applied is
+-- unknown); from now on every writer states the outcome, so the column has no default.
 ALTER TABLE "payment_events" ADD COLUMN     "note" TEXT,
-ADD COLUMN     "outcome" TEXT NOT NULL DEFAULT 'APPLIED';
+ADD COLUMN     "outcome" TEXT NOT NULL DEFAULT 'LEGACY';
+ALTER TABLE "payment_events" ALTER COLUMN "outcome" DROP DEFAULT;
 
 -- CreateTable
 CREATE TABLE "checkout_sessions" (
@@ -86,16 +90,32 @@ ALTER TABLE "subscription_invoices" ADD CONSTRAINT "subscription_invoices_subscr
 -- At most one live subscription per user, enforced by the database as well as by the user-row
 -- lock every writer takes (Prisma cannot express a partial index; it is maintained here).
 -- Users who ended up with several live subscriptions (concurrent subscribe calls before the lock
--- existed) keep the newest; the older ones are closed as superseded so the index can be built.
+-- existed) keep one: a paid plan they pay for over a trial or a free plan, otherwise the newest.
+-- The others are closed as superseded (logged in event_logs, so a double charge can be refunded).
 LOCK TABLE "subscriptions" IN SHARE ROW EXCLUSIVE MODE;
+CREATE TEMPORARY TABLE "superseded_subscriptions" ON COMMIT DROP AS
+SELECT ranked."id", ranked."userId", ranked."keptId"
+FROM (
+  SELECT s."id", s."userId",
+         first_value(s."id") OVER live_first AS "keptId",
+         row_number() OVER live_first AS "rank"
+  FROM "subscriptions" AS s
+  JOIN "plan_catalog" AS p ON p."id" = s."planId"
+  WHERE s."status" IN ('TRIALING', 'ACTIVE', 'PAST_DUE')
+  WINDOW live_first AS (
+    PARTITION BY s."userId"
+    ORDER BY (s."status" IN ('ACTIVE', 'PAST_DUE') AND p."price" > 0) DESC, s."createdAt" DESC, s."id" DESC
+  )
+) AS ranked
+WHERE ranked."rank" > 1;
 UPDATE "subscriptions" AS s
 SET "status" = 'CANCELLED', "updatedAt" = timezone('UTC', now())
-WHERE s."status" IN ('TRIALING', 'ACTIVE', 'PAST_DUE')
-  AND EXISTS (
-    SELECT 1 FROM "subscriptions" AS newer
-    WHERE newer."userId" = s."userId"
-      AND newer."status" IN ('TRIALING', 'ACTIVE', 'PAST_DUE')
-      AND (newer."createdAt", newer."id") > (s."createdAt", s."id")
-  );
+FROM "superseded_subscriptions" AS superseded
+WHERE superseded."id" = s."id";
+INSERT INTO "event_logs" ("id", "eventKey", "entityType", "entityId", "payload", "createdAt")
+SELECT gen_random_uuid(), 'subscription.superseded_by_migration', 'Subscription', superseded."id"::text,
+       jsonb_build_object('userId', superseded."userId", 'keptSubscriptionId', superseded."keptId"),
+       timezone('UTC', now())
+FROM "superseded_subscriptions" AS superseded;
 CREATE UNIQUE INDEX "subscriptions_one_live_per_user" ON "subscriptions"("userId")
   WHERE "status" IN ('TRIALING', 'ACTIVE', 'PAST_DUE');

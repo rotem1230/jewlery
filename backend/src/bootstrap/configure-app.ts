@@ -1,6 +1,6 @@
 import { BadRequestException, INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { json, urlencoded } from 'express';
+import { json, raw, urlencoded } from 'express';
 import helmet from 'helmet';
 import { ApiFieldError } from '../common/dto/api-response.dto';
 import { AllExceptionsFilter, HttpExceptionFilter } from '../common/filters/all-exceptions.filter';
@@ -19,15 +19,11 @@ export function configureApp(app: INestApplication): void {
   // Client IPs feed the per-client rate limits; an invalid value throws here, at boot.
   app.getHttpAdapter().getInstance().set('trust proxy', parseTrustProxy(config.get<string>('trustProxy')));
 
-  // Keep the exact bytes: webhook signatures are computed over the raw body.
-  app.use(
-    json({
-      limit: bodyLimit,
-      verify: (req, _res, buf) => {
-        (req as typeof req & { rawBody?: Buffer }).rawBody = buf;
-      },
-    }),
-  );
+  // Payment webhooks get the exact bytes, whatever their content type: the signature is computed
+  // over the raw body and checked before anything is parsed (a signed body that is not valid JSON
+  // is still recorded for review). Registered first, so the JSON parser leaves these requests alone.
+  app.use(`/${apiPrefix}/webhooks/payments`, raw({ type: () => true, limit: bodyLimit }));
+  app.use(json({ limit: bodyLimit }));
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
 
   app.setGlobalPrefix(apiPrefix);

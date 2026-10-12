@@ -4,8 +4,10 @@ import { CheckoutSession, CheckoutStatus, Prisma, SubscriptionStatus, User } fro
 import { EventLogService } from '../audit/event-log.service';
 import { resolvePaymentProvider } from '../common/payments/payment-provider';
 import { PrismaService } from '../database/prisma.service';
+import { lockUser } from '../database/row-locks';
 import { billingCyclePeriodMs } from './billing-periods';
 import { PaymentWebhookDto, SubscribeDto } from './dto/subscription.dto';
+import { describeMoney, isExactPayment } from './money';
 import type { AppliedEvent } from './payment-webhook.service';
 import { SubscriptionsService } from './subscriptions.service';
 
@@ -31,7 +33,8 @@ export type CheckoutView = {
 /**
  * Paid-plan purchases. The server fixes plan, amount and currency in a checkout session; only the
  * provider's signed checkout.completed webhook for exactly that amount turns it into an ACTIVE
- * subscription, replacing a free plan or a trial (one live subscription per user).
+ * subscription. It replaces whatever the user had live — a free plan or a trial, of either role:
+ * a user has one live subscription at a time.
  */
 @Injectable()
 export class CheckoutService {
@@ -56,7 +59,7 @@ export class CheckoutService {
     }
 
     const session = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${user.id}::uuid FOR UPDATE`;
+      await lockUser(tx, user.id);
       if (await this.hasPaidLiveSubscription(tx, user.id)) {
         throw new ConflictException({
           success: false,
@@ -87,8 +90,10 @@ export class CheckoutService {
 
   /**
    * checkout.completed: under the buyer's row lock, a session paid with its exact amount becomes an
-   * ACTIVE subscription (once). A payment that cannot be applied safely is kept for review. A
-   * session paid after it expired is still honoured: the money was taken for this plan.
+   * ACTIVE subscription (once). A payment that cannot be applied safely is kept for review, and its
+   * session is marked so (a new purchase gets a fresh session). A session paid after it expired is
+   * still honoured: the money was taken for this plan. When the event names the provider invoice of
+   * that first charge, it is recorded, so the same invoice's invoice.paid does not add a period.
    */
   async completeFromWebhook(tx: Tx, dto: PaymentWebhookDto): Promise<AppliedEvent> {
     if (!dto.checkoutId) {
@@ -96,29 +101,41 @@ export class CheckoutService {
     }
     const found = await tx.checkoutSession.findUnique({ where: { id: dto.checkoutId }, select: { userId: true } });
     if (!found) {
-      return { outcome: 'NEEDS_REVIEW', note: 'Payment for an unknown checkout' };
+      return { outcome: 'NEEDS_REVIEW', note: `Payment for an unknown checkout ${dto.checkoutId}` };
     }
-    await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${found.userId}::uuid FOR UPDATE`;
-    const session = await tx.checkoutSession.findUniqueOrThrow({ where: { id: dto.checkoutId }, include: { plan: true } });
+    await lockUser(tx, found.userId);
+    const session = await tx.checkoutSession.findUniqueOrThrow({
+      where: { id: dto.checkoutId },
+      include: { plan: true, user: { select: { deletedAt: true } } },
+    });
+    const paid = describeMoney(dto.amount, dto.currency);
+    const price = describeMoney(session.amount, session.currency);
+    const paidExactly = isExactPayment(dto.amount, dto.currency, session.amount, session.currency);
+
     if (session.status === CheckoutStatus.COMPLETED) {
-      return { outcome: 'IGNORED', note: 'Checkout already completed', subscriptionId: session.subscriptionId };
+      return paidExactly
+        ? { outcome: 'IGNORED', note: 'Checkout already completed', subscriptionId: session.subscriptionId }
+        : {
+            outcome: 'NEEDS_REVIEW',
+            note: `Paid ${paid} for checkout ${session.id}, already completed at ${price}`,
+            subscriptionId: session.subscriptionId,
+          };
     }
-    const paidExactly =
-      dto.amount !== undefined &&
-      dto.currency !== undefined &&
-      new Prisma.Decimal(dto.amount).equals(session.amount) &&
-      dto.currency.toUpperCase() === session.currency.toUpperCase();
+    if (session.status === CheckoutStatus.CANCELLED || session.user.deletedAt) {
+      return { outcome: 'NEEDS_REVIEW', note: `Paid ${paid} for checkout ${session.id} after the buyer deleted their account` };
+    }
+    const unapplied = async (note: string): Promise<AppliedEvent> => {
+      await tx.checkoutSession.update({ where: { id: session.id }, data: { status: CheckoutStatus.NEEDS_REVIEW } });
+      return { outcome: 'NEEDS_REVIEW', note };
+    };
     if (!paidExactly) {
-      return {
-        outcome: 'NEEDS_REVIEW',
-        note: `Paid ${dto.amount ?? '?'} ${dto.currency ?? '?'} for a checkout of ${session.amount.toString()} ${session.currency}`,
-      };
+      return unapplied(`Paid ${paid} for checkout ${session.id} of ${price}`);
     }
     if (await this.hasPaidLiveSubscription(tx, session.userId)) {
-      return { outcome: 'NEEDS_REVIEW', note: 'The buyer already pays for a plan (double payment)' };
+      return unapplied(`Paid ${paid} for checkout ${session.id}, but the buyer already pays for a plan (double payment)`);
     }
 
-    // A free plan or a trial is replaced by the plan that was paid for.
+    // Whatever was live (a free plan or a trial) is replaced by the plan that was paid for.
     await tx.subscription.updateMany({
       where: { userId: session.userId, status: { in: LIVE_STATUSES } },
       data: { status: SubscriptionStatus.CANCELLED },
@@ -132,10 +149,24 @@ export class CheckoutService {
         role: session.plan.role,
         status: SubscriptionStatus.ACTIVE,
         billingCycle: session.plan.billingCycle,
+        price: session.amount,
+        currency: session.currency,
         currentPeriodStart: now,
         currentPeriodEnd: end,
       },
     });
+    if (dto.invoiceId) {
+      await tx.subscriptionInvoice.create({
+        data: {
+          subscriptionId: subscription.id,
+          providerInvoiceId: dto.invoiceId,
+          amount: session.amount,
+          currency: session.currency,
+          periodStart: now,
+          periodEnd: end,
+        },
+      });
+    }
     await this.subscriptions.allocateLeads(tx, subscription, session.plan, now, end);
     await tx.checkoutSession.update({
       where: { id: session.id },
@@ -152,13 +183,13 @@ export class CheckoutService {
     return { outcome: 'APPLIED', subscriptionId: subscription.id };
   }
 
-  /** A live subscription to a priced plan that is not just a trial. */
+  /** A live subscription the user pays for (agreed at a price), not a trial or a free plan. */
   private async hasPaidLiveSubscription(tx: Tx, userId: string): Promise<boolean> {
     const paid = await tx.subscription.count({
       where: {
         userId,
         status: { in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE] },
-        plan: { is: { price: { gt: 0 } } },
+        price: { gt: 0 },
       },
     });
     return paid > 0;

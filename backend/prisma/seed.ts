@@ -718,15 +718,15 @@ async function seedDesignerProTrial() {
     return;
   }
 
+  // One live subscription per user (enforced by a unique index): any live plan means skip.
   const existing = await prisma.subscription.findFirst({
     where: {
       userId: designer.id,
-      planId: plan.id,
       status: { in: [SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE, SubscriptionStatus.PAST_DUE] },
     },
   });
   if (existing) {
-    console.log('Seed skip: designer already has DESIGNER_PRO');
+    console.log('Seed skip: designer already has a live subscription');
     return;
   }
 
@@ -739,6 +739,8 @@ async function seedDesignerProTrial() {
       role: UserRole.DESIGNER,
       status: SubscriptionStatus.TRIALING,
       billingCycle: plan.billingCycle,
+      price: plan.price,
+      currency: plan.currency,
       trialEndsAt: trialEnds,
       currentPeriodStart: now,
       currentPeriodEnd: trialEnds,

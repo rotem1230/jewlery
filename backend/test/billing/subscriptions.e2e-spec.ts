@@ -142,6 +142,55 @@ describe('subscriptions', () => {
     await subscribe(designer, 'DESIGNER_FREE').expect(201);
   });
 
+  it('cancelling while a renewal payment is being applied keeps the renewed plan (cancel waits for it and re-reads)', async () => {
+    const designer = await registerVerified(t);
+    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    await t.prisma.subscription.update({
+      where: { id: sub.id },
+      data: { status: 'PAST_DUE', trialEndsAt: null, currentPeriodEnd: new Date(Date.now() - DAY_MS) },
+    });
+    // The payment webhook holds the owner's lock while it renews the plan.
+    const payment = await lockRow(t, 'users', designer.id);
+    const cancelling = t.http.post(`${API}/subscriptions/cancel`).set(designer.auth).send({});
+    const settled = cancelling.then((res) => res);
+    await waitForLockWaiters(t, 1);
+    await payment.release((tx) =>
+      tx.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'ACTIVE', currentPeriodStart: new Date(), currentPeriodEnd: new Date(Date.now() + 30 * DAY_MS) },
+      }),
+    );
+    const res = await settled;
+    expect(res.status).toBe(201);
+    expect(res.body.data.status).toBe('ACTIVE');
+    expect(res.body.data.cancelAtPeriodEnd).toBe(true);
+    expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).status).toBe('ACTIVE');
+  });
+
+  it('a trial taken before trials were recorded separately is still remembered when the account is deleted', async () => {
+    const first = await registerVerified(t);
+    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'DESIGNER_PRO' } });
+    // Legacy trial: a subscription row only, no trial grant.
+    await t.prisma.subscription.create({
+      data: {
+        userId: first.id,
+        planId: plan.id,
+        role: plan.role,
+        billingCycle: plan.billingCycle,
+        status: 'EXPIRED',
+        price: plan.price,
+        currency: plan.currency,
+        trialEndsAt: new Date(Date.now() - DAY_MS),
+        currentPeriodStart: new Date(Date.now() - 15 * DAY_MS),
+        currentPeriodEnd: new Date(Date.now() - DAY_MS),
+      },
+    });
+    await t.http.delete(`${API}/users/me`).set(first.auth).expect(200);
+
+    const again = await registerVerified(t, { email: first.email });
+    await subscribe(again, 'DESIGNER_PRO').expect(402);
+  });
+
   it('deleting the account and registering again does not grant another trial', async () => {
     const first = await registerVerified(t);
     await subscribe(first, 'DESIGNER_PRO').expect(201);
@@ -170,6 +219,8 @@ describe('subscriptions', () => {
           planId: plan.id,
           role: plan.role,
           billingCycle: plan.billingCycle,
+          price: plan.price,
+          currency: plan.currency,
           status: 'ACTIVE',
           currentPeriodStart: new Date(Date.now() - 31 * DAY_MS),
           currentPeriodEnd: new Date(Date.now() - DAY_MS),
@@ -230,6 +281,30 @@ describe('subscriptions', () => {
 
       const row = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
       expect(row.currentPeriodEnd.getTime()).toBe(sub.currentPeriodEnd.getTime());
+    });
+
+    it('a plan agreed free keeps renewing free after the catalog starts charging for it', async () => {
+      const sub = await seedSubscription('DESIGNER_FREE', {});
+      await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_FREE' }, data: { price: 9.9 } });
+      try {
+        await sweep();
+      } finally {
+        await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_FREE' }, data: { price: 0 } });
+      }
+      const row = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
+      expect(row.status).toBe('ACTIVE');
+      expect(row.currentPeriodEnd.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('a plan agreed at a price is not renewed for free after the catalog makes it free', async () => {
+      const sub = await seedSubscription('DESIGNER_PRO', {});
+      await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PRO' }, data: { price: 0 } });
+      try {
+        await sweep();
+      } finally {
+        await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PRO' }, data: { price: 49.9 } });
+      }
+      expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).status).toBe('PAST_DUE');
     });
 
     it('expires a past-due subscription after the grace period', async () => {

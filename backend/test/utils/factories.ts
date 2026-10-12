@@ -110,9 +110,10 @@ export async function firstRegionId(t: TestApp): Promise<string> {
 export async function createPublishedJeweler(
   t: TestApp,
   profile: Record<string, unknown> = {},
+  opts: { regionId?: string } = {},
 ): Promise<TestJeweler> {
   const jeweler = await registerVerified(t, { roles: [UserRole.JEWELER] });
-  const regionId = await firstRegionId(t);
+  const regionId = opts.regionId ?? (await firstRegionId(t));
   await t.http
     .put(`${API}/jeweler-profiles/draft`)
     .set(jeweler.auth)

@@ -18,13 +18,11 @@ export class WebhooksController {
       'Idempotent on providerEventId; applies subscription status transitions for known event types.',
   })
   @ApiHeader({ name: 'x-webhook-signature', required: true })
-  @ApiResponse({ status: 201, description: 'Event recorded (or already recorded)' })
+  @ApiResponse({ status: 201, description: 'Event recorded (or already recorded), with its outcome; a signed event that could not be applied is recorded as NEEDS_REVIEW' })
   @ApiResponse({ status: 401, description: 'Missing, invalid or stale signature' })
-  @ApiResponse({ status: 503, description: 'Webhook secret not configured' })
-  handlePaymentWebhook(
-    @Req() req: Request & { rawBody?: Buffer },
-    @Headers('x-webhook-signature') signature?: string,
-  ) {
-    return this.webhooks.handle(req.rawBody, signature);
+  @ApiResponse({ status: 503, description: 'Webhook secret not configured (WEBHOOK_NOT_CONFIGURED), or a transient failure: retry (WEBHOOK_RETRY)' })
+  handlePaymentWebhook(@Req() req: Request, @Headers('x-webhook-signature') signature?: string) {
+    // The raw-body parser registered for this route in configureApp leaves the bytes in req.body.
+    return this.webhooks.handle(Buffer.isBuffer(req.body) ? req.body : undefined, signature);
   }
 }

@@ -32,6 +32,7 @@ import { AuthResult, RegisterResult, SafeUser } from './interfaces/auth-user.int
 import { OAuthTokenVerifier } from './oauth/oauth-token-verifier';
 import { PasswordService } from './services/password.service';
 import { InvalidTokenError, TokenService } from './services/token.service';
+import { lockUser } from '../database/row-locks';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -117,7 +118,7 @@ export class AuthService implements OnModuleDestroy {
   private async issueMailToken(kind: 'verify' | 'reset', userId: string): Promise<string | null> {
     const cap = this.config.get<number>('auth.mailsPerAccountPerHour', 3);
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId}::uuid FOR UPDATE`;
+      await lockUser(tx, userId);
       const recent = await this.tokens.countRecentMailTokens(kind, userId, new Date(Date.now() - HOUR_MS), tx);
       if (recent >= cap) {
         return null;
@@ -478,7 +479,7 @@ export class AuthService implements OnModuleDestroy {
     // Under the user's row lock: the token is redeemed (with every other reset link of the
     // account) and the password replaced in one step, so two links cannot both succeed.
     const user = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${token.userId}::uuid FOR UPDATE`;
+      await lockUser(tx, token.userId);
       if (!(await this.tokens.redeemPasswordResetToken(tx, token.id, token.userId))) {
         return null;
       }

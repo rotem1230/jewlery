@@ -1,3 +1,5 @@
+SET lock_timeout = '10s';
+
 -- Media authorization lookups (who references an upload) must not scan whole tables.
 CREATE INDEX "users_avatarUploadId_idx" ON "users"("avatarUploadId");
 CREATE INDEX "designs_thumbnailUploadId_idx" ON "designs"("thumbnailUploadId");

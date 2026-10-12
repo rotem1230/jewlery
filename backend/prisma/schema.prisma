@@ -109,6 +109,10 @@ enum SubscriptionStatus {
 enum CheckoutStatus {
   OPEN
   COMPLETED
+  /// Money arrived for it but was not applied (wrong amount, double payment...): see payment_events.
+  NEEDS_REVIEW
+  /// The buyer's account was deleted before payment.
+  CANCELLED
 }
 
 enum LeadStatus {
@@ -1214,6 +1218,10 @@ model Subscription {
   trialEndsAt        DateTime?
   currentPeriodStart DateTime
   currentPeriodEnd   DateTime
+  /// Price per billing cycle agreed when the subscription started (the plan price then, or what
+  /// the checkout charged). Renewals are checked against it, not against today's catalog price.
+  price              Decimal            @db.Decimal(12, 2)
+  currency           String             @db.Char(3)
   paymentProviderRef String?
   cancelAtPeriodEnd  Boolean            @default(false)
   createdAt          DateTime           @default(now())
@@ -1277,8 +1285,14 @@ model PaymentEvent {
   providerEventId        String
   type                   String // checkout.completed|invoice.paid|invoice.payment_failed|subscription.cancelled
   payload                Json
-  /// APPLIED, IGNORED (nothing to do) or NEEDS_REVIEW (money that could not be applied safely).
-  outcome                String   @default("APPLIED")
+  /// What the event says was paid and for what (kept for review, whatever the outcome).
+  checkoutId             String?  @db.Uuid
+  invoiceId              String?
+  amount                 Decimal? @db.Decimal(12, 2)
+  currency               String?  @db.Char(3)
+  /// APPLIED, IGNORED (nothing to do), NEEDS_REVIEW (money that could not be applied safely) or
+  /// LEGACY (recorded before outcomes existed). Every writer states it; there is no default.
+  outcome                String
   note                   String?
   processedAt            DateTime @default(now())
 
@@ -1287,6 +1301,7 @@ model PaymentEvent {
 
   @@unique([provider, providerEventId])
   @@index([subscriptionId])
+  @@index([checkoutId])
   @@index([jewelryPaymentIntentId])
   @@index([outcome])
   @@map("payment_events")

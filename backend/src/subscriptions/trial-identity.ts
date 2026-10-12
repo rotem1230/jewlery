@@ -9,7 +9,9 @@ const DOTLESS_DOMAINS = new Set(['gmail.com', 'googlemail.com']);
  */
 export function normalizeMailbox(email: string): string {
   const [rawLocal, rawDomain = ''] = email.trim().toLowerCase().split('@');
-  let local = rawLocal.split('+')[0];
+  // "+tag" is an alias of the part before it; an address that starts with "+" has no such part.
+  const plus = rawLocal.indexOf('+');
+  let local = plus > 0 ? rawLocal.slice(0, plus) : rawLocal;
   let domain = rawDomain;
   if (DOTLESS_DOMAINS.has(domain)) {
     local = local.replace(/\./g, '');

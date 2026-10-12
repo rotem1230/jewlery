@@ -7,6 +7,11 @@ describe('trial identity', () => {
     expect(normalizeMailbox('dana@googlemail.com')).toBe('dana@gmail.com');
   });
 
+  it('an address that starts with "+" is not collapsed into an empty mailbox shared with others', () => {
+    expect(normalizeMailbox('+dana@example.com')).toBe('+dana@example.com');
+    expect(normalizeMailbox('+dana@example.com')).not.toBe(normalizeMailbox('+noa@example.com'));
+  });
+
   it('keeps dots where the provider does not ignore them', () => {
     expect(normalizeMailbox('d.ana@example.com')).toBe('d.ana@example.com');
   });

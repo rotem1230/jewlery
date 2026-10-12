@@ -1,11 +1,5 @@
 import { randomUUID } from 'crypto';
-import {
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JewelryPaymentIntent, JewelryPaymentStatus, Prisma, QuoteStatus, User } from '@prisma/client';
 import { resolvePaymentProvider } from '../common/payments/payment-provider';
@@ -91,6 +85,9 @@ export class JewelryPaymentsService {
           provider,
           providerEventId: `${provider}.jewelry.${created.id}`,
           type: 'jewelry.intent.created',
+          // A record of the intent; no money has moved.
+          outcome: 'IGNORED',
+          note: 'Payment intent created',
           payload: {
             intentId: created.id,
             userId: user.id,

@@ -1,6 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
-import { IsEnum, IsNumber, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
+import { IsEnum, IsNumber, IsObject, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
+
+/** Largest amount a DECIMAL(12,2) column holds. */
+const MAX_AMOUNT = 9_999_999_999.99;
 
 export class QueryPlansDto {
   @ApiPropertyOptional({ enum: UserRole })
@@ -52,6 +55,7 @@ export class PaymentWebhookDto {
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
+  @Max(MAX_AMOUNT)
   amount?: number;
 
   @ApiPropertyOptional({ description: 'ISO 4217 currency of the amount' })

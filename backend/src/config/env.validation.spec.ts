@@ -11,6 +11,7 @@ function productionEnv(overrides: Record<string, unknown> = {}): Record<string, 
     CORS_ORIGINS: 'https://app.example.com',
     API_PUBLIC_URL: 'https://api.example.com',
     TRUST_PROXY: '1',
+    TRIAL_HASH_SECRET: 'trial-bookkeeping-secret-0123456789abcdef',
     ...overrides,
   };
 }
@@ -96,6 +97,11 @@ describe('validateEnv', () => {
   it('refuses short signing secrets for payment webhooks and media URLs', () => {
     expect(() => validateEnv(productionEnv({ PAYMENT_WEBHOOK_SECRET: 'short' }))).toThrow(/PAYMENT_WEBHOOK_SECRET/);
     expect(() => validateEnv(productionEnv({ UPLOAD_URL_SECRET: 'short' }))).toThrow(/UPLOAD_URL_SECRET/);
+  });
+
+  it('requires a dedicated trial bookkeeping secret in production (rotating JWT_SECRET must not reset who had a trial)', () => {
+    expect(() => validateEnv(productionEnv({ TRIAL_HASH_SECRET: undefined }))).toThrow(/TRIAL_HASH_SECRET/);
+    expect(() => validateEnv(productionEnv({ TRIAL_HASH_SECRET: 'short' }))).toThrow(/TRIAL_HASH_SECRET/);
   });
 
   it('keeps local development friction-free', () => {

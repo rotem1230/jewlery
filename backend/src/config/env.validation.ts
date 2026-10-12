@@ -123,6 +123,12 @@ function productionProblems(config: Record<string, unknown>): string[] {
   if (config.PAYMENTS_PROVIDER === 'mock') {
     problems.push('PAYMENTS_PROVIDER=mock hands out fake payment secrets and is refused in production');
   }
+  // Trial bookkeeping must outlive JWT_SECRET rotations: hashed with the JWT secret, rotating it
+  // would forget every trial already used. Changing this secret has the same effect (see docs).
+  const trialSecret = typeof config.TRIAL_HASH_SECRET === 'string' ? config.TRIAL_HASH_SECRET : '';
+  if (trialSecret.length < MIN_SIGNING_SECRET_LENGTH) {
+    problems.push(`TRIAL_HASH_SECRET must be set to at least ${MIN_SIGNING_SECRET_LENGTH} random characters in production`);
+  }
   for (const key of ['PAYMENT_WEBHOOK_SECRET', 'UPLOAD_URL_SECRET']) {
     const value = typeof config[key] === 'string' ? (config[key] as string) : '';
     if (value && value.length < MIN_SIGNING_SECRET_LENGTH) {

@@ -63,15 +63,20 @@ export const configuration = () => {
       secretKey: process.env.STRIPE_SECRET_KEY,
     },
     subscriptions: {
-      /** Key for trial bookkeeping hashes; derived from JWT_SECRET when not set. */
+      /**
+       * Key for trial bookkeeping hashes (required in production; outside it, derived from
+       * JWT_SECRET when not set). Changing it forgets which mailboxes already had a trial.
+       */
       trialHashSecret: process.env.TRIAL_HASH_SECRET ?? '',
     },
     atelier: {
       /** Design requests one designer may send per 24 hours (each one costs jewelers a lead). */
       requestsPerDay: int(process.env.DESIGN_REQUESTS_PER_DAY, 20),
+      /** Jewelers one broadcast request reaches. */
+      broadcastFanout: int(process.env.ATELIER_BROADCAST_FANOUT, 50),
     },
     leads: {
-      /** Overage charges per subscription and billing period before delivery stops. */
+      /** Overage charges per subscription within one billing cycle (rolling) before delivery stops. */
       overageCapPerPeriod: int(process.env.LEAD_OVERAGE_CAP, 50),
     },
     payments: {

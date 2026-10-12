@@ -167,41 +167,100 @@ describe('data migrations on existing data', () => {
     expect(msg.imageUploadId).toBeNull();
   });
 
-  it('duplicate live subscriptions from before the guard keep only the newest live; the database then refuses a second one', async () => {
-    db = await scratchDatabase('mig_live_subscription');
-    db.migrateTo('20261012120000_cross_owner_media_cleanup');
-    const user = await insertUser(null, '2026-01-01 10:00:00');
-    const plan = randomUUID();
+  async function insertPlan(code: string, price: number): Promise<string> {
+    const id = randomUUID();
     await db.sql.$executeRawUnsafe(
       `INSERT INTO "plan_catalog" ("id", "code", "role", "nameHe", "billingCycle", "price", "currency", "inclusions")
-       VALUES ($1::uuid, 'MIG_PLAN', 'DESIGNER', 'תוכנית', 'MONTHLY', 0, 'ILS', '{}'::jsonb)`,
-      plan,
+       VALUES ($1::uuid, $2, 'DESIGNER', 'תוכנית', 'MONTHLY', $3, 'ILS', '{}'::jsonb)`,
+      id,
+      code,
+      price,
     );
-    const subscription = async (createdAt: string) => {
-      const id = randomUUID();
-      await db.sql.$executeRawUnsafe(
-        `INSERT INTO "subscriptions" ("id", "userId", "planId", "role", "status", "billingCycle", "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
-         VALUES ($1::uuid, $2::uuid, $3::uuid, 'DESIGNER', 'ACTIVE', 'MONTHLY', now(), now() + interval '30 days', $4::timestamp, now())`,
-        id,
-        user,
-        plan,
-        createdAt,
-      );
-      return id;
-    };
-    const older = await subscription('2026-02-01 10:00:00');
-    const newer = await subscription('2026-03-01 10:00:00');
+    return id;
+  }
+
+  async function insertSubscription(userId: string, planId: string, status: string, createdAt: string): Promise<string> {
+    const id = randomUUID();
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "subscriptions" ("id", "userId", "planId", "role", "status", "billingCycle", "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'DESIGNER', $4::"SubscriptionStatus", 'MONTHLY', now(), now() + interval '30 days', $5::timestamp, now())`,
+      id,
+      userId,
+      planId,
+      status,
+      createdAt,
+    );
+    return id;
+  }
+
+  async function subscriptionStatuses(userId: string): Promise<Map<string, string>> {
+    const rows = await db.sql.$queryRawUnsafe<Array<{ id: string; status: string }>>(
+      `SELECT "id", "status"::text AS "status" FROM "subscriptions" WHERE "userId" = $1::uuid`,
+      userId,
+    );
+    return new Map(rows.map((row) => [row.id, row.status]));
+  }
+
+  it('duplicate live subscriptions from before the guard keep one live (the paid one, else the newest); the database then refuses a second one', async () => {
+    db = await scratchDatabase('mig_live_subscription');
+    db.migrateTo('20261012120000_cross_owner_media_cleanup');
+    const free = await insertPlan('MIG_FREE', 0);
+    const paid = await insertPlan('MIG_PAID', 10);
+
+    const payer = await insertUser(null, '2026-01-01 10:00:00');
+    const paying = await insertSubscription(payer, paid, 'ACTIVE', '2026-02-01 10:00:00');
+    const laterTrial = await insertSubscription(payer, paid, 'TRIALING', '2026-03-01 10:00:00');
+    const newestFree = await insertSubscription(payer, free, 'ACTIVE', '2026-04-01 10:00:00');
+
+    const freeOnly = await insertUser(null, '2026-01-01 10:00:00');
+    const oldest = await insertSubscription(freeOnly, free, 'ACTIVE', '2026-02-01 10:00:00');
+    const middle = await insertSubscription(freeOnly, free, 'ACTIVE', '2026-03-01 10:00:00');
+    const newest = await insertSubscription(freeOnly, free, 'ACTIVE', '2026-04-01 10:00:00');
 
     db.migrateTo('20261012130000_billing_correctness');
 
-    const rows = await db.sql.$queryRawUnsafe<Array<{ id: string; status: string }>>(
-      `SELECT "id", "status"::text AS "status" FROM "subscriptions" WHERE "userId" = $1::uuid`,
-      user,
+    const payerStatus = await subscriptionStatuses(payer);
+    expect(payerStatus.get(paying)).toBe('ACTIVE');
+    expect(payerStatus.get(laterTrial)).toBe('CANCELLED');
+    expect(payerStatus.get(newestFree)).toBe('CANCELLED');
+    const freeStatus = await subscriptionStatuses(freeOnly);
+    expect(freeStatus.get(newest)).toBe('ACTIVE');
+    expect(freeStatus.get(middle)).toBe('CANCELLED');
+    expect(freeStatus.get(oldest)).toBe('CANCELLED');
+    await expect(insertSubscription(freeOnly, free, 'ACTIVE', '2026-05-01 10:00:00')).rejects.toThrow();
+  });
+
+  it('payment events recorded before outcomes existed are marked LEGACY, not claimed as applied', async () => {
+    db = await scratchDatabase('mig_payment_outcome');
+    db.migrateTo('20261012120000_cross_owner_media_cleanup');
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "payment_events" ("id", "provider", "providerEventId", "type", "payload")
+       VALUES ($1::uuid, 'stripe', 'evt_legacy', 'invoice.paid', '{}'::jsonb)`,
+      randomUUID(),
     );
-    const status = new Map(rows.map((row) => [row.id, row.status]));
-    expect(status.get(newer)).toBe('ACTIVE');
-    expect(status.get(older)).toBe('CANCELLED');
-    await expect(subscription('2026-04-01 10:00:00')).rejects.toThrow();
+
+    db.migrateTo('20261012130000_billing_correctness');
+
+    const [row] = await db.sql.$queryRawUnsafe<Array<{ outcome: string }>>(
+      `SELECT "outcome" FROM "payment_events" WHERE "providerEventId" = 'evt_legacy'`,
+    );
+    expect(row.outcome).toBe('LEGACY');
+  });
+
+  it('existing subscriptions keep the price of their plan as the agreed price', async () => {
+    db = await scratchDatabase('mig_agreed_price');
+    db.migrateTo('20261012130000_billing_correctness');
+    const paid = await insertPlan('MIG_PAID', 10);
+    const user = await insertUser(null, '2026-01-01 10:00:00');
+    const sub = await insertSubscription(user, paid, 'ACTIVE', '2026-02-01 10:00:00');
+
+    db.migrateTo('20261013100000_billing_agreed_price');
+
+    const [row] = await db.sql.$queryRawUnsafe<Array<{ price: string; currency: string }>>(
+      `SELECT "price"::text AS "price", "currency" FROM "subscriptions" WHERE "id" = $1::uuid`,
+      sub,
+    );
+    expect(row).toEqual({ price: '10.00', currency: 'ILS' });
   });
 
   it('pending outbox events stay deliverable and voice-note types are allowed after the upgrade', async () => {

@@ -19,6 +19,7 @@ import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { AI_ENGINE_ADAPTER, AiEngineAdapter } from './adapters/ai-engine.adapter';
 import { CreateAiInspirationDto } from './dto/ai.dto';
+import { lockUser } from '../database/row-locks';
 
 const GLB_MIME = 'model/gltf-binary';
 const DEFAULT_DAILY_PER_USER = 10;
@@ -78,7 +79,7 @@ export class AiService implements OnModuleDestroy {
     const limit = await this.dailyLimit();
     const job = await this.prisma.$transaction(async (tx) => {
       // Per-user lock: the in-flight and daily checks cannot be raced by parallel requests.
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${user.id}::uuid FOR UPDATE`;
+      await lockUser(tx, user.id);
       const running = await tx.aiGenerationJob.count({
         where: { requestedById: user.id, status: { in: [JobStatus.QUEUED, JobStatus.RUNNING] } },
       });

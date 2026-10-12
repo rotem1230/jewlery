@@ -11,6 +11,8 @@ import {
   TestUser,
 } from '../utils/factories';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 async function setLeadPolicy(t: TestApp, enforceQuota: boolean) {
   await t.prisma.appConfig.upsert({
     where: { key: 'lead_definition' },
@@ -242,6 +244,47 @@ describe('lead drain protection', () => {
     const third = await requestQuote(t, designer, jeweler);
     expect(third.status).toBe(429);
     expect(third.body.code).toBe('REQUEST_QUOTA_EXCEEDED');
+  });
+
+  it('the daily request limit holds under simultaneous requests', async () => {
+    const jeweler = await createPublishedJeweler(t);
+    const designer = await registerVerified(t);
+    const designs = await Promise.all(Array.from({ length: 4 }, () => createPublishedDesign(t, designer)));
+    const results = await Promise.all(designs.map((design) => requestQuote(t, designer, jeweler, design.id)));
+    expect(results.map((r) => r.status).sort()).toEqual([201, 201, 429, 429]);
+  });
+
+  it('the overage cap holds under simultaneous deliveries', async () => {
+    await setLeadPolicy(t, true);
+    const jeweler = await createPublishedJeweler(t);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_ACTIVE' }).expect(201);
+    await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
+    const designers = await Promise.all([registerVerified(t), registerVerified(t), registerVerified(t)]);
+    const results = await Promise.all(designers.map((designer) => requestQuote(t, designer, jeweler)));
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409, 409]);
+    expect(await t.prisma.leadOverageCharge.count({ where: { subscription: { userId: jeweler.id } } })).toBe(1);
+  });
+
+  it('the overage cap still holds after an early renewal moved the period start into the future', async () => {
+    await setLeadPolicy(t, true);
+    const jeweler = await createPublishedJeweler(t);
+    const sub = (
+      await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_ACTIVE' }).expect(201)
+    ).body.data as { id: string };
+    await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
+    // The next period was paid ahead of time, so the recorded period starts in the future.
+    await t.prisma.subscription.update({
+      where: { id: sub.id },
+      data: {
+        status: 'ACTIVE',
+        trialEndsAt: null,
+        currentPeriodStart: new Date(Date.now() + 10 * DAY_MS),
+        currentPeriodEnd: new Date(Date.now() + 40 * DAY_MS),
+      },
+    });
+    expect((await requestQuote(t, await registerVerified(t), jeweler)).status).toBe(201);
+    expect((await requestQuote(t, await registerVerified(t), jeweler)).status).toBe(409);
+    expect(await t.prisma.leadOverageCharge.count({ where: { subscription: { userId: jeweler.id } } })).toBe(1);
   });
 
   it('overage charges are capped per billing period', async () => {

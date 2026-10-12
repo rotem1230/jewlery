@@ -7,10 +7,11 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { LeadStatus, PlanCatalog, Prisma, Subscription, SubscriptionStatus, User, UserRole } from '@prisma/client';
+import { CheckoutStatus, LeadStatus, PlanCatalog, Prisma, Subscription, SubscriptionStatus, User, UserRole } from '@prisma/client';
 import { EventLogService } from '../audit/event-log.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
+import { lockSubscription, lockUser } from '../database/row-locks';
 import { sqlTimestamp } from '../database/sql-time';
 import { randomUUID } from 'crypto';
 import { trialIdentityHash } from './trial-identity';
@@ -95,7 +96,7 @@ export class SubscriptionsService {
 
     const now = new Date();
     const subscription = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${user.id}::uuid FOR UPDATE`;
+      await lockUser(tx, user.id);
 
       const live = await tx.subscription.findFirst({
         where: { userId: user.id, status: { in: LIVE_STATUSES } },
@@ -145,6 +146,8 @@ export class SubscriptionsService {
           role: plan.role,
           status,
           billingCycle: plan.billingCycle,
+          price: plan.price,
+          currency: plan.currency,
           trialEndsAt,
           currentPeriodStart: now,
           currentPeriodEnd: currentPeriodEnd as Date,
@@ -201,34 +204,66 @@ export class SubscriptionsService {
   /**
    * Stops renewal; access continues until the end of the paid-for / trial period. A past-due
    * subscription has no paid period left, so it ends at once and another plan can be chosen.
+   * Decided under the owner's lock, which the payment webhook also holds while it applies a
+   * payment: a renewal in flight finishes first, and the decision is made on what it left.
    */
   async cancel(user: User) {
-    const subscription = await this.prisma.subscription.findFirst({
-      where: { userId: user.id, status: { in: LIVE_STATUSES } },
-      orderBy: { createdAt: 'desc' },
+    const { subscription, updated } = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const current = await tx.subscription.findFirst({
+        where: { userId: user.id, status: { in: LIVE_STATUSES } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!current) {
+        throw new NotFoundException({ success: false, message: 'No active subscription to cancel' });
+      }
+      if (current.status !== SubscriptionStatus.PAST_DUE && current.cancelAtPeriodEnd) {
+        return { subscription: current, updated: null };
+      }
+      const changed = await tx.subscription.update({
+        where: { id: current.id },
+        data:
+          current.status === SubscriptionStatus.PAST_DUE
+            ? { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true }
+            : { cancelAtPeriodEnd: true },
+      });
+      await this.outbox.enqueue('subscription.cancelled', { subscriptionId: current.id, userId: user.id }, tx);
+      return { subscription: current, updated: changed };
     });
-    if (!subscription) {
-      throw new NotFoundException({ success: false, message: 'No active subscription to cancel' });
-    }
-    if (subscription.status !== SubscriptionStatus.PAST_DUE && subscription.cancelAtPeriodEnd) {
+    if (!updated) {
       return subscription;
     }
-
-    const updated = await this.prisma.subscription.update({
-      where: { id: subscription.id },
-      data:
-        subscription.status === SubscriptionStatus.PAST_DUE
-          ? { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true }
-          : { cancelAtPeriodEnd: true },
-    });
 
     await this.eventLog.record('subscription.cancelled', 'Subscription', subscription.id, {
       userId: user.id,
       effectiveAt: updated.status === SubscriptionStatus.TRIALING ? updated.trialEndsAt : updated.currentPeriodEnd,
     });
-    await this.outbox.enqueue('subscription.cancelled', { subscriptionId: subscription.id, userId: user.id });
-
     return updated;
+  }
+
+  /**
+   * Account deletion: live subscriptions end now and unpaid checkouts are cancelled, so a payment
+   * that still arrives for them is held for review instead of activating a plan for a deleted
+   * account. The provider is told through the outbox (subscription.cancelled).
+   */
+  async endForDeletedAccount(tx: Tx, userId: string): Promise<void> {
+    const live = await tx.subscription.findMany({
+      where: { userId, status: { in: LIVE_STATUSES } },
+      select: { id: true },
+    });
+    if (live.length > 0) {
+      await tx.subscription.updateMany({
+        where: { id: { in: live.map((sub) => sub.id) } },
+        data: { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true },
+      });
+      for (const sub of live) {
+        await this.outbox.enqueue('subscription.cancelled', { subscriptionId: sub.id, userId, reason: 'account_deleted' }, tx);
+      }
+    }
+    await tx.checkoutSession.updateMany({
+      where: { userId, status: CheckoutStatus.OPEN },
+      data: { status: CheckoutStatus.CANCELLED },
+    });
   }
 
   /** Records metered usage for pay-per-item billing (design_model|hd_export|ai_generation|render). */
@@ -300,12 +335,15 @@ export class SubscriptionsService {
 
     const overagePrice = subscription.plan.extraLeadPrice;
     if (chargeOverage && overagePrice && overagePrice.greaterThan(0)) {
-      // Serialized per subscription so the per-period cap holds under simultaneous deliveries.
-      await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${subscription.id}::uuid FOR UPDATE`;
-      const chargedThisPeriod = await tx.leadOverageCharge.count({
-        where: { subscriptionId: subscription.id, createdAt: { gte: subscription.currentPeriodStart } },
+      // Serialized per subscription so the cap holds under simultaneous deliveries. Counted over
+      // one billing cycle back from now, not from currentPeriodStart: paying the next period early
+      // moves that start into the future, which would reset the count.
+      await lockSubscription(tx, subscription.id);
+      const windowStart = new Date(now.getTime() - billingCyclePeriodMs(subscription.billingCycle));
+      const chargedThisCycle = await tx.leadOverageCharge.count({
+        where: { subscriptionId: subscription.id, createdAt: { gt: windowStart } },
       });
-      if (chargedThisPeriod >= this.config.get<number>('leads.overageCapPerPeriod', 50)) {
+      if (chargedThisCycle >= this.config.get<number>('leads.overageCapPerPeriod', 50)) {
         return 'NO_LEADS';
       }
       await tx.leadOverageCharge.create({

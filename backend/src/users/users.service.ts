@@ -17,6 +17,7 @@ import { TokenService } from '../auth/services/token.service';
 import { SessionEvents } from '../common/session-events/session-events.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../database/prisma.service';
+import { lockUser } from '../database/row-locks';
 import { UploadsService } from '../uploads/uploads.service';
 import { ChangePasswordDto, RegisterDeviceDto, UpdateMeDto, UpdatePreferencesDto } from './dto/users.dto';
 
@@ -136,9 +137,12 @@ export class UsersService {
   async softDelete(userId: string): Promise<{ ok: true }> {
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      // Serialized with payments and checkouts for this account (they take the same lock).
+      await lockUser(tx, userId);
       const current = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true } });
       // Before the address is erased: a new account for it must not get the same trials again.
       await this.subscriptions.recordTrialsBeforeDeletion(tx, userId, current.email);
+      await this.subscriptions.endForDeletedAccount(tx, userId);
       await tx.user.update({
         where: { id: userId },
         data: {

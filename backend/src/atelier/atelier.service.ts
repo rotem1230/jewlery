@@ -20,6 +20,7 @@ import {
 import { AppConfigService } from '../cms/app-config.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
+import { lockUser } from '../database/row-locks';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -28,7 +29,6 @@ import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAte
 
 const PAGE_SIZE = 20;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const BROADCAST_FANOUT_LIMIT = 50;
 const BANNER_PLACEMENT = 'atelier_banner';
 const DESIGNS_FEED_PLACEMENT = 'atelier_designs_feed';
 const MATCHING_FLAG = 'phase2_matching';
@@ -41,6 +41,12 @@ const GEO_SEARCH_FLAG = 'phase3_postgis';
  */
 const MIN_GEO_RADIUS_KM = 1;
 const DEFAULT_MATCHING_WEIGHTS = { regionMatchWeight: 50, specialtyOverlapWeight: 10 };
+/** Requests a jeweler is still working on; a design is not delivered twice while one is open. */
+const OPEN_REQUEST_STATUSES: DesignRequestStatus[] = [
+  DesignRequestStatus.OPEN,
+  DesignRequestStatus.QUOTE_SUBMITTED,
+  DesignRequestStatus.NEGOTIATING,
+];
 
 /** What the public design feed exposes; reviewer ids, locks and acceptance data stay internal. */
 const PUBLIC_DESIGN_SELECT = {
@@ -330,14 +336,19 @@ export class AtelierService {
       }
       targetProfileIds = profiles.map((p) => p.id);
     } else {
+      const fanout = this.config.get<number>('atelier.broadcastFanout', 50);
       const matchingEnabled = await this.featureFlags.isEnabled(MATCHING_FLAG);
+      // A repeated broadcast reaches jewelers the earlier ones did not: those still holding an open
+      // request for this design are not candidates.
       const profiles = await this.prisma.jewelerProfile.findMany({
         where: {
           publishStatus: ProfilePublishStatus.PUBLISHED,
           ...(!matchingEnabled && design.preferredRegionId ? { regionId: design.preferredRegionId } : {}),
+          targets: { none: { request: { designId: design.id, status: { in: OPEN_REQUEST_STATUSES } } } },
         },
         select: { id: true, regionId: true, specialties: true },
-        take: matchingEnabled ? 200 : BROADCAST_FANOUT_LIMIT,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: matchingEnabled ? 200 : fanout,
       });
       if (matchingEnabled) {
         const scores = await this.computeMatchScores(profiles, {
@@ -346,26 +357,36 @@ export class AtelierService {
         targetProfileIds = profiles
           .map((profile, i) => ({ id: profile.id, score: scores[i] }))
           .sort((a, b) => b.score - a.score)
-          .slice(0, BROADCAST_FANOUT_LIMIT)
+          .slice(0, fanout)
           .map((row) => row.id);
       } else {
         targetProfileIds = profiles.map((p) => p.id);
       }
+      if (targetProfileIds.length === 0 && (await this.hasOpenRequest(design.id))) {
+        throw new ConflictException({
+          success: false,
+          message: 'Every jeweler this design can be broadcast to already has it',
+          code: 'ALREADY_REQUESTED',
+        });
+      }
     }
 
     const enforceQuota = await this.leadQuotaEnforced();
+    // Ordered by account, so simultaneous deliveries lock the jewelers' subscriptions in one order.
     const recipients = await this.prisma.jewelerProfile.findMany({
       where: { id: { in: targetProfileIds }, userId: { not: user.id }, user: { deletedAt: null } },
       select: { id: true, userId: true },
+      orderBy: { userId: 'asc' },
     });
 
     const requestsPerDay = this.config.get<number>('atelier.requestsPerDay', 20);
 
     // One transaction: the request, the lead metering and the delivered targets succeed or fail
-    // together (a refused request consumes no leads). The requester's row lock makes the daily cap
-    // and the one-delivery-per-design rule hold under simultaneous requests.
+    // together (a refused request consumes no leads). The requester's lock makes the daily cap hold
+    // under simultaneous requests; the design's lock does the same for the delivery rules below.
     const { request, deliveredProfileIds } = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${user.id}::uuid FOR UPDATE`;
+      await lockUser(tx, user.id);
+      await tx.$queryRaw`SELECT id FROM "designs" WHERE id = ${design.id}::uuid FOR NO KEY UPDATE`;
       const sentToday = await tx.designRequest.count({
         where: { requesterId: user.id, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
       });
@@ -375,13 +396,17 @@ export class AtelierService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
-      // A jeweler receives (and pays a lead for) a design once, however often it is requested.
-      const reached = await tx.designRequestTarget.findMany({
-        where: { jewelerProfileId: { in: recipients.map((r) => r.id) }, request: { designId: dto.designId } },
-        select: { jewelerProfileId: true },
+      // A jeweler gets a design once while a request for it is open, and is metered for it once:
+      // after that request has closed, the design can reach them again without another lead.
+      const reachedBefore = await tx.designRequestTarget.findMany({
+        where: { jewelerProfileId: { in: recipients.map((r) => r.id) }, request: { designId: design.id } },
+        select: { jewelerProfileId: true, request: { select: { status: true } } },
       });
-      const reachedIds = new Set(reached.map((row) => row.jewelerProfileId));
-      const fresh = recipients.filter((recipient) => !reachedIds.has(recipient.id));
+      const holdingOpen = new Set(
+        reachedBefore.filter((row) => OPEN_REQUEST_STATUSES.includes(row.request.status)).map((row) => row.jewelerProfileId),
+      );
+      const deliveredBefore = new Set(reachedBefore.map((row) => row.jewelerProfileId));
+      const fresh = recipients.filter((recipient) => !holdingOpen.has(recipient.id));
       if (recipients.length > 0 && fresh.length === 0) {
         throw new ConflictException({
           success: false,
@@ -402,6 +427,10 @@ export class AtelierService {
 
       const delivered: string[] = [];
       for (const recipient of fresh) {
+        if (deliveredBefore.has(recipient.id)) {
+          delivered.push(recipient.id);
+          continue;
+        }
         const outcome = await this.subscriptions.consumeLeadForDelivery(tx, recipient.userId, created.id, enforceQuota);
         if (enforceQuota && (outcome === 'NO_LEADS' || outcome === 'NO_SUBSCRIPTION')) {
           continue;
@@ -432,6 +461,14 @@ export class AtelierService {
     });
 
     return request;
+  }
+
+  private async hasOpenRequest(designId: string): Promise<boolean> {
+    const open = await this.prisma.designRequestTarget.findFirst({
+      where: { request: { designId, status: { in: OPEN_REQUEST_STATUSES } } },
+      select: { requestId: true },
+    });
+    return !!open;
   }
 
   /** AppConfig lead_definition.enforceQuota: when true, jewelers without a lead are skipped. */

@@ -20,6 +20,7 @@ import { EntitlementsService } from '../entitlements/entitlements.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { RENDER_ENGINE_ADAPTER, RenderEngineAdapter } from './adapters/render-engine.adapter';
 import { CreateRenderJobDto } from './dto/render-job.dto';
+import { lockUser } from '../database/row-locks';
 
 const DEFAULT_PRIORITY = 100;
 const PRIORITY_CLOUD_PROCESSING = 10;
@@ -101,7 +102,7 @@ export class RenderJobsService {
     // Count and create under the owner's row lock: simultaneous requests cannot all pass the
     // daily check (each job costs an engine run).
     const { design, job } = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${found.ownerUserId}::uuid FOR UPDATE`;
+      await lockUser(tx, found.ownerUserId);
       const today = await tx.renderJob.count({
         where: { design: { ownerUserId: found.ownerUserId }, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
       });
