@@ -1,8 +1,12 @@
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
+  acceptQuote,
+  createDraftDesign,
   createPublishedDesign,
   createPublishedJeweler,
+  createQuote,
   DEFAULT_PASSWORD,
+  marketplaceScenario,
   registerVerified,
 } from '../utils/factories';
 
@@ -162,6 +166,48 @@ describe('account deletion', () => {
       .post(`${API}/auth/register`)
       .send({ email: user.email, password: DEFAULT_PASSWORD, roles: ['DESIGNER'] })
       .expect(201);
+  });
+
+  it("a deleted designer's designs leave the public gallery, and drafts never appear in it", async () => {
+    const designer = await registerVerified(t);
+    const published = await createPublishedDesign(t, designer);
+    const draft = await createDraftDesign(t, designer);
+    await t.prisma.galleryItem.createMany({
+      data: [{ designId: published.id }, { designId: draft.id }],
+    });
+    const listed = async () =>
+      ((await t.http.get(`${API}/gallery`).expect(200)).body.data as Array<{ designId: string }>).map(
+        (item) => item.designId,
+      );
+
+    expect(await listed()).toContain(published.id);
+    expect(await listed()).not.toContain(draft.id);
+    await t.http.delete(`${API}/users/me`).set(designer.auth).expect(200);
+    expect(await listed()).not.toContain(published.id);
+  });
+
+  it("a deleted jeweler's contact details are erased and their open quotes withdrawn", async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    await t.http.delete(`${API}/users/me`).set(s.jeweler.auth).expect(200);
+
+    const profile = await t.prisma.jewelerProfile.findUniqueOrThrow({ where: { id: s.jeweler.profileId } });
+    expect(profile.phone).not.toBe('+972501234567');
+    expect(profile.email).toBeNull();
+    const stored = await t.prisma.quote.findUniqueOrThrow({ where: { id: quote.id } });
+    expect(stored.status).toBe('WITHDRAWN');
+    // Accepting would have posted the deleted jeweler's phone into the chat.
+    await acceptQuote(t, s.designer, quote).expect(409);
+  });
+
+  it('reviews of a jeweler that is no longer listed are not served publicly', async () => {
+    const jeweler = await createPublishedJeweler(t);
+    await t.prisma.review.create({
+      data: { jewelerProfileId: jeweler.profileId, reviewerName: 'A', rating: 5, comment: 'c' },
+    });
+    await t.http.delete(`${API}/users/me`).set(jeweler.auth).expect(200);
+    const res = await t.http.get(`${API}/reviews`).query({ jewelerProfileId: jeweler.profileId }).expect(200);
+    expect(res.body.data.items).toEqual([]);
   });
 
   it('revokes every session of the deleted account', async () => {

@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { DesignStatus, Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
 import { PrismaService } from '../database/prisma.service';
@@ -20,9 +20,17 @@ export class GalleryService {
     private readonly audit: AuditService,
   ) {}
 
+  /** Only listed designs of existing accounts are shown publicly, whatever was curated earlier. */
   list() {
     return this.prisma.galleryItem.findMany({
-      where: { isActive: true },
+      where: {
+        isActive: true,
+        design: {
+          deletedAt: null,
+          status: { in: [DesignStatus.PUBLISHED, DesignStatus.COMPLETED] },
+          owner: { deletedAt: null },
+        },
+      },
       orderBy: { sortOrder: 'asc' },
       include: { design: { select: DESIGN_PREVIEW_SELECT } },
     });

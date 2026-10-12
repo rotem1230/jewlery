@@ -2,7 +2,9 @@ import { Injectable, NotFoundException, UnauthorizedException, BadRequestExcepti
 import {
   DesignRequestStatus,
   DeviceToken,
+  Prisma,
   ProfilePublishStatus,
+  QuoteStatus,
   User,
   UserPreference,
   UserStatus,
@@ -149,10 +151,43 @@ export class UsersService {
           lockedUntil: null,
         },
       });
+      // The listing goes offline and its contact details are erased (they would otherwise still
+      // reach customers through the post-acceptance handoff).
       await tx.jewelerProfile.updateMany({
-        where: { userId, publishStatus: { not: ProfilePublishStatus.UNPUBLISHED } },
-        data: { publishStatus: ProfilePublishStatus.UNPUBLISHED },
+        where: { userId },
+        data: {
+          publishStatus: ProfilePublishStatus.UNPUBLISHED,
+          businessName: 'Deleted jeweler',
+          phone: '',
+          email: null,
+          bio: null,
+          serviceAreaText: null,
+          businessHours: Prisma.DbNull,
+          latitude: null,
+          longitude: null,
+          logoUploadId: null,
+        },
       });
+      await tx.jewelerOnboardingDraft.deleteMany({ where: { userId } });
+      const openQuotes = await tx.quote.findMany({
+        where: { authorUserId: userId, status: QuoteStatus.PENDING },
+        select: { id: true },
+      });
+      if (openQuotes.length > 0) {
+        await tx.quote.updateMany({
+          where: { id: { in: openQuotes.map((q) => q.id) }, status: QuoteStatus.PENDING },
+          data: { status: QuoteStatus.WITHDRAWN },
+        });
+        await tx.quoteEvent.createMany({
+          data: openQuotes.map((q) => ({
+            quoteId: q.id,
+            fromStatus: QuoteStatus.PENDING,
+            toStatus: QuoteStatus.WITHDRAWN,
+            actorUserId: userId,
+            note: 'Withdrawn: the jeweler deleted their account',
+          })),
+        });
+      }
       await tx.design.updateMany({ where: { ownerUserId: userId, deletedAt: null }, data: { deletedAt: now } });
       await tx.designRequest.updateMany({
         where: {

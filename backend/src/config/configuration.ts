@@ -82,6 +82,8 @@ export const configuration = () => {
     throttle: {
       ttlMs: int(process.env.THROTTLE_TTL_MS, 60_000),
       limit: int(process.env.THROTTLE_LIMIT, 100),
+      /** Media downloads per client and window; separate so a chat full of images stays usable. */
+      mediaLimit: int(process.env.MEDIA_THROTTLE_LIMIT, 600),
     },
     jwt: {
       secret: process.env.JWT_SECRET || DEV_JWT_SECRET,

@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { UploadAccessService } from '../../src/uploads/upload-access.service';
+import { UploadsService } from '../../src/uploads/uploads.service';
 import { VisualizationService } from '../../src/visualization/visualization.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { M4A_BYTES, PNG_BYTES, uploadFile } from '../utils/files';
@@ -54,6 +55,14 @@ describe('upload content access', () => {
     expect(res.headers['content-type']).toContain('image/png');
     expect(res.headers['cache-control']).toContain('no-store');
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('a signed media URL can be embedded by the web app on another origin', async () => {
+    const { uploadId } = await chatImage();
+    const signed = t.app.get(UploadAccessService).signedContentPath(uploadId);
+    const res = await t.http.get(`${API}${signed}`).expect(200);
+    expect(res.headers['cross-origin-resource-policy']).toBe('cross-origin');
+    expect(res.headers['cache-control']).toBe('private, no-store');
   });
 
   it('refuses a tampered or expired signature', async () => {
@@ -324,6 +333,41 @@ describe('visualization retention', () => {
 
     const again = await purge.purgeExpired();
     expect(again.purgedJobs).toBe(0);
+  });
+
+  it('purging never deletes a photo that is also used elsewhere (e.g. the avatar)', async () => {
+    const s = await marketplaceScenario(t);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    const photo = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'me.png').expect(201);
+    await t.http.patch(`${API}/users/me`).set(s.designer.auth).send({ avatarUploadId: photo.body.data.id }).expect(200);
+    const job = await t.http
+      .post(`${API}/visualization/jobs`)
+      .set(s.designer.auth)
+      .send({ designId: s.design.id, inputUploadId: photo.body.data.id })
+      .expect(201);
+    await t.prisma.visualizationJob.update({
+      where: { id: job.body.data.id },
+      data: { retentionExpiresAt: new Date(Date.now() - 1000) },
+    });
+
+    await t.app.get(VisualizationService).purgeExpired();
+
+    const avatar = await t.prisma.upload.findUniqueOrThrow({ where: { id: photo.body.data.id } });
+    expect(avatar.deletedAt).toBeNull();
+    await t.http.get(`${API}/uploads/${photo.body.data.id}/content`).expect(200);
+    const output = await t.prisma.upload.findUniqueOrThrow({ where: { id: job.body.data.outputUploadId } });
+    expect(output.deletedAt).not.toBeNull();
+  });
+
+  it('only a ready image of the user can be the try-on input', async () => {
+    const s = await marketplaceScenario(t);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    const voice = await uploadFile(t, s.designer, M4A_BYTES, 'audio/m4a', 'note.m4a').expect(201);
+    await t.http
+      .post(`${API}/visualization/jobs`)
+      .set(s.designer.auth)
+      .send({ designId: s.design.id, inputUploadId: voice.body.data.id })
+      .expect(400);
   });
 });
 

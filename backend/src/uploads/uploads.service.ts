@@ -325,6 +325,41 @@ export class UploadsService {
     return { upload, path };
   }
 
+  /**
+   * Whether anything other than the given visualization jobs refers to the upload, so deleting it
+   * would break a profile, a design, a conversation or another job.
+   */
+  async isReferencedElsewhere(uploadId: string, ignoreVisualizationJobIds: string[] = []): Promise<boolean> {
+    const counts = await Promise.all([
+      this.prisma.user.count({ where: { avatarUploadId: uploadId } }),
+      this.prisma.design.count({ where: { thumbnailUploadId: uploadId } }),
+      this.prisma.jewelerProfile.count({ where: { logoUploadId: uploadId } }),
+      this.prisma.jewelerOnboardingDraft.count({ where: { logoUploadId: uploadId } }),
+      this.prisma.portfolioItem.count({ where: { uploadId } }),
+      this.prisma.message.count({ where: { imageUploadId: uploadId } }),
+      this.prisma.designAsset.count({ where: { uploadId } }),
+      this.prisma.aiGenerationJob.count({ where: { outputUploadId: uploadId } }),
+      this.prisma.renderJob.count({ where: { outputUploadId: uploadId } }),
+      this.prisma.visualizationJob.count({
+        where: {
+          id: { notIn: ignoreVisualizationJobIds },
+          purgedAt: null,
+          OR: [{ inputUploadId: uploadId }, { outputUploadId: uploadId }],
+        },
+      }),
+    ]);
+    return counts.some((count) => count > 0);
+  }
+
+  /** Withdraws an upload nobody references (e.g. a result that arrived too late): row and bytes. */
+  async discard(upload: Pick<Upload, 'id' | 'bucket' | 'objectKey'>): Promise<void> {
+    await this.prisma.upload.update({
+      where: { id: upload.id },
+      data: { status: UploadStatus.DELETED, deletedAt: new Date() },
+    });
+    this.deleteStoredFile(upload);
+  }
+
   /** Removes the stored bytes of a locally stored, non-seed upload (seed assets are shared). */
   deleteStoredFile(upload: Pick<Upload, 'bucket' | 'objectKey'>): void {
     if (!upload.objectKey.startsWith('local/')) {

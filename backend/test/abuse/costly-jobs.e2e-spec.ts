@@ -1,4 +1,5 @@
 import { AI_ENGINE_ADAPTER, AiGenerateRequest, AiGenerateResult } from '../../src/ai/adapters/ai-engine.adapter';
+import { AiService } from '../../src/ai/ai.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { createDraftDesign, registerVerified, TestUser } from '../utils/factories';
 
@@ -107,6 +108,26 @@ describe('AI generation limits', () => {
     } finally {
       await t.prisma.appConfig.delete({ where: { key: 'ai_limits' } });
     }
+  });
+
+  it('a generation the stale sweep already gave up on cannot come back as succeeded', async () => {
+    const user = await registerVerified(t);
+    const res = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ prompt: 'slow one' }).expect(202);
+    await waitForJob(t, user, res.body.data.id, 'RUNNING');
+
+    const ai = t.app.get(AiService);
+    expect(await ai.failStaleJobs(new Date(Date.now() + 60 * 60_000))).toBeGreaterThanOrEqual(1);
+    engine.open();
+    const inFlight = (ai as unknown as { inFlight: Set<Promise<void>> }).inFlight;
+    await Promise.allSettled([...inFlight]);
+
+    const job = await t.prisma.aiGenerationJob.findUniqueOrThrow({ where: { id: res.body.data.id } });
+    expect(job.status).toBe('FAILED');
+    expect(job.outputUploadId).toBeNull();
+    const kept = await t.prisma.upload.count({
+      where: { ownerUserId: user.id, deletedAt: null, objectKey: { startsWith: 'local/generated/' } },
+    });
+    expect(kept).toBe(0);
   });
 
   it('caps the prompt length', async () => {

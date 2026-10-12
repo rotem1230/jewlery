@@ -130,24 +130,37 @@ export class AiService implements OnModuleDestroy {
    * (they expire) and never returned to the client.
    */
   private async process(job: AiGenerationJob, itemCode: string, ownerUserId: string): Promise<void> {
-    await this.prisma.aiGenerationJob.update({ where: { id: job.id }, data: { status: JobStatus.RUNNING } });
+    // Every transition is conditional on the state this worker expects: once the stale sweep has
+    // failed a job (and the user may have started another), a late result must not revive it.
+    const started = await this.prisma.aiGenerationJob.updateMany({
+      where: { id: job.id, status: JobStatus.QUEUED },
+      data: { status: JobStatus.RUNNING },
+    });
+    if (started.count !== 1) {
+      return;
+    }
     try {
       const generated = await this.engine.generate({ prompt: job.prompt, itemCode });
       const upload = await this.uploads.createGeneratedLocal(ownerUserId, generated.glb, GLB_MIME);
-      const succeeded = await this.prisma.aiGenerationJob.update({
-        where: { id: job.id },
+      const finished = await this.prisma.aiGenerationJob.updateMany({
+        where: { id: job.id, status: JobStatus.RUNNING },
         data: { status: JobStatus.SUCCEEDED, outputUploadId: upload.id, finishedAt: new Date() },
       });
+      if (finished.count !== 1) {
+        this.logger.warn(`AI job ${job.id} finished after it was given up; result discarded`);
+        await this.uploads.discard(upload);
+        return;
+      }
       await this.outbox.enqueue('ai.completed', {
-        aiJobId: succeeded.id,
-        designId: succeeded.designId,
-        status: succeeded.status,
+        aiJobId: job.id,
+        designId: job.designId,
+        status: JobStatus.SUCCEEDED,
         providerRef: generated.providerRef,
       });
     } catch (err) {
       this.logger.warn(`AI job ${job.id} failed: ${(err as Error).message}`);
-      await this.prisma.aiGenerationJob.update({
-        where: { id: job.id },
+      await this.prisma.aiGenerationJob.updateMany({
+        where: { id: job.id, status: JobStatus.RUNNING },
         data: { status: JobStatus.FAILED, errorMessage: 'Generation failed', finishedAt: new Date() },
       });
     }

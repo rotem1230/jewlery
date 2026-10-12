@@ -417,6 +417,8 @@ export class QuotesService {
             completedAt: acceptedAt,
             completedByJewelerId: existing.authorUserId,
             acceptedQuoteId: existing.id,
+            // Editors holding the pre-acceptance version are refused as stale.
+            version: { increment: 1 },
           },
         });
 

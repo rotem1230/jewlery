@@ -252,8 +252,20 @@ export class DesignsService {
     };
   }
 
+  /** An accepted quote is a deal on these exact parameters: the design is frozen from then on. */
+  private assertNotCompleted(design: Design): void {
+    if (design.acceptedQuoteId || design.status === DesignStatus.COMPLETED) {
+      throw new ConflictException({
+        success: false,
+        message: 'This design has an accepted quote and can no longer be changed; duplicate it instead',
+        code: 'DESIGN_COMPLETED',
+      });
+    }
+  }
+
   async update(id: string, user: User, dto: UpdateDesignDto): Promise<Design> {
     const design = await this.getOwned(id, user);
+    this.assertNotCompleted(design);
 
     if (design.version !== dto.version) {
       throw new ConflictException({
@@ -426,12 +438,18 @@ export class DesignsService {
   }
 
   async lock(id: string, user: User, dto: LockDesignDto): Promise<Design> {
-    const design = await this.getOwned(id, user);
-    const mergedFields = Array.from(new Set([...design.lockedFields, ...dto.fields]));
+    await this.getOwned(id, user);
 
-    const updated = await this.prisma.design.update({
-      where: { id },
-      data: { lockedAt: new Date(), lockedFields: mergedFields, version: { increment: 1 } },
+    // Read-merge-write under the row lock: two simultaneous locks must both stick.
+    const { previousFields, updated } = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "designs" WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.design.findUniqueOrThrow({ where: { id } });
+      const mergedFields = Array.from(new Set([...current.lockedFields, ...dto.fields]));
+      const saved = await tx.design.update({
+        where: { id },
+        data: { lockedAt: new Date(), lockedFields: mergedFields, version: { increment: 1 } },
+      });
+      return { previousFields: current.lockedFields, updated: saved };
     });
 
     await this.snapshotVersion(updated, user.id, 'lock');
@@ -440,8 +458,8 @@ export class DesignsService {
       action: 'design.lock',
       entityType: 'Design',
       entityId: id,
-      before: { lockedFields: design.lockedFields },
-      after: { lockedFields: mergedFields },
+      before: { lockedFields: previousFields },
+      after: { lockedFields: updated.lockedFields },
     });
 
     return updated;
@@ -457,6 +475,7 @@ export class DesignsService {
 
   async restoreVersion(id: string, versionNumber: number, user: User): Promise<Design> {
     const design = await this.getOwned(id, user);
+    this.assertNotCompleted(design);
     const version = await this.prisma.designVersion.findUnique({
       where: { designId_versionNumber: { designId: id, versionNumber } },
     });

@@ -12,7 +12,13 @@ module.exports = async function globalTeardown() {
       if (process.env.TEST_PG_KEEP_LOG && fs.existsSync(log)) {
         fs.copyFileSync(log, `${dir}.postgres.log`);
       }
-      fs.rmSync(dir, { recursive: true, force: true });
+      // On Windows the stopped server can hold its files for a moment (EBUSY): retry, and leave a
+      // stray temp directory with a warning rather than failing a run whose tests all passed.
+      try {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+      } catch (err) {
+        console.warn(`Could not remove the test database directory ${dir}: ${err.message}`);
+      }
     }
   }
 };

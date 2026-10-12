@@ -101,7 +101,10 @@ export class ReviewsService {
 
   async findMany(query: QueryReviewsDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
-    const where: Prisma.ReviewWhereInput = { jewelerProfileId: query.jewelerProfileId };
+    const where: Prisma.ReviewWhereInput = {
+      jewelerProfileId: query.jewelerProfileId,
+      profile: { publishStatus: ProfilePublishStatus.PUBLISHED, user: { deletedAt: null } },
+    };
 
     const [items, total] = await Promise.all([
       this.prisma.review.findMany({

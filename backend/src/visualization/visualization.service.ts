@@ -76,12 +76,18 @@ export class VisualizationService {
     }
 
     const upload = await this.prisma.upload.findFirst({
-      where: { id: dto.inputUploadId, ownerUserId: user.id, deletedAt: null },
+      where: {
+        id: dto.inputUploadId,
+        ownerUserId: user.id,
+        deletedAt: null,
+        status: UploadStatus.READY,
+        mimeType: { startsWith: 'image/' },
+      },
     });
     if (!upload) {
       throw new BadRequestException({
         success: false,
-        message: 'inputUploadId must reference an upload owned by the current user',
+        message: 'inputUploadId must reference an image uploaded by the current user',
       });
     }
 
@@ -186,9 +192,18 @@ export class VisualizationService {
       return { purgedJobs: 0, softDeletedUploads: 0 };
     }
 
-    const uploadIds = Array.from(
+    const candidates = Array.from(
       new Set(expired.flatMap((job) => [job.inputUploadId, job.outputUploadId].filter((id): id is string => !!id))),
     );
+    // A photo used as the try-on input may also be the avatar, a chat image, another try-on...:
+    // only uploads nothing else refers to are deleted.
+    const expiredJobIds = expired.map((job) => job.id);
+    const uploadIds: string[] = [];
+    for (const id of candidates) {
+      if (!(await this.uploads.isReferencedElsewhere(id, expiredJobIds))) {
+        uploadIds.push(id);
+      }
+    }
 
     const uploads = await this.prisma.upload.findMany({
       where: { id: { in: uploadIds } },

@@ -1,7 +1,8 @@
 import { Logger } from '@nestjs/common';
-import { OutboxProcessor } from '../../src/common/outbox/outbox.processor';
+import { OUTBOX_MAX_ATTEMPTS, OutboxProcessor } from '../../src/common/outbox/outbox.processor';
 import { OutboxService } from '../../src/common/outbox/outbox.service';
 import { NotificationsService } from '../../src/notifications/notifications.service';
+import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
   acceptQuote,
@@ -80,6 +81,77 @@ describe('outbox delivery', () => {
     expect(await t.prisma.notification.count({ where: { userId: user.id, eventKey: 'probe.immediate' } })).toBe(1);
   });
 
+  type Dispatch = (type: string, payload: Record<string, unknown>) => Promise<void>;
+
+  function dispatchOf(processor: OutboxProcessor) {
+    return jest.spyOn(processor as unknown as { dispatch: Dispatch }, 'dispatch');
+  }
+
+  it('claiming an event counts as an attempt, so a worker that dies mid-delivery is accounted for', async () => {
+    const user = await registerVerified(t);
+    const event = await t.app.get(OutboxService).enqueue('notification.push', { userId: user.id, eventKey: 'probe.claim', title: 't', body: 'b' });
+    const processor = t.app.get(OutboxProcessor);
+    let release!: () => void;
+    const spy = dispatchOf(processor).mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)));
+    try {
+      const running = processor.processPending();
+      for (let i = 0; i < 100 && !release; i += 1) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      const claimed = await t.prisma.outboxEvent.findUniqueOrThrow({ where: { id: event.id } });
+      expect(claimed.attempts).toBe(1);
+      release();
+      await running;
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('an event whose attempts were used up by crashed workers is dead-lettered, not delivered again', async () => {
+    const user = await registerVerified(t);
+    const event = await t.prisma.outboxEvent.create({
+      data: {
+        type: 'notification.push',
+        payload: { userId: user.id, eventKey: 'probe.crashed', title: 't', body: 'b' },
+        attempts: OUTBOX_MAX_ATTEMPTS,
+        lockedUntil: new Date(Date.now() - 60_000),
+      },
+    });
+    await t.app.get(OutboxProcessor).processPending();
+
+    expect(await t.prisma.notification.count({ where: { userId: user.id, eventKey: 'probe.crashed' } })).toBe(0);
+    const stored = await t.prisma.outboxEvent.findUniqueOrThrow({ where: { id: event.id } });
+    expect(stored.deadAt).not.toBeNull();
+  });
+
+  it('a worker whose lease expired cannot overwrite the result of the worker that took over', async () => {
+    const user = await registerVerified(t);
+    const event = await t.app.get(OutboxService).enqueue('notification.push', { userId: user.id, eventKey: 'probe.fenced', title: 't', body: 'b' });
+    const processor = t.app.get(OutboxProcessor);
+    let release!: () => void;
+    const spy = dispatchOf(processor).mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => (release = () => reject(new Error('slow worker failed')))),
+    );
+    try {
+      const slow = processor.processPending();
+      for (let i = 0; i < 100 && !release; i += 1) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      // The slow worker's lease runs out; another worker takes the event over and delivers it.
+      await t.prisma.outboxEvent.update({ where: { id: event.id }, data: { lockedUntil: new Date(Date.now() - 1_000) } });
+      await processor.processPending();
+      release();
+      await slow;
+    } finally {
+      spy.mockRestore();
+    }
+
+    const stored = await t.prisma.outboxEvent.findUniqueOrThrow({ where: { id: event.id } });
+    expect(stored.processedAt).not.toBeNull();
+    expect(stored.lastError).toBeNull();
+    expect(await t.prisma.notification.count({ where: { userId: user.id, eventKey: 'probe.fenced' } })).toBe(1);
+  });
+
   it('two workers draining at once deliver every event exactly once', async () => {
     const user = await registerVerified(t);
     await t.prisma.outboxEvent.createMany({
@@ -131,6 +203,50 @@ describe('design editing integrity', () => {
     expect(res.body.code).toBe('FIELD_LOCKED');
     const stored = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
     expect((stored.parameters as { metal: { metalCode: string } }).metal.metalCode).toBe('WHITE_GOLD');
+  });
+
+  it('locking two different fields at the same moment keeps both locked', async () => {
+    const owner = await registerVerified(t);
+    const design = await createDraftDesign(t, owner);
+    const lock = await lockRow(t, 'designs', design.id);
+    const locking = ['metal', 'size'].map((field) =>
+      t.http
+        .post(`${API}/designs/${design.id}/lock`)
+        .set(owner.auth)
+        .send({ fields: [field], confirm: true })
+        .then((res) => res),
+    );
+    await waitForLockWaiters(t, 2);
+    await lock.release();
+    expect((await Promise.all(locking)).map((r) => r.status)).toEqual([201, 201]);
+
+    const stored = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
+    expect([...stored.lockedFields].sort()).toEqual(['metal', 'size']);
+  });
+
+  it('a design with an accepted quote can no longer be edited or rolled back', async () => {
+    const s = await marketplaceScenario(t);
+    const before = await t.prisma.design.findUniqueOrThrow({ where: { id: s.design.id } });
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    await acceptQuote(t, s.designer, quote).expect(201);
+    const accepted = await t.prisma.design.findUniqueOrThrow({ where: { id: s.design.id } });
+    // An editor still holding the pre-acceptance version is told it is stale.
+    expect(accepted.version).toBeGreaterThan(before.version);
+
+    const edit = await t.http
+      .patch(`${API}/designs/${s.design.id}`)
+      .set(s.designer.auth)
+      .send({ version: accepted.version, title: 'changed after the deal' })
+      .expect(409);
+    expect(edit.body.code).toBe('DESIGN_COMPLETED');
+    const restore = await t.http
+      .post(`${API}/designs/${s.design.id}/versions/1/restore`)
+      .set(s.designer.auth)
+      .send({})
+      .expect(409);
+    expect(restore.body.code).toBe('DESIGN_COMPLETED');
+    const after = await t.prisma.design.findUniqueOrThrow({ where: { id: s.design.id } });
+    expect(after.title).toBe(accepted.title);
   });
 
   it('validation follows an updated item-type schema (no stale validator cache)', async () => {

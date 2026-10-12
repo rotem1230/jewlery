@@ -6,6 +6,9 @@ import { DummyAiEngineAdapter } from './dummy-ai-engine.adapter';
 const TRIPO_BASE = 'https://api.tripo3d.ai/v2/openapi';
 const POLL_MS = 2_000;
 const MAX_WAIT_MS = 90_000;
+/** No single provider call may hang a worker (the job itself is bounded by MAX_WAIT_MS). */
+const REQUEST_TIMEOUT_MS = 15_000;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 /**
  * Calls Tripo when TRIPO_API_KEY is set and downloads the GLB immediately
@@ -57,7 +60,10 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
         if (!url) {
           throw new Error('Tripo success without a model URL');
         }
-        const glbRes = await fetch(url);
+        if (!url.startsWith('https://')) {
+          throw new Error('Tripo returned a model URL that is not https');
+        }
+        const glbRes = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
         if (!glbRes.ok) {
           throw new Error(`Failed to download Tripo GLB (${glbRes.status})`);
         }
@@ -77,6 +83,7 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
   private async tripoFetch(apiKey: string, path: string, init?: RequestInit): Promise<unknown> {
     const res = await fetch(`${TRIPO_BASE}${path}`, {
       ...init,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',

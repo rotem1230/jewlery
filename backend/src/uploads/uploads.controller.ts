@@ -4,6 +4,9 @@ import {
   Controller,
   Get,
   Headers,
+  HttpException,
+  HttpStatus,
+  Ip,
   NotFoundException,
   Param,
   ParseUUIDPipe,
@@ -14,13 +17,16 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { SkipThrottle } from '@nestjs/throttler';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User, UserStatus } from '@prisma/client';
 import { Request, Response } from 'express';
 import { JwtPayload } from '../auth/interfaces/auth-user.interface';
 import { Public } from '../authorization/decorators/public.decorator';
+import { RateLimiterService } from '../common/rate-limit/rate-limiter.service';
 import { PrismaService } from '../database/prisma.service';
 import { ConfirmUploadDto, CreatePresignDto } from './dto/upload.dto';
 import { UploadAccessService } from './upload-access.service';
@@ -39,6 +45,8 @@ export class UploadsController {
     private readonly access: UploadAccessService,
     private readonly jwt: JwtService,
     private readonly prisma: PrismaService,
+    private readonly limiter: RateLimiterService,
+    private readonly config: ConfigService,
   ) {}
 
   @Post('presign')
@@ -73,6 +81,7 @@ export class UploadsController {
    * conversation participant or an admin. Every refusal is a 404 so existence is not revealed.
    */
   @Public()
+  @SkipThrottle()
   @Get(':id/content')
   @ApiOperation({ summary: 'Download upload content (public asset, signed URL, or authorized bearer token)' })
   async content(
@@ -80,8 +89,18 @@ export class UploadsController {
     @Query('exp') exp: unknown,
     @Query('sig') sig: unknown,
     @Headers('authorization') authorization: string | undefined,
+    @Ip() clientIp: string,
     @Res() res: Response,
   ): Promise<void> {
+    // Media has its own budget: a screen full of images must not lock the client out of the API.
+    const allowed = await this.limiter.consume(
+      `media:${clientIp}`,
+      this.config.get<number>('throttle.mediaLimit', 600),
+      this.config.get<number>('throttle.ttlMs', 60_000),
+    );
+    if (!allowed) {
+      throw new HttpException({ success: false, message: 'Too many requests' }, HttpStatus.TOO_MANY_REQUESTS);
+    }
     const notFound = () => new NotFoundException({ success: false, message: 'Upload content not found' });
     const servable = await this.uploads.findServable(id);
     if (!servable) {
@@ -89,11 +108,11 @@ export class UploadsController {
     }
     const { upload, path } = servable;
 
-    let visibility: 'public' | 'private' | null = null;
+    let visibility: 'public' | 'signed' | 'private' | null = null;
     if (await this.access.isPublic(upload)) {
       visibility = 'public';
     } else if (exp !== undefined && this.access.hasValidSignature(id, exp, sig)) {
-      visibility = 'private';
+      visibility = 'signed';
     } else if (authorization) {
       const user = await this.authenticate(authorization);
       if (user && (await this.access.canRead(upload, user))) {
@@ -109,9 +128,13 @@ export class UploadsController {
     res.setHeader('Content-Disposition', inline ? 'inline' : `attachment; filename="${upload.id}"`);
     if (visibility === 'public') {
       res.setHeader('Cache-Control', 'public, max-age=3600');
-      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     } else {
       res.setHeader('Cache-Control', 'private, no-store');
+    }
+    // Public assets and signed links (the signature is the authorization) may be embedded by the web
+    // app on another origin; bearer-authorized responses keep helmet's same-origin policy.
+    if (visibility !== 'private') {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     }
     res.sendFile(path);
   }

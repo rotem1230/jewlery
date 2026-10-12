@@ -43,13 +43,26 @@ export class OutboxProcessor {
 
   /**
    * Claims a batch of due events with FOR UPDATE SKIP LOCKED and a lease, so concurrent workers
-   * (several API instances, or overlapping ticks) never deliver the same event twice. Failures are
-   * retried with exponential backoff; a failing event never blocks newer ones and is
-   * dead-lettered after OUTBOX_MAX_ATTEMPTS.
+   * (several API instances, or overlapping ticks) do not deliver the same event twice. Claiming
+   * counts as an attempt, so an event whose worker dies mid-delivery is still dead-lettered after
+   * OUTBOX_MAX_ATTEMPTS. Each event's lease is renewed right before delivery and its outcome is
+   * recorded only while the lease is still ours: a worker that lost the event to another one (its
+   * lease ran out) skips it, and never overwrites the other worker's result. Failures are retried
+   * with exponential backoff and never block newer events.
    */
   async processPending(batchSize = 50): Promise<number> {
     const now = new Date();
     const leaseUntil = new Date(now.getTime() + CLAIM_LEASE_MS);
+
+    // Claims that ended in a crash used up attempts without recording a failure.
+    await this.prisma.$executeRaw`
+      UPDATE "outbox_events"
+         SET "deadAt" = ${sqlTimestamp(now)}, "lockedUntil" = NULL
+       WHERE "processedAt" IS NULL
+         AND "deadAt" IS NULL
+         AND "attempts" >= ${OUTBOX_MAX_ATTEMPTS}
+         AND ("lockedUntil" IS NULL OR "lockedUntil" < ${sqlTimestamp(now)})`;
+
     // MATERIALIZED pins the locking SELECT to a single evaluation, so the leased rows are exactly the
     // rows that were locked. Dates go through sqlTimestamp: the columns hold UTC wall-clock time.
     const claimed = await this.prisma.$queryRaw<ClaimedEvent[]>`
@@ -57,6 +70,7 @@ export class OutboxProcessor {
         SELECT "id" FROM "outbox_events"
          WHERE "processedAt" IS NULL
            AND "deadAt" IS NULL
+           AND "attempts" < ${OUTBOX_MAX_ATTEMPTS}
            AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= ${sqlTimestamp(now)})
            AND ("lockedUntil" IS NULL OR "lockedUntil" < ${sqlTimestamp(now)})
          ORDER BY "createdAt" ASC
@@ -64,37 +78,43 @@ export class OutboxProcessor {
          FOR UPDATE SKIP LOCKED
       )
       UPDATE "outbox_events" AS o
-         SET "lockedUntil" = ${sqlTimestamp(leaseUntil)}
+         SET "lockedUntil" = ${sqlTimestamp(leaseUntil)}, "attempts" = o."attempts" + 1
         FROM due
        WHERE o."id" = due."id"
       RETURNING o."id", o."type", o."payload", o."attempts"`;
 
     let processed = 0;
     for (const event of claimed) {
+      const lease = new Date(Date.now() + CLAIM_LEASE_MS);
+      const renewed = await this.prisma.outboxEvent.updateMany({
+        where: { id: event.id, lockedUntil: leaseUntil },
+        data: { lockedUntil: lease },
+      });
+      if (renewed.count !== 1) {
+        continue; // another worker took the event over after our batch lease ran out
+      }
       try {
         await this.dispatch(event.type, asRecord(event.payload));
-        await this.prisma.outboxEvent.update({
-          where: { id: event.id },
-          data: { processedAt: new Date(), attempts: { increment: 1 }, lockedUntil: null, lastError: null },
+        const done = await this.prisma.outboxEvent.updateMany({
+          where: { id: event.id, lockedUntil: lease },
+          data: { processedAt: new Date(), lockedUntil: null, lastError: null },
         });
-        processed += 1;
+        processed += done.count;
       } catch (err) {
-        const attempts = event.attempts + 1;
-        const dead = attempts >= OUTBOX_MAX_ATTEMPTS;
+        const dead = event.attempts >= OUTBOX_MAX_ATTEMPTS;
         await this.prisma.outboxEvent
-          .update({
-            where: { id: event.id },
+          .updateMany({
+            where: { id: event.id, lockedUntil: lease },
             data: {
-              attempts,
               lastError: (err as Error).message.slice(0, 1000),
               lockedUntil: null,
-              nextAttemptAt: new Date(Date.now() + outboxBackoffMs(attempts)),
+              nextAttemptAt: new Date(Date.now() + outboxBackoffMs(event.attempts)),
               deadAt: dead ? new Date() : null,
             },
           })
           .catch(() => undefined);
         this.logger.warn(
-          `Outbox event ${event.id} (${event.type}) failed attempt ${attempts}${dead ? ' — dead-lettered' : ''}: ${(err as Error).message}`,
+          `Outbox event ${event.id} (${event.type}) failed attempt ${event.attempts}${dead ? ' — dead-lettered' : ''}: ${(err as Error).message}`,
         );
       }
     }
