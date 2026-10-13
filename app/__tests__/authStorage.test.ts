@@ -43,7 +43,7 @@ describe('session storage', () => {
     await storage.saveAuthSession(session)
     expect(await AsyncStorage.getItem(LEGACY_KEY)).toBeNull()
     const [stored] = [...keychain.items.values()]
-    expect(JSON.parse(stored.password)).toEqual(session)
+    expect(JSON.parse(stored.password)).toEqual({ ...session, savedAt: expect.any(Number) })
     expect(stored.accessible).toBe('AccessibleAfterFirstUnlockThisDeviceOnly')
     expect(await storage.loadAuthSession()).toEqual(session)
   })
@@ -70,6 +70,58 @@ describe('session storage', () => {
     expect(keychain.items.size).toBe(0)
     expect(await AsyncStorage.getItem(LEGACY_KEY)).toBeNull()
     expect(await storage.loadAuthSession()).toBeNull()
+  })
+
+  it('a session saved while the keychain fails is not hidden by the older keychain copy', async () => {
+    const keychain = fakeKeychain()
+    jest.doMock('react-native-keychain', () => keychain)
+    const { storage } = load()
+    await storage.saveAuthSession(session)
+    const rotated = { ...session, accessToken: 'access-2', refreshToken: 'refresh-2' }
+    keychain.setGenericPassword.mockRejectedValueOnce(new Error('keystore unavailable'))
+    await storage.saveAuthSession(rotated)
+
+    expect(await storage.loadAuthSession()).toEqual(rotated)
+  })
+
+  it('the newer session wins even when the stale keychain copy cannot be removed', async () => {
+    const keychain = fakeKeychain()
+    jest.doMock('react-native-keychain', () => keychain)
+    const { AsyncStorage, storage } = load()
+    await storage.saveAuthSession(session)
+    const rotated = { ...session, accessToken: 'access-2', refreshToken: 'refresh-2' }
+    keychain.setGenericPassword.mockRejectedValueOnce(new Error('keystore unavailable'))
+    keychain.resetGenericPassword.mockRejectedValueOnce(new Error('keystore unavailable'))
+    await storage.saveAuthSession(rotated)
+
+    expect(await storage.loadAuthSession()).toEqual(rotated)
+    // Once the keychain works again the newer session moves in and the plain copy is gone.
+    expect(await AsyncStorage.getItem(LEGACY_KEY)).toBeNull()
+    expect(await storage.loadAuthSession()).toEqual(rotated)
+  })
+
+  it('overlapping saves end with the newer session, even when the older one fails its keychain write', async () => {
+    const keychain = fakeKeychain()
+    jest.doMock('react-native-keychain', () => keychain)
+    const { storage } = load()
+    const older = { ...session, accessToken: 'access-1', refreshToken: 'refresh-1' }
+    const newer = { ...session, accessToken: 'access-2', refreshToken: 'refresh-2' }
+    let failOlder: (() => void) | undefined
+    keychain.setGenericPassword.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          failOlder = () => reject(new Error('keystore busy'))
+        }),
+    )
+    // Saved one after the other without waiting (a token refresh right after a sign-in).
+    const first = storage.saveAuthSession(older)
+    const second = storage.saveAuthSession(newer)
+    while (!failOlder) await new Promise<void>((resolve) => setTimeout(() => resolve(), 0))
+    await new Promise<void>((resolve) => setTimeout(() => resolve(), 0))
+    failOlder()
+    await Promise.all([first, second])
+
+    expect(await storage.loadAuthSession()).toEqual(newer)
   })
 
   it('still works when the native keychain module is not linked', async () => {

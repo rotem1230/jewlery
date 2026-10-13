@@ -20,8 +20,9 @@ const ROOT = path.join(__dirname, '..');
 // initdb cannot handle non-ASCII data-dir paths on Windows, so keep the throwaway cluster in the
 // OS temp dir rather than next to the sources.
 const DB_DIR = process.env.E2E_PG_DIR || path.join(os.tmpdir(), 'malinvosky-e2e-pg');
-const PG_PORT = 55433;
-const API_PORT = 3100;
+// Overridable for machines where another dev server already holds the default ports.
+const PG_PORT = Number(process.env.SMOKE_PG_PORT) || 55433;
+const API_PORT = Number(process.env.SMOKE_API_PORT) || 3100;
 const BASE = `http://127.0.0.1:${API_PORT}/api/v1`;
 
 const results = [];
@@ -156,6 +157,10 @@ async function main() {
     // Demo accounts and showcase data (never in production) and the fake payment provider.
     SEED_DEMO_DATA: 'true',
     PAYMENTS_PROVIDER: 'mock',
+    // The API also reads backend/.env: a developer's real keys there must not turn the smoke run
+    // into paid AI calls or real e-mail.
+    TRIPO_API_KEY: '',
+    SMTP_URL: '',
   };
   const prismaCli = require.resolve('prisma/build/index.js', { paths: [ROOT] });
 

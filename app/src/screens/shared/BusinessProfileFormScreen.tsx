@@ -183,7 +183,8 @@ export function BusinessProfileFormScreen() {
     }
   }
 
-  const persistDraftAndGallery = async (e164: string) => {
+  /** Saves the draft, and the new gallery pictures when the profile exists; true when it saved them. */
+  const persistDraftAndGallery = async (e164: string): Promise<boolean> => {
     await upsertJewelerDraft({
       payload: {
         businessName: name.trim(),
@@ -194,16 +195,18 @@ export function BusinessProfileFormScreen() {
       regionId: regionId ?? undefined,
       logoUploadId: logoUploadId ?? undefined,
     })
-    if (raw?.id) {
-      const pending = gallery.filter((g) => !g.persisted && g.uploadId)
-      for (const [index, item] of pending.entries()) {
-        await addPortfolioItem({
-          uploadId: item.uploadId as string,
-          sortOrder: gallery.length + index,
-        })
-      }
-      setGallery((prev) => prev.map((g) => ({ ...g, persisted: true })))
+    if (!raw?.id) {
+      return false
     }
+    const pending = gallery.filter((g) => !g.persisted && g.uploadId)
+    for (const [index, item] of pending.entries()) {
+      await addPortfolioItem({
+        uploadId: item.uploadId as string,
+        sortOrder: gallery.length + index,
+      })
+    }
+    setGallery((prev) => prev.map((g) => ({ ...g, persisted: true })))
+    return true
   }
 
   const onSubmit = async () => {
@@ -219,7 +222,7 @@ export function BusinessProfileFormScreen() {
     if (Object.keys(next).length > 0 || !e164) return
     setBusy(true)
     try {
-      await persistDraftAndGallery(e164)
+      const gallerySaved = await persistDraftAndGallery(e164)
       if (isEdit) {
         await publishJewelerProfile()
         navigation.navigate('BusinessProfileView')
@@ -233,6 +236,7 @@ export function BusinessProfileFormScreen() {
             uri: typeof g.image === 'object' && g.image && 'uri' in g.image ? g.image.uri : undefined,
             title: name.trim(),
             uploadId: g.uploadId,
+            persisted: gallerySaved || g.persisted,
           })),
         })
       }

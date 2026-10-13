@@ -1,3 +1,4 @@
+import * as bcrypt from 'bcrypt';
 import { createHmac } from 'crypto';
 import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
@@ -133,6 +134,67 @@ describe('ending sessions', () => {
     const token = await t.mailbox.tokenFor(user.email, 'reset');
     await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: 'N3w-Strong-Pass' }).expect(200);
     await me(user.accessToken).expect(401);
+  });
+
+  it('a password change already under way cannot overwrite a password reset that lands first', async () => {
+    const user = await registerVerified(t);
+    // The change read the account (and the password it checks) and waits for it; meanwhile the
+    // owner recovers the account: new password, every session ended.
+    const held = await lockRow(t, 'users', user.id);
+    const changing = t.http
+      .patch(`${API}/users/me/password`)
+      .set(user.auth)
+      .send({ currentPassword: user.password, newPassword: 'Attack3r-Pass' })
+      .then((res) => res);
+    await waitForLockWaiters(t, 1);
+    const recovered = await bcrypt.hash('Rec0vered-Pass', 4);
+    await held.release(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { passwordHash: recovered, sessionVersion: { increment: 1 } } });
+      await tx.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+    });
+
+    expect((await changing).status).toBe(401);
+    const stored = await t.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(stored.passwordHash).toBe(recovered);
+  });
+
+  it('signing in with the old password while it is being changed leaves no working session', async () => {
+    const user = await registerVerified(t);
+    // The sign-in has proven the old password and waits for the account; the change commits first.
+    const held = await lockRow(t, 'users', user.id);
+    const signingIn = t.http.post(`${API}/auth/login`).send({ email: user.email, password: user.password }).then((res) => res);
+    await waitForLockWaiters(t, 1);
+    await held.release(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash: 'replaced-by-a-password-change', sessionVersion: { increment: 1 } },
+      });
+      await tx.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+    });
+
+    const res = await signingIn;
+    expect(res.status).toBe(401);
+    expect(await t.prisma.refreshToken.count({ where: { userId: user.id, revokedAt: null } })).toBe(0);
+  });
+
+  it('a role switch that waited behind sign-out-everywhere gives no new session', async () => {
+    const user = await registerVerified(t, { roles: ['DESIGNER', 'JEWELER'] });
+    const held = await lockRow(t, 'users', user.id);
+    // Queued in this order on the account: the sign-out commits first, then the switch continues
+    // with a token issued before it.
+    const revoking = t.http.post(`${API}/auth/revoke-all`).set(user.auth).send({}).then((res) => res);
+    await waitForLockWaiters(t, 1);
+    const switching = t.http.post(`${API}/auth/switch-role`).set(user.auth).send({ role: 'JEWELER' }).then((res) => res);
+    await waitForLockWaiters(t, 2);
+    await held.release();
+
+    expect((await revoking).status).toBe(200);
+    const switched = await switching;
+    if (switched.status === 201) {
+      await me(switched.body.data.tokens.accessToken).expect(401);
+    }
+    expect(switched.status).toBe(401);
+    expect(await t.prisma.refreshToken.count({ where: { userId: user.id, revokedAt: null } })).toBe(0);
   });
 
   it('a refresh racing sign-out-everywhere cannot leave a working session behind', async () => {

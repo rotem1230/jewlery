@@ -107,7 +107,7 @@
 - [x] W-M3 outbox: completion fencing (where lockedUntil), attempts++ on claim (crash loops), smaller batch/lease renew
 - [x] W-M4 AI stale sweep vs slow job overwrite -> conditional status updates; provider fetch timeouts
 - [~] W-M5 migration (b,c done; a,d -> docs): review dedupe LOCK TABLE; recompute aggregates after dedupe; document CREATE INDEX locking / rolling deploy
-- [x] W-M6 deletion traces: gallery filter deleted designs/owners; deleted jeweler PII (phone/email/businessName) scrub + withdraw pending quotes; accept refuses quote from deleted author; public reviews only for published profiles
+- [x] W-M6 deletion traces: gallery filter deleted designs/owners; deleted jeweler PII (phone/email/businessName) scrub + withdraw pending quotes; accept refuses quote from deleted author [round 4: this guard was NOT in the code; added + test/privacy "author has deleted the account"]; public reviews only for published profiles
 - [x] W-M7 conversations assertParticipant/list ignore leftAt
 - [x] W-M8 designs: lock() lost update (CAS/version); transition conditional; accept bumps version; update refuses after COMPLETED (parameters frozen)
 - [x] W-M9 generated outputs (AI/render) count against user upload quota -> exclude kind generated
@@ -133,6 +133,41 @@
 - [x] embedded PG18 io_worker orphans on Windows -> io_method=sync in test/check/smoke clusters
 - [x] mail log contained recipient addresses -> masked
 - [x] app npm audit fix pulled nested react-native via nativewind 4.2.7 -> reverted, targeted patch updates only
-- [ ] WP10 backend npm audit fix (proxy-addr critical, multer, engine.io, qs, fast-uri, js-yaml, deepmerge-ts, tar) + nodemailer 10
-- [ ] W-tests remaining: thumbnail visibility by status; signed URLs in jeweler me/visualization; FIELD_LOCKED via PATCH; concurrent lock()
+- [x] WP10 backend deps (round 4): nest/proxy-addr/multer/engine.io/qs/fast-uri were already in 08bc79b; bcrypt 6 (drops node-pre-gyp -> tar critical gone), nodemailer 10.1.0 (own types, @types/nodemailer removed), @types/bcrypt 6, js-yaml override for @nestjs/swagger (5.4.3), nested js-yaml 4.3.2. Remaining: jest 29 chain (dev), deepmerge-ts via Prisma CLI (Prisma 7) — accepted, documented
+- [x] W-tests remaining (round 4): FIELD_LOCKED via PATCH, concurrent lock(), jeweler me signed links were already covered (reliability, uploads); added thumbnail COMPLETED/ARCHIVED/removed + visualization outputUrl signed-only (uploads.e2e-spec), mutation-checked 5/5 killed
 - [x] tighten test 'confirmation without the first invoice id' (assert note 'first charge' + session NEEDS_REVIEW): mutation survived via recordUnapplied safety net
+
+## Final independent review + WP10 (round 4, 2026-10-13, on 08bc79b..cd8fc08)
+Backend reviewer (bf3431b..08bc79b):
+- [x] F1 change-password racing a reset overwrote the recovered password -> recheck passwordHash + sessionVersion under lockUser, 401 Session ended (test/auth/sessions)
+- [x] F2 login with a password changed meanwhile / switch-role behind revoke-all issued live sessions -> tokens issued inside the locked tx after recheck (test/auth/sessions; switch-role tokens were proven to work before the fix)
+- [x] F3 deletion vs accept deadlock with two open quotes of one jeweler on one design -> accept locks all open quotes of the design in id order before the claim (test/privacy)
+- [x] F4 quote created during author deletion stayed PENDING + accept had no deleted-author guard -> create takes shareLockUser + recheck (401), accept refuses (409 QUOTE_NOT_PENDING) (test/privacy)
+- [x] F5 second separately invoiced charge on a completed checkout IGNORED -> NEEDS_REVIEW unless the same first invoice (test/billing/checkout; two existing tests now send the same invoice id)
+- [x] F6 first invoice's invoice.paid after/while checkout.completed stayed NEEDS_REVIEW -> pg_advisory_xact_lock per invoice id in both paths + settle when recorded at same amount (test/billing/checkout, deterministic interleaving via checkout_sessions row lock)
+- [ ] note: admin suspension has no endpoint; a DB-level suspension does not bump sessionVersion nor close sockets (documented, not changed)
+- [ ] note: oauthLogin issues tokens outside the account lock (fresh credential; not the stale-password class) — not changed
+App/docs/CI reviewer (a67a5db..HEAD):
+- [x] A1 stale keychain copy shadowed a newer AsyncStorage session -> savedAt stamp, newer wins, keychain reset on failed write (authStorage.test)
+- [x] A2 remember-me=false re-persisted on refresh / role switch -> persist kept in state (authStore.test; jest transform for immer added)
+- [x] A3 refresh had no timeout (one hung refresh blocked all) -> abort signal + race timeout (apiClient.test)
+- [x] A3b refresh answer for a replaced session applied to / signed out the new one -> 'superseded' outcome (apiClient.test)
+- [ ] A4 lost refresh response -> next refresh = reuse -> sign-out: needs a backend grace window (product/security decision, open; documented)
+- [x] A5 AI generation outliving the 120 s wait was orphaned -> pending job per design (AsyncStorage), attached on next visit (pendingAiJobs.test)
+- [x] A6 stale signed links: studio prefers the link of the current upload, freshest first; chat refreshes the newest page before links expire (media.test). Older chat pages: documented limitation
+- [x] A7 release API_BASE_URL checked only at launch -> babel.config fails a release bundle without https URL (babelConfig.test + real @babel/core run)
+- [x] Dependabot: ignore nativewind >=4.2.7 and react-native minor
+- [x] Docs: 7 false/incomplete statements in production-readiness.md corrected (JWT rotation, app contract scope, WEBHOOK_NOT_CONFIGURED, resend --limit, migrate resolve from release image, CI triggers, global throttle per instance) + SMTP_URL encoding, audit status
+- [ ] device-only checks (keychain linking/Podfile.lock, iOS keychain survives reinstall, offline sign-out resurrect) — need a device
+Environment (round 4):
+- [x] smoke script: SMOKE_API_PORT/SMOKE_PG_PORT (3100 is taken by another project here); TRIPO_API_KEY/SMTP_URL blanked so backend/.env keys never reach the smoke run
+- [x] backend/.env created from the owner's values (gitignored; contains a real TRIPO_API_KEY)
+- [x] row-locks: pg_advisory_xact_lock returns void -> Prisma cannot deserialize; select 1 FROM it (caught by the billing suite; money stayed NEEDS_REVIEW, never lost)
+- [x] P1 (pre-existing, found by the app reviewer) publishing the business profile re-posted every saved portfolio picture -> duplicates. API: add is idempotent per (profile, upload) under lockJewelerProfile (test/marketplace/portfolio, red 2/3 -> green 3/3). App: preview adds only unsaved pictures (src/lib/portfolio + portfolio.test). Existing duplicate rows are not deduplicated (no migration).
+## Single final code review (round 4 diff, after all development) — handled once, no further review loop
+- [x] R1 overlapping session saves: an older save's keychain-failure cleanup could erase the newer copy -> writes serialized in order (authStorage.test, red -> green)
+- [x] R2 attachedAiJob forgot a newer generation started meanwhile -> forgets only the attached job id (pendingAiJobs.test, red -> green)
+- [x] R3 invoice.paid without a known subscription was settled by any recorded invoice with that id -> only the first invoice of exactly one subscription from a completed checkout (test/billing/checkout: renewal re-announced, id on two checkouts; red -> green); contract note in production-readiness §4
+- [x] R4 remember-me off was reset by an unexpected sign-out -> the choice is kept; every sign-in screen states its own (authStore.test, red -> green)
+- [x] R5 claimed older deadlock (owner deletes account while accepting on own design): NOT REAL — quote_events.actorUserId has no FK and accept's messages are SYSTEM (senderId null), so accept never references the owner row. Deterministic interleaving test added (test/privacy), green before any change; kept as regression guard
+- [x] note: refresh timeout makes the open grace-window decision more likely to matter -> documented (§8 of production-readiness)

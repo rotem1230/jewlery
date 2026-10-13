@@ -1,4 +1,4 @@
-import { lockRow, waitForLockWaiters } from '../utils/db-locks';
+import { holdInTransaction, lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
   acceptQuote,
@@ -227,6 +227,73 @@ describe('account deletion', () => {
     expect(accepted.status).toBe(409);
     expect(accepted.body.code).toBe('QUOTE_NOT_PENDING');
     expect((await t.prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe('WITHDRAWN');
+  });
+
+  it('deletion and accept lock a jeweler\'s quotes in the same order, even with two open quotes on one design', async () => {
+    const s = await marketplaceScenario(t);
+    const first = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    const second = await createQuote(t, s.jeweler, s.conversation.id, s.design.id, { laborCost: 70 });
+    const [lower, higher] = [first, second].sort((a, b) => (a.id < b.id ? -1 : 1));
+    // The deletion has locked the jeweler's first open quote (it locks them in id order) ...
+    const deletion = await lockRow(t, 'quotes', lower.id);
+    const accepting = acceptQuote(t, s.designer, higher).then((res) => res);
+    await waitForLockWaiters(t, 1);
+    // ... and goes on to the next one while the accept waits: no cycle, so no deadlock.
+    await deletion.release(async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM "quotes" WHERE "id" = ${higher.id}::uuid FOR UPDATE`;
+    });
+
+    const accepted = await accepting;
+    expect(accepted.status).toBe(201);
+    expect((await t.prisma.quote.findUniqueOrThrow({ where: { id: lower.id } })).status).toBe('DECLINED');
+  });
+
+  it('an owner deleting the account while accepting a quote on their own design: both finish, nothing deadlocks', async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    // The accept holds the design and waits on the quote while the owner's deletion runs.
+    const held = await lockRow(t, 'quotes', quote.id);
+    const accepting = acceptQuote(t, s.designer, quote).then((res) => res);
+    await waitForLockWaiters(t, 1);
+    const deleting = t.http.delete(`${API}/users/me`).set(s.designer.auth).then((res) => res);
+    await waitForLockWaiters(t, 2);
+    await held.release();
+
+    const [accepted, deleted] = await Promise.all([accepting, deleting]);
+    expect(deleted.status).toBe(200);
+    expect(accepted.status).toBe(201);
+    expect((await t.prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe('ACCEPTED');
+  });
+
+  it('a quote submitted while its author deletes the account is not left open', async () => {
+    const s = await marketplaceScenario(t);
+    // The deletion holds the account (and has already withdrawn the open quotes it found).
+    const deletion = await holdInTransaction(t, (tx) =>
+      tx.user.update({ where: { id: s.jeweler.id }, data: { deletedAt: new Date() } }),
+    );
+    const submitting = t.http
+      .post(`${API}/quotes`)
+      .set(s.jeweler.auth)
+      .send({ conversationId: s.conversation.id, designId: s.design.id, materialsCost: 100, laborCost: 50, etaBusinessDays: 10 })
+      .then((res) => res);
+    await waitForLockWaiters(t, 1).catch(() => undefined);
+    await deletion.release();
+
+    const submitted = await submitting;
+    expect(submitted.status).toBe(401);
+    expect(await t.prisma.quote.count({ where: { authorUserId: s.jeweler.id, status: 'PENDING' } })).toBe(0);
+  });
+
+  it('an open quote whose author has deleted the account cannot be accepted', async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    await t.prisma.user.update({ where: { id: s.jeweler.id }, data: { deletedAt: new Date() } });
+
+    const res = await acceptQuote(t, s.designer, quote).expect(409);
+    expect(res.body.code).toBe('QUOTE_NOT_PENDING');
+    const design = await t.prisma.design.findUniqueOrThrow({ where: { id: s.design.id } });
+    expect(design.status).toBe('PUBLISHED');
+    expect(design.acceptedQuoteId).toBeNull();
   });
 
   it('reviews of a jeweler that is no longer listed are not served publicly', async () => {

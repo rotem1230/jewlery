@@ -4,7 +4,7 @@ import { CheckoutSession, CheckoutStatus, Prisma, SubscriptionStatus, User } fro
 import { EventLogService } from '../audit/event-log.service';
 import { resolvePaymentProvider } from '../common/payments/payment-provider';
 import { PrismaService } from '../database/prisma.service';
-import { lockUser } from '../database/row-locks';
+import { lockPaymentInvoice, lockUser } from '../database/row-locks';
 import { billingCyclePeriodMs } from './billing-periods';
 import { PaymentWebhookDto, SubscribeDto } from './dto/subscription.dto';
 import { describeMoney, isExactPayment } from './money';
@@ -105,6 +105,11 @@ export class CheckoutService {
       return { outcome: 'NEEDS_REVIEW', note: `Payment for an unknown checkout ${dto.checkoutId}` };
     }
     await lockUser(tx, found.userId);
+    if (dto.invoiceId) {
+      // That invoice's own payment notice may be applied right now without a known subscription:
+      // whichever comes second sees the other (see applyPaidInvoice).
+      await lockPaymentInvoice(tx, dto.invoiceId);
+    }
     const session = await tx.checkoutSession.findUniqueOrThrow({
       where: { id: dto.checkoutId },
       include: { plan: true, user: { select: { deletedAt: true } } },
@@ -114,11 +119,28 @@ export class CheckoutService {
     const paidExactly = isExactPayment(dto.amount, dto.currency, session.amount, session.currency);
 
     if (session.status === CheckoutStatus.COMPLETED) {
-      return paidExactly
+      if (!paidExactly) {
+        return {
+          outcome: 'NEEDS_REVIEW',
+          note: `Paid ${paid} for checkout ${session.id}, already completed at ${price}`,
+          subscriptionId: session.subscriptionId,
+        };
+      }
+      // Only the first charge announced again is already accounted for. Another invoice (or none
+      // named) on a completed checkout is a charge nothing applied: kept for review, never dropped.
+      const firstCharge =
+        dto.invoiceId && session.subscriptionId
+          ? await tx.subscriptionInvoice.findUnique({
+              where: {
+                subscriptionId_providerInvoiceId: { subscriptionId: session.subscriptionId, providerInvoiceId: dto.invoiceId },
+              },
+            })
+          : null;
+      return firstCharge
         ? { outcome: 'IGNORED', note: 'Checkout already completed', subscriptionId: session.subscriptionId }
         : {
             outcome: 'NEEDS_REVIEW',
-            note: `Paid ${paid} for checkout ${session.id}, already completed at ${price}`,
+            note: `Paid ${paid} for checkout ${session.id}, already completed with its first invoice; this charge was not applied`,
             subscriptionId: session.subscriptionId,
           };
     }

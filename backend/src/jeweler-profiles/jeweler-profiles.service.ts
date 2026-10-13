@@ -13,6 +13,7 @@ import { toJsonValue } from '../audit/json.util';
 import { AppConfigService } from '../cms/app-config.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
+import { lockJewelerProfile } from '../database/row-locks';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
@@ -325,14 +326,23 @@ export class JewelerProfilesService {
     const profile = await this.getOwnProfile(userId);
     await this.uploads.assertOwnedImage(dto.uploadId, userId, 'uploadId');
 
-    return this.prisma.portfolioItem.create({
-      data: {
-        profileId: profile.id,
-        uploadId: dto.uploadId,
-        title: dto.title,
-        sortOrder: dto.sortOrder ?? 0,
-        isSelectedWork: dto.isSelectedWork ?? true,
-      },
+    // One item per picture: adding a picture already in the portfolio (a repeated or simultaneous
+    // request) returns the existing item, checked under the profile's lock.
+    return this.prisma.$transaction(async (tx) => {
+      await lockJewelerProfile(tx, profile.id);
+      const existing = await tx.portfolioItem.findFirst({ where: { profileId: profile.id, uploadId: dto.uploadId } });
+      if (existing) {
+        return existing;
+      }
+      return tx.portfolioItem.create({
+        data: {
+          profileId: profile.id,
+          uploadId: dto.uploadId,
+          title: dto.title,
+          sortOrder: dto.sortOrder ?? 0,
+          isSelectedWork: dto.isSelectedWork ?? true,
+        },
+      });
     });
   }
 

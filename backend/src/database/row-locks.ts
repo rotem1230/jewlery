@@ -27,3 +27,18 @@ export async function lockSubscription(tx: Tx, subscriptionId: string): Promise<
 export async function shareLockUser(tx: Tx, userId: string): Promise<void> {
   await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId}::uuid FOR SHARE`;
 }
+
+/** Same as lockUser, for changes to one jeweler profile's own content (its portfolio). */
+export async function lockJewelerProfile(tx: Tx, profileId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "jeweler_profiles" WHERE id = ${profileId}::uuid FOR NO KEY UPDATE`;
+}
+
+/**
+ * Serializes, until the transaction ends, the payment events about one provider invoice that have
+ * no row to lock in common (a checkout recording its first invoice, and that invoice's own payment
+ * notice arriving without a known subscription). Taken after any account lock, never before one.
+ */
+export async function lockPaymentInvoice(tx: Tx, providerInvoiceId: string): Promise<void> {
+  // Selected FROM the function: its own result is void, which Prisma cannot read back.
+  await tx.$queryRaw`SELECT 1 AS locked FROM pg_advisory_xact_lock(hashtextextended(${`payment-invoice:${providerInvoiceId}`}, 0))`;
+}

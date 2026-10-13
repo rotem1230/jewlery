@@ -7,6 +7,7 @@ import { BusinessProfileSummary } from '@/src/components/jeweler/BusinessProfile
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { addPortfolioItem, publishJewelerProfile } from '@/src/api/jewelerProfiles'
 import { parseApiError } from '@/src/lib/api'
+import { portfolioItemsToAdd } from '@/src/lib/portfolio'
 import { useTranslation } from '@/src/i18n'
 import type { ProfileStackParamList } from '@/src/navigation/types'
 import heroRing from '../../../assets/images/home/hero-ring.png'
@@ -26,10 +27,8 @@ export function BusinessProfilePreviewScreen() {
     setBusy(true)
     try {
       await publishJewelerProfile()
-      for (const [index, item] of gallery.entries()) {
-        if (item.uploadId) {
-          await addPortfolioItem({ uploadId: item.uploadId, title: item.title, sortOrder: index })
-        }
+      for (const item of portfolioItemsToAdd(gallery)) {
+        await addPortfolioItem(item)
       }
       navigation.navigate('BusinessProfileView')
     } catch (err) {

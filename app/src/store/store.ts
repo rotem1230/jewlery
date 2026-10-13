@@ -27,6 +27,8 @@ type AuthState = {
   user: AuthUser | null
   accessToken: string | null
   refreshToken: string | null
+  /** "Remember me": false keeps this session in memory only, refreshed tokens included. */
+  persist: boolean
   bootstrapped: boolean
 }
 
@@ -34,6 +36,7 @@ const initialState: AuthState = {
   user: null,
   accessToken: null,
   refreshToken: null,
+  persist: true,
   bootstrapped: false,
 }
 
@@ -58,6 +61,10 @@ const authSlice = createSlice({
       state.user = action.payload.user
       state.accessToken = action.payload.accessToken
       state.refreshToken = action.payload.refreshToken
+      // A sign-in states its choice; a token refresh or role switch keeps the session's own.
+      if (action.payload.persist !== undefined) {
+        state.persist = action.payload.persist
+      }
     },
     setActiveRole(state, action: PayloadAction<UserRole>) {
       if (state.user) {
@@ -68,6 +75,8 @@ const authSlice = createSlice({
       state.user = null
       state.accessToken = null
       state.refreshToken = null
+      // Kept: a session lost to the server (a password change, a refused refresh) is followed by
+      // a sign-in that states no choice; the sign-in screens always state theirs.
     },
     /** Dev/demo: enter app without API */
     enterDemo(state, action: PayloadAction<UserRole>) {
@@ -108,8 +117,8 @@ const authPersistMiddleware: Middleware = (api) => (next) => (action) => {
   if (setSession.match(action) && action.payload.persist === false) {
     void clearAuthSession()
   } else if (enterDemo.match(action) || setSession.match(action) || setActiveRole.match(action)) {
-    const { user, accessToken, refreshToken } = (api.getState() as RootState).auth
-    if (user && accessToken && refreshToken) {
+    const { user, accessToken, refreshToken, persist } = (api.getState() as RootState).auth
+    if (persist && user && accessToken && refreshToken) {
       const session: PersistedAuthSession = { user, accessToken, refreshToken }
       void saveAuthSession(session)
     }

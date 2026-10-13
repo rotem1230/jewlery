@@ -49,7 +49,7 @@ export class UsersController {
   @ApiResponse({ status: 401, description: 'Current password is incorrect' })
   @ApiResponse({ status: 400, description: 'New password does not meet the password policy' })
   changePassword(@Req() req: AuthedRequest, @Body() dto: ChangePasswordDto) {
-    return this.usersService.changePassword(req.user.id, dto);
+    return this.usersService.changePassword(req.user, dto);
   }
 
   @Patch('me/preferences')

@@ -67,6 +67,65 @@ describe('API client session handling', () => {
     await expect(apiGet('/designs')).rejects.toBeInstanceOf(ApiError)
     expect(onAuthLost).not.toHaveBeenCalled()
   })
+
+  it('gives up on a refresh that never answers, keeps the session and lets later requests refresh again', async () => {
+    jest.useFakeTimers()
+    try {
+      // A half-open connection: the refresh call neither answers nor fails, and ignores aborts.
+      serve((url) => (url.endsWith('/auth/refresh') ? new Promise<Response>(() => undefined) : respond(401, { success: false })))
+      const first = apiGet('/designs').then(
+        () => 'resolved',
+        (err: unknown) => err,
+      )
+      await jest.advanceTimersByTimeAsync(20_000)
+      expect(await first).toBeInstanceOf(ApiError)
+      expect(onAuthLost).not.toHaveBeenCalled()
+
+      let refreshed = false
+      serve((url) => {
+        if (url.endsWith('/auth/refresh')) {
+          refreshed = true
+          return respond(201, { success: true, data: { tokens: { accessToken: 'new-access', refreshToken: 'refresh-2' } } })
+        }
+        return refreshed ? respond(200, { success: true, data: { ok: 1 } }) : respond(401, { success: false })
+      })
+      await expect(apiGet('/designs')).resolves.toEqual({ ok: 1 })
+      expect(applyTokens).toHaveBeenCalledWith({ accessToken: 'new-access', refreshToken: 'refresh-2' })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('a refresh answer for a session that was replaced meanwhile does not touch the new session', async () => {
+    let current = 'refresh-1'
+    setAuthSessionBridge({
+      getAccessToken: () => 'expired-access',
+      getRefreshToken: () => current,
+      applyTokens,
+      onAuthLost,
+    })
+    // The user signs in again while the old session's refresh is on its way, and is refused.
+    serve((url) => {
+      if (url.endsWith('/auth/refresh')) {
+        current = 'refresh-of-new-login'
+        return respond(401, { success: false })
+      }
+      return respond(401, { success: false })
+    })
+    await expect(apiGet('/designs')).rejects.toBeInstanceOf(ApiError)
+    expect(onAuthLost).not.toHaveBeenCalled()
+
+    current = 'refresh-1'
+    serve((url) => {
+      if (url.endsWith('/auth/refresh')) {
+        current = 'refresh-of-new-login'
+        return respond(201, { success: true, data: { tokens: { accessToken: 'old-access', refreshToken: 'old-refresh' } } })
+      }
+      return respond(401, { success: false })
+    })
+    await expect(apiGet('/designs')).rejects.toBeInstanceOf(ApiError)
+    expect(applyTokens).not.toHaveBeenCalled()
+  })
 })
 
 describe('API error messages', () => {

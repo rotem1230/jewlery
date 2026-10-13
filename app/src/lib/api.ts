@@ -40,7 +40,11 @@ type AuthSessionBridge = {
   onAuthLost: () => void
 }
 
-type RefreshOutcome = 'rotated' | 'rejected' | 'unavailable'
+/**
+ * `superseded`: the session changed while its refresh was on the way (signed out, or signed in
+ * again); the answer belongs to the old session and is not applied to the new one.
+ */
+type RefreshOutcome = 'rotated' | 'rejected' | 'unavailable' | 'superseded'
 
 let authBridge: AuthSessionBridge | null = null
 let refreshWaiter: Promise<RefreshOutcome> | null = null
@@ -92,24 +96,38 @@ async function rotateAccessToken(): Promise<RefreshOutcome> {
   const refreshToken = authBridge?.getRefreshToken() ?? null
   if (!refreshToken || refreshToken === 'demo') return 'unavailable'
   if (!refreshWaiter) {
-    refreshWaiter = (async (): Promise<RefreshOutcome> => {
+    const managed = withTimeout(undefined, DEFAULT_TIMEOUT_MS)
+    let giveUp!: () => void
+    // Every request that got a 401 waits on this one refresh: it must end even when the
+    // connection hangs without honouring the abort (React Native has no default fetch timeout).
+    const timedOut = new Promise<RefreshOutcome>((resolve) => {
+      giveUp = () => resolve('unavailable')
+      managed.signal.addEventListener('abort', giveUp, { once: true })
+    })
+    const refreshed = (async (): Promise<RefreshOutcome> => {
       try {
         const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
+          signal: managed.signal,
         })
+        if (authBridge?.getRefreshToken() !== refreshToken) return 'superseded'
         if (res.status === 401) return 'rejected'
         if (!res.ok) return 'unavailable'
         const json = (await res.json()) as { data?: { tokens?: AuthTokens } }
         const tokens = json.data?.tokens
         if (!tokens?.accessToken || !tokens?.refreshToken) return 'unavailable'
+        if (authBridge?.getRefreshToken() !== refreshToken) return 'superseded'
         authBridge?.applyTokens(tokens)
         return 'rotated'
       } catch {
         return 'unavailable'
       }
-    })().finally(() => {
+    })()
+    refreshWaiter = Promise.race([refreshed, timedOut]).finally(() => {
+      managed.signal.removeEventListener('abort', giveUp)
+      managed.done()
       refreshWaiter = null
     })
   }
@@ -151,7 +169,8 @@ async function sendRequest<T>(path: string, options: RequestOptions, didRefresh:
       path !== '/auth/refresh'
     ) {
       const outcome = await rotateAccessToken()
-      if (outcome === 'rotated') return sendRequest<T>(path, options, true)
+      // Superseded: retried once with whatever session is current now.
+      if (outcome === 'rotated' || outcome === 'superseded') return sendRequest<T>(path, options, true)
       if (outcome === 'rejected') authBridge?.onAuthLost()
     }
     if (!res.ok) {

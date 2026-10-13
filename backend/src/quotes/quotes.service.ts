@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import {
   ContentPageStatus,
@@ -21,7 +22,9 @@ import { EventLogService } from '../audit/event-log.service';
 import { ChatGateway } from '../chat/chat.gateway';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
+import { AUTH_ERROR } from '../auth/constants';
 import { PrismaService } from '../database/prisma.service';
+import { shareLockUser } from '../database/row-locks';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, MAX_AMOUNT, UpdateQuoteDto } from './dto/quote.dto';
 
@@ -190,6 +193,14 @@ export class QuotesService {
     });
 
     const { quote, message } = await this.prisma.$transaction(async (tx) => {
+      // The author's account in share mode: a deletion of it (which withdraws the author's open
+      // quotes under the account lock) either finished first and is seen here, or waits for this
+      // quote and then withdraws it too. A quote never stays open for an account that is gone.
+      await shareLockUser(tx, user.id);
+      const author = await tx.user.findUniqueOrThrow({ where: { id: user.id }, select: { deletedAt: true } });
+      if (author.deletedAt) {
+        throw new UnauthorizedException({ success: false, message: 'Session ended', code: AUTH_ERROR.TOKEN_INVALID });
+      }
       // Shared lock: an accept on this design (FOR UPDATE) cannot interleave, so a quote is never
       // added to a design that was completed after the checks above.
       const [current] = await tx.$queryRaw<Array<{ status: string; deletedAt: Date | null }>>`
@@ -400,6 +411,20 @@ export class QuotesService {
           throw new AcceptConflict('DESIGN_NOT_OPEN', 'This design already has an accepted quote');
         }
 
+        // Every open quote of the design is locked in id order before any of them changes, the
+        // order account deletion locks a jeweler's open quotes in: with two open quotes of one
+        // jeweler here, the two never wait on each other in a cycle.
+        const open = await tx.$queryRaw<Array<{ id: string; authorUserId: string; conversationId: string }>>`
+          SELECT "id", "authorUserId", "conversationId" FROM "quotes"
+           WHERE "designId" = ${existing.designId}::uuid AND "status" = 'PENDING'
+           ORDER BY "id"
+           FOR UPDATE`;
+        // A quote whose author closed the account is not a live offer (its contact details are gone).
+        const author = await tx.user.findUnique({ where: { id: existing.authorUserId }, select: { deletedAt: true } });
+        if (!author || author.deletedAt) {
+          throw new AcceptConflict('QUOTE_NOT_PENDING', 'The jeweler who made this quote has closed their account');
+        }
+
         const claimed = await tx.quote.updateMany({
           where: {
             id,
@@ -432,13 +457,9 @@ export class QuotesService {
           },
         });
 
-        // Locked before they are declined: a concurrent withdraw or edit either committed first
-        // (and is respected) or waits for this decision.
-        const declined = await tx.$queryRaw<Array<{ id: string; authorUserId: string; conversationId: string }>>`
-          SELECT "id", "authorUserId", "conversationId" FROM "quotes"
-           WHERE "designId" = ${existing.designId}::uuid AND "id" <> ${id}::uuid AND "status" = 'PENDING'
-           ORDER BY "id"
-           FOR UPDATE`;
+        // Locked above, before the claim: a concurrent withdraw or edit either committed first (and is
+        // respected) or waits for this decision.
+        const declined = open.filter((other) => other.id !== id);
         if (declined.length > 0) {
           await tx.quote.updateMany({
             where: { id: { in: declined.map((q) => q.id) } },

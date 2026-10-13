@@ -36,6 +36,17 @@ import { lockUser } from '../database/row-locks';
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/** Account statuses a sign-in opens a session for (the others are refused with their reason). */
+const SIGN_IN_STATUSES: UserStatus[] = [UserStatus.ACTIVE];
+
+function sessionEnded(): UnauthorizedException {
+  return new UnauthorizedException({
+    success: false,
+    message: 'Session ended',
+    code: AUTH_ERROR.TOKEN_INVALID,
+  });
+}
+
 function invalidCredentials(): UnauthorizedException {
   return new UnauthorizedException({
     success: false,
@@ -331,12 +342,31 @@ export class AuthService implements OnModuleDestroy {
       throw invalidCredentials();
     }
 
-    // The password is proven: earlier failures no longer count, whatever the account's status
-    // (an unverified owner signing in correctly must not lock themselves out).
-    const updated = await this.prisma.user.update({
-      where: { id: user.id },
-      data: { loginAttempts: 0, lockedUntil: null },
+    // Under the account lock, the session is created only if the password just proven is still the
+    // account's: a password change or reset that committed meanwhile ended every session, and this
+    // sign-in used the old password. Ending all sessions takes the same lock, so it either comes
+    // first (and is seen here) or waits and also ends the session created here.
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const current = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+      if (current.deletedAt || current.passwordHash !== user.passwordHash) {
+        return null;
+      }
+      // The password is proven: earlier failures no longer count, whatever the account's status
+      // (an unverified owner signing in correctly must not lock themselves out).
+      const updated = await tx.user.update({
+        where: { id: user.id },
+        data: { loginAttempts: 0, lockedUntil: null },
+      });
+      if (!SIGN_IN_STATUSES.includes(updated.status)) {
+        return { updated, tokens: null };
+      }
+      return { updated, tokens: await this.tokens.issueTokens(this.sanitize(updated), undefined, tx) };
     });
+    if (!outcome) {
+      throw invalidCredentials();
+    }
+    const { updated, tokens } = outcome;
 
     // Status is only revealed to someone who proved knowledge of the password.
     if (updated.status === UserStatus.SUSPENDED || updated.status === UserStatus.DEACTIVATED) {
@@ -353,9 +383,11 @@ export class AuthService implements OnModuleDestroy {
         code: AUTH_ERROR.EMAIL_NOT_VERIFIED,
       });
     }
+    if (!tokens) {
+      throw invalidCredentials();
+    }
 
-    const safe = this.sanitize(updated);
-    return { user: safe, tokens: await this.tokens.issueTokens(safe) };
+    return { user: this.sanitize(updated), tokens };
   }
 
   /**
@@ -562,14 +594,26 @@ export class AuthService implements OnModuleDestroy {
       });
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id: user.id },
-      data: { activeRole: dto.role },
+    // Under the account lock, and only while the session this request came with is still current:
+    // ending all sessions while it waited ends it too, and must not be followed by a new pair.
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const current = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+      if (
+        current.deletedAt ||
+        current.sessionVersion !== user.sessionVersion ||
+        !SIGN_IN_STATUSES.includes(current.status)
+      ) {
+        return null;
+      }
+      const updated = await tx.user.update({ where: { id: user.id }, data: { activeRole: dto.role } });
+      const safe = this.sanitize(updated);
+      return { user: safe, tokens: await this.tokens.issueTokens(safe, undefined, tx) };
     });
-
-    const safe = this.sanitize(updated);
-    const tokens = await this.tokens.issueTokens(safe);
-    return { user: safe, tokens };
+    if (!outcome) {
+      throw sessionEnded();
+    }
+    return outcome;
   }
 
   async revokeAll(userId: string): Promise<{ ok: true }> {

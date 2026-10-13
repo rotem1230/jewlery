@@ -1,6 +1,6 @@
 import { Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PaymentEvent, PlanCatalog, Prisma, Subscription, SubscriptionStatus } from '@prisma/client';
+import { CheckoutStatus, PaymentEvent, PlanCatalog, Prisma, Subscription, SubscriptionStatus } from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { createHash } from 'crypto';
@@ -8,7 +8,7 @@ import { EventLogService } from '../audit/event-log.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { isTransientDatabaseError } from '../database/prisma-errors';
 import { PrismaService } from '../database/prisma.service';
-import { lockSubscription, lockUser } from '../database/row-locks';
+import { lockPaymentInvoice, lockSubscription, lockUser } from '../database/row-locks';
 import { billingCyclePeriodMs } from './billing-periods';
 import { PaymentWebhookDto } from './dto/subscription.dto';
 import { CheckoutService } from './checkout.service';
@@ -374,7 +374,7 @@ export class PaymentWebhookService {
   private async applyPaidInvoice(tx: Tx, dto: PaymentWebhookDto): Promise<AppliedEvent> {
     const sub = await this.lockedSubscription(tx, dto.subscriptionId);
     if (!sub) {
-      return { outcome: 'NEEDS_REVIEW', note: 'Paid invoice for an unknown subscription' };
+      return (await this.recordedFirstInvoice(tx, dto)) ?? { outcome: 'NEEDS_REVIEW', note: 'Paid invoice for an unknown subscription' };
     }
     const subscriptionId = sub.id;
     if (sub.user.deletedAt) {
@@ -432,6 +432,48 @@ export class PaymentWebhookService {
     });
     await this.subscriptions.allocateLeads(tx, sub, sub.plan, start, end);
     return { outcome: 'APPLIED', subscriptionId };
+  }
+
+  /**
+   * A paid invoice without a known subscription can be the first charge of a checkout, announced
+   * on its own: once that checkout has recorded the invoice at the same amount, the money is
+   * accounted for. Serialized with the checkout on the invoice id, so in either order (or at the
+   * same moment) one of the two settles it. Only that case: the invoice id must belong to exactly
+   * one subscription (ids are unique per subscription only), be its first invoice, and that
+   * subscription must come from a completed checkout; anything else stays for review.
+   */
+  private async recordedFirstInvoice(tx: Tx, dto: PaymentWebhookDto): Promise<AppliedEvent | null> {
+    if (!dto.invoiceId) {
+      return null;
+    }
+    await lockPaymentInvoice(tx, dto.invoiceId);
+    const recorded = await tx.subscriptionInvoice.findMany({ where: { providerInvoiceId: dto.invoiceId }, take: 2 });
+    if (recorded.length !== 1) {
+      return null;
+    }
+    const [invoice] = recorded;
+    if (!isExactPayment(dto.amount, dto.currency, invoice.amount, invoice.currency)) {
+      return null;
+    }
+    const [checkout, first] = await Promise.all([
+      tx.checkoutSession.findFirst({
+        where: { subscriptionId: invoice.subscriptionId, status: CheckoutStatus.COMPLETED },
+        select: { id: true },
+      }),
+      tx.subscriptionInvoice.findFirst({
+        where: { subscriptionId: invoice.subscriptionId },
+        orderBy: [{ periodStart: 'asc' }, { id: 'asc' }],
+        select: { id: true },
+      }),
+    ]);
+    if (!checkout || first?.id !== invoice.id) {
+      return null;
+    }
+    return {
+      outcome: 'IGNORED',
+      note: `Invoice already applied (first charge of checkout ${checkout.id})`,
+      subscriptionId: invoice.subscriptionId,
+    };
   }
 
   /** A failed charge matters only once the paid (or trial) period is over; a late notice is ignored. */

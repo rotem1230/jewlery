@@ -8,7 +8,7 @@ import {
   sendImageMessage,
 } from '@/src/api/chat'
 import { uploadChatFile, uploadContentUrl, type LocalFile } from '@/src/api/uploads'
-import { mediaUrl } from '@/src/lib/media'
+import { mediaUrl, nextLinkRefreshDelay } from '@/src/lib/media'
 import { connectConversationSocket, type ConversationSocket } from '@/src/lib/socket'
 import { formatClock, formatDayLabel, groupMessagesByDay } from '@/src/lib/chatTime'
 import { useAppSelector } from '@/src/store/hooks'
@@ -36,6 +36,8 @@ export type ThreadDayGroup = {
 }
 
 const PAGE_LIMIT = 50
+/** After a failed link refresh, the next try waits at least this long. */
+const LINK_REFRESH_RETRY_MS = 30_000
 
 /**
  * Single conversation: chronological messages with day separators, cursor
@@ -104,6 +106,37 @@ export function useConversationThread(conversationId: string) {
   useEffect(() => {
     void loadInitial()
   }, [loadInitial, accessToken])
+
+  // Images and voice notes are served through signed links that expire (15 minutes by default):
+  // shortly before the first one in the newest page does, that page is fetched again and its
+  // messages, with fresh links, replace the ones held. Older pages keep theirs until reopened.
+  const [linkRefreshFailures, setLinkRefreshFailures] = useState(0)
+  useEffect(() => {
+    const due = nextLinkRefreshDelay(messages.slice(-PAGE_LIMIT).map((m) => m.imageUpload?.contentUrl))
+    if (due === null) return
+    const delay = linkRefreshFailures > 0 ? Math.max(due, LINK_REFRESH_RETRY_MS) : due
+    let cancelled = false
+    const timer = setTimeout(() => {
+      getConversationMessages(conversationId, { limit: PAGE_LIMIT })
+        .then((page) => {
+          if (cancelled || !mountedRef.current) return
+          const fresh = new Map(page.items.map((m) => [m.id, m]))
+          setMessages((prev) => prev.map((m) => fresh.get(m.id) ?? m))
+          // A link the reload did not renew (its message was not in the page) is retried slowly,
+          // never in a tight loop.
+          const renewed = messages.slice(-PAGE_LIMIT).map((m) => (fresh.get(m.id) ?? m).imageUpload?.contentUrl)
+          const stillDue = nextLinkRefreshDelay(renewed)
+          setLinkRefreshFailures(stillDue !== null && stillDue <= LINK_REFRESH_RETRY_MS ? (n) => n + 1 : 0)
+        })
+        .catch(() => {
+          if (!cancelled && mountedRef.current) setLinkRefreshFailures((n) => n + 1)
+        })
+    }, delay)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [messages, conversationId, linkRefreshFailures])
 
   const loadEarlier = useCallback(async () => {
     if (!nextCursor || loadingEarlier) return

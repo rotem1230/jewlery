@@ -16,6 +16,15 @@ updates:
     groups:
       app-minor-and-patch:
         update-types: [minor, patch]
+    # CI does not build the native app, so these would pass it and still break the app on devices:
+    # upgrade them by hand, with a device build.
+    ignore:
+      # 4.2.7+ installs its own nested react-native.
+      - dependency-name: nativewind
+        versions: ['>=4.2.7']
+      # A react-native 0.x minor is a breaking release.
+      - dependency-name: react-native
+        update-types: ['version-update:semver-minor']
   - package-ecosystem: github-actions
     directory: /
     schedule:

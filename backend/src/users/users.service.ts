@@ -83,7 +83,9 @@ export class UsersService {
     return this.sanitize(updated);
   }
 
-  async changePassword(userId: string, dto: ChangePasswordDto): Promise<{ ok: true }> {
+  /** `requester`: the signed-in account as its access token was checked (its session version). */
+  async changePassword(requester: Pick<User, 'id' | 'sessionVersion'>, dto: ChangePasswordDto): Promise<{ ok: true }> {
+    const userId = requester.id;
     const user = await this.prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
     if (!user || !user.passwordHash) {
       throw new UnauthorizedException({
@@ -114,12 +116,33 @@ export class UsersService {
 
     const passwordHash = await this.password.hash(dto.newPassword);
     // Every session ends with the old password, this one included: the app signs in again with
-    // the new password, other devices are signed out at once.
-    await this.prisma.$transaction(async (tx) => {
+    // the new password, other devices are signed out at once. Under the account lock the password
+    // checked above must still be the account's and this session still current: a reset (or any
+    // other end of all sessions) that committed meanwhile is never overwritten by this request.
+    const changed = await this.prisma.$transaction(async (tx) => {
       await lockUser(tx, userId);
+      const current = await tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { passwordHash: true, sessionVersion: true, deletedAt: true },
+      });
+      if (
+        current.deletedAt ||
+        current.passwordHash !== user.passwordHash ||
+        current.sessionVersion !== requester.sessionVersion
+      ) {
+        return false;
+      }
       await tx.user.update({ where: { id: userId }, data: { passwordHash } });
       await this.tokens.endAllSessions(tx, userId);
+      return true;
     });
+    if (!changed) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Session ended',
+        code: AUTH_ERROR.TOKEN_INVALID,
+      });
+    }
     this.tokens.announceSessionsEnded(userId);
 
     await this.audit.log({

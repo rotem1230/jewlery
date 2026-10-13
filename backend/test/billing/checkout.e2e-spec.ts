@@ -159,9 +159,30 @@ describe('buying a paid plan', () => {
   it('two confirmations of one checkout at the same moment complete it once', async () => {
     const user = await registerVerified(t);
     const checkout = await startCheckout(user).expect(201);
-    const outcomes = await Promise.all([complete(checkout.body.data.id, 49.9), complete(checkout.body.data.id, 49.9)]);
+    const invoiceId = `in_${randomUUID()}`;
+    const outcomes = await Promise.all([
+      complete(checkout.body.data.id, 49.9, { invoiceId }),
+      complete(checkout.body.data.id, 49.9, { invoiceId }),
+    ]);
     expect(outcomes.sort()).toEqual(['APPLIED', 'IGNORED']);
     expect(await t.prisma.subscription.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  it('a second, separately invoiced charge on a completed checkout is held for review, not ignored', async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId: `in_${randomUUID()}` })).toBe('APPLIED');
+    const second = await completeEvent(checkout.body.data.id, 49.9, { invoiceId: `in_${randomUUID()}` });
+    expect(second.outcome).toBe('NEEDS_REVIEW');
+    expect(second.note).toContain(checkout.body.data.id);
+    expect(await t.prisma.subscription.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  it('a completed checkout confirmed again without an invoice id is held for review', async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    expect(await complete(checkout.body.data.id, 49.9)).toBe('APPLIED');
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId: null })).toBe('NEEDS_REVIEW');
   });
 
   it('the first invoice paid at checkout is not applied a second time as a renewal', async () => {
@@ -206,6 +227,63 @@ describe('buying a paid plan', () => {
     const settled = await t.prisma.paymentEvent.findUniqueOrThrow({ where: { id: before.id } });
     expect(settled.outcome).toBe('IGNORED');
     expect(settled.note).toContain(checkout.body.data.id);
+  });
+
+  async function paidInvoiceWithoutSubscription(invoiceId: string, amount: number) {
+    const providerEventId = `evt_${randomUUID()}`;
+    const body = JSON.stringify({ provider: 'test', providerEventId, type: 'invoice.paid', invoiceId, amount, currency: 'ILS', payload: {} });
+    await t.http.post(`${API}/webhooks/payments`).set('Content-Type', 'application/json').set('x-webhook-signature', signed(body)).send(body).expect(201);
+    return t.prisma.paymentEvent.findUniqueOrThrow({ where: { provider_providerEventId: { provider: 'test', providerEventId } } });
+  }
+
+  it("the first invoice's payment arriving after the checkout confirmation is settled, not held for review", async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    const invoiceId = `in_${randomUUID()}`;
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId })).toBe('APPLIED');
+
+    const late = await paidInvoiceWithoutSubscription(invoiceId, 49.9);
+    expect(late.outcome).toBe('IGNORED');
+    // The same invoice reported with another amount is still money nobody applied.
+    expect((await paidInvoiceWithoutSubscription(invoiceId, 99.8)).outcome).toBe('NEEDS_REVIEW');
+  });
+
+  it('a renewal invoice reported again without its subscription is held for review (only a first charge is settled)', async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId: `in_${randomUUID()}` })).toBe('APPLIED');
+    const [sub] = await live(user.id);
+    const renewalId = `in_${randomUUID()}`;
+    const providerEventId = `evt_${randomUUID()}`;
+    const renewal = JSON.stringify({ provider: 'test', providerEventId, type: 'invoice.paid', subscriptionId: sub.id, invoiceId: renewalId, amount: 49.9, currency: 'ILS', payload: {} });
+    await t.http.post(`${API}/webhooks/payments`).set('Content-Type', 'application/json').set('x-webhook-signature', signed(renewal)).send(renewal).expect(201);
+
+    expect((await paidInvoiceWithoutSubscription(renewalId, 49.9)).outcome).toBe('NEEDS_REVIEW');
+  });
+
+  it('an invoice id recorded for two checkouts is ambiguous: its payment without a subscription is held for review', async () => {
+    const invoiceId = `in_${randomUUID()}`;
+    for (const user of [await registerVerified(t), await registerVerified(t)]) {
+      const checkout = await startCheckout(user).expect(201);
+      expect(await complete(checkout.body.data.id, 49.9, { invoiceId })).toBe('APPLIED');
+    }
+    expect((await paidInvoiceWithoutSubscription(invoiceId, 49.9)).outcome).toBe('NEEDS_REVIEW');
+  });
+
+  it("the first invoice's payment arriving while the confirmation is being applied is settled too", async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    const invoiceId = `in_${randomUUID()}`;
+    // The confirmation stops after recording the first invoice, just before it closes the checkout.
+    const held = await lockRow(t, 'checkout_sessions', checkout.body.data.id);
+    const confirming = complete(checkout.body.data.id, 49.9, { invoiceId });
+    await waitForLockWaiters(t, 1);
+    const paying = paidInvoiceWithoutSubscription(invoiceId, 49.9);
+    await waitForLockWaiters(t, 2).catch(() => undefined);
+    await held.release();
+
+    expect(await confirming).toBe('APPLIED');
+    expect((await paying).outcome).toBe('IGNORED');
   });
 
   it('once a checkout is held for review, a later payment on it is held too (never applied behind the review)', async () => {
@@ -257,8 +335,9 @@ describe('buying a paid plan', () => {
   it('a checkout is completed once, however many events confirm it', async () => {
     const user = await registerVerified(t);
     const checkout = await startCheckout(user).expect(201);
-    expect(await complete(checkout.body.data.id, 49.9)).toBe('APPLIED');
-    expect(await complete(checkout.body.data.id, 49.9)).toBe('IGNORED');
+    const invoiceId = `in_${randomUUID()}`;
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId })).toBe('APPLIED');
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId })).toBe('IGNORED');
     expect(await t.prisma.subscription.count({ where: { userId: user.id } })).toBe(1);
   });
 

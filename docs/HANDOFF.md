@@ -8,13 +8,17 @@
 
 השרת (NestJS + Prisma + PostgreSQL) והאפליקציה (React Native) הוקשחו בכמה סבבים. בכל סבב נכתב קודם טסט שנכשל (TDD), ואחר כך התיקון. לכל סבב נעשתה סקירת קוד בלתי תלויה בקונטקסט נקי, וכל תיקון קיבל טסט רגרסיה.
 
-**ההתקדמות מוערכת בכ-80%.** כל העבודה שמורה ב-commit `08bc79b`.
+**עדכון 2026-10-13, סבב 4:** WP10, הסקירה הבלתי תלויה הסופית והתיקונים שלה, ריצה מלאה ודוח הושלמו. פירוט בסעיף 3א. מה שנשאר דורש מכשיר, תשתית או החלטת מוצר (סעיפים 6 ו-8), ולא עבודת קוד פתוחה.
 
-מה שנשאר:
+<details><summary>המצב לפני סבב 4 (לתיעוד)</summary>
+
+ההתקדמות הוערכה אז בכ-80%, והעבודה הייתה שמורה ב-commit `08bc79b`. מה שנשאר:
 - עדכוני תלויות בשרת (WP10).
 - ריצה מלאה אחרונה של כל הבדיקות.
 - סקירה בלתי תלויה סופית.
 - דוח מסכם בעברית.
+
+</details>
 
 ---
 
@@ -58,8 +62,10 @@ git diff a67a5db HEAD --stat   # a67a5db = baseline: הקוד המקורי לפ�
 
 ## 2. כללי סביבה (חשוב: נלמד בדרך הקשה)
 
-1. **אסור לגעת בפרויקט "kuku"** שרץ על אותה מכונה: Expo על 8081, Postgres מוטמע על 54322, ה-jest שלו. אם מנקים תהליכי postgres, לסנן רק לפי נתיב `E:/claude-work/malinvosky/pgtool`.
-2. **דיסקים:** D: מלא, ב-C: יש בערך 2GB. כל דבר כבד נשמר על E:.
+1. **אסור לגעת בפרויקט "kuku"** שרץ על אותה מכונה: Expo על 8081, Postgres מוטמע על 54322, ה-jest שלו. אם מנקים תהליכי postgres, לסנן רק לפי נתיב `E:/claude-work/malinvosky/pgtool`. רצים כאן גם פרויקטים אחרים: RAI (`next dev` על **פורט 3100**, Postgres 18 של RAI) ו-`E:/claude-work/a72c0552` (Firebase emulators ו-Vite). גם בהם לא נוגעים.
+2. **דיסקים:** D: מלא, ב-C: נשארו פחות מ-1GB. כל דבר כבד נשמר על E:.
+2א. **`backend/.env` קיים** (נוצר מערכי בעל הפרויקט, ב-gitignore). הוא כולל **`TRIPO_API_KEY` אמיתי**, ולכן שרת שרץ במצב development קורא אותו וקורא ל-Tripo בתשלום. הטסטים (`NODE_ENV=test`) מתעלמים מ-`.env`. ה-smoke מאפס את `TRIPO_API_KEY` ואת `SMTP_URL`. לסקריפט חי חדש: לאפס את שניהם, ואת `REDIS_URL`.
+2ב. **פורט 3100 תפוס** (RAI). את ה-smoke מריצים עם `SMOKE_API_PORT=3112` (ואם צריך גם `SMOKE_PG_PORT`).
 3. **לא להשתמש ב-npx.** מריצים `node node_modules/...` ישירות.
 4. **משתני סביבה לכל הרצה של השרת:**
    ```bash
@@ -67,7 +73,7 @@ git diff a67a5db HEAD --stat   # a67a5db = baseline: הקוד המקורי לפ�
    ```
 5. **הרצת טסטים בשרת** (מתוך `backend/`):
    ```bash
-   node node_modules/jest/bin/jest.js --runInBand --forceExit                 # הכול (unit + e2e), בערך 30–40 דקות
+   node node_modules/jest/bin/jest.js --runInBand --forceExit                 # הכול (unit + e2e): כ-3 דקות על מכונה שקטה, ועוד עד 10 דקות של initdb בעומס
    node node_modules/jest/bin/jest.js --selectProjects unit                   # unit בלבד, מהיר
    node node_modules/jest/bin/jest.js --runInBand --forceExit test/billing    # תיקייה אחת
    node node_modules/typescript/bin/tsc -p tsconfig.test.json --noEmit       # typecheck
@@ -86,6 +92,8 @@ git diff a67a5db HEAD --stat   # a67a5db = baseline: הקוד המקורי לפ�
    - בשרת הוא **מוריד** את Prisma CLI ל-6.12.0 (לא תואם ל-`@prisma/client` 6.19.3) ואת js-yaml ל-3.x.
    - באפליקציה הוא מעלה את nativewind ל-4.2.7, שמביא **עותק מקונן של react-native 0.85**. זה מסוכן ושוחזר.
    - עדכונים עושים רק ממוקדים, עם `npm update <pkg>`.
+10. **npm 11 לא מריץ install scripts** שלא אושרו (`allowScripts`), וזה תקין כאן: bcrypt 6 טוען prebuild, ו-Prisma client כבר מחולל. אחרי שינוי ב-`schema.prisma` מריצים בעצמך `node node_modules/prisma/build/index.js generate`.
+11. **Prisma ו-`$queryRaw`:** פונקציה שמחזירה `void` (למשל `pg_advisory_xact_lock`) לא ניתנת לקריאה. בוחרים `SELECT 1 FROM fn(...)`.
 
 ---
 
@@ -165,7 +173,48 @@ git diff a67a5db HEAD --stat   # a67a5db = baseline: הקוד המקורי לפ�
 
 ---
 
-## 4. מצב הבדיקות האחרון (לפני ה-commit `08bc79b`)
+## 3א. סבב 4 (2026-10-13): WP10, סקירה סופית ותיקונים
+
+**תלויות (WP10):** חלק ה-`npm update` (Nest 11.2.7, proxy-addr, multer, engine.io, qs, fast-uri) כבר היה ב-`08bc79b`. בסבב הזה:
+- bcrypt 6. אין בו node-pre-gyp, ולכן tar (critical) יצא מהעץ. hash-ים של bcrypt 5 נבדקו ועובדים, גם דרך ה-API.
+- nodemailer 10.1.0 עם types משלו (`@types/nodemailer` הוסר), ו-`@types/bcrypt` 6.
+- override ל-js-yaml של `@nestjs/swagger` (5.4.3), ו-js-yaml מקונן 4.3.2.
+- `npm audit`: לפני 41 (1 critical), אחרי 37 (0 critical). בפרודקשן (`--omit=dev`) נשארו 3, כולם Prisma CLI (deepmerge-ts), וה-API לא טוען אותו.
+
+**ממצאי סקירה שתוקנו, כל אחד בטסט אדום ואז ירוק:**
+- שרת:
+  - שינוי סיסמה שדורס איפוס.
+  - כניסה עם סיסמה שהוחלפה בינתיים.
+  - switch-role אחרי "התנתק מכל המכשירים". **הוכח שהטוקנים עבדו.**
+  - deadlock כששתי הצעות של אותו ג'וולר על אותו עיצוב.
+  - הצעה שנוצרת בזמן מחיקת החשבון, ואישור הצעה של חשבון שנמחק. הבדיקה שתועדה כ-W-M6 **לא הייתה בקוד**, ועכשיו היא קיימת.
+  - חיוב שני על checkout שהושלם.
+  - `invoice.paid` של החיוב הראשון בכל סדר הגעה, באמצעות advisory lock לפי invoice.
+- אפליקציה:
+  - עותק keychain ישן.
+  - "זכור אותי".
+  - refresh בלי timeout, ו-refresh של סשן שהוחלף.
+  - מודל AI שהלך לאיבוד.
+  - קישורי מדיה שפגו.
+  - בדיקת `API_BASE_URL` כבר בזמן ה-build.
+- מסמכים ו-CI:
+  - 7 טענות שגויות תוקנו ב-`production-readiness.md`.
+  - ב-Dependabot: התעלמות מ-nativewind 4.2.7 ומעדכוני minor של react-native.
+- כלים:
+  - ב-smoke: `SMOKE_API_PORT` / `SMOKE_PG_PORT`, ואיפוס מפתחות ה-`.env`.
+- באג קודם שנמצא בסקירה: פרסום פרופיל הוסיף שוב את כל תמונות תיק העבודות. התיקון בשני הצדדים: ב-API ההוספה אידמפוטנטית לכל זוג פרופיל ותמונה, וב-אפליקציה מוסיפים רק תמונות שעוד לא נשמרו. כפילויות שכבר קיימות ב-DB לא נוקו.
+
+## 4. מצב הבדיקות האחרון (סבב 4, אחרי WP10 והתיקונים)
+
+- **שרת:**
+  - typecheck נקי.
+  - ריצה מלאה: 46 קבצים. 481 מתוך 485 טסטים עברו. 4 נכשלו ב-timeout של 60 שניות ב-`test/migrations`, תחת עומס של פרויקטים אחרים (CPU 79%). בריצה חוזרת של `test/migrations` לבד: **17/17**.
+  - drift: "No difference detected".
+  - baseline לפני השינויים: 471/471.
+- **בדיקות מוטציה** על הטסטים החדשים של uploads ו-password: **6/6** נתפסו.
+- **אפליקציה:** jest **38/38**, tsc 0, lint 0 שגיאות ו-82 אזהרות (כמו הבסיס).
+
+### מצב הבדיקות לפני סבב 4 (לתיעוד)
 
 - **שרת:**
   - typecheck נקי.
@@ -185,7 +234,9 @@ git diff a67a5db HEAD --stat   # a67a5db = baseline: הקוד המקורי לפ�
 
 ## 5. מה נשאר, לפי סדר
 
-### 5.1 עדכוני תלויות בשרת (WP10). לא התחיל.
+> **סבב 4:** סעיפים 5.1–5.5 בוצעו (ראו 3א ו-4). הטקסט שלהם נשאר לתיעוד. מה שבאמת נשאר נמצא בסעיפים 6 ו-8.
+
+### 5.1 עדכוני תלויות בשרת (WP10). בוצע בסבב 4.
 יש פגיעויות ידועות: proxy-addr (**critical**, זיוף IP דרך trust-proxy), multer (DoS), engine.io (DoS), qs, fast-uri, js-yaml (דרך `@nestjs/swagger`), ו-nodemailer (SMTP injection; השימוש שלנו לא חשוף, אבל צריך לשדרג).
 
 ```bash
@@ -243,8 +294,18 @@ npm run test:e2e:local                                         # smoke מול AP
   - אין Socket.IO Redis adapter: ניתוק sockets הוא רק ב-instance המטפל, ובשאר יש חסימת join בלבד.
 - **אין שער גרסת מינימום לאפליקציה.** בשחרור הזה צריך force update בחנות.
 - **תלויות toolchain באפליקציה:** כלי build דרך react-native (RN CLI, Metro, Jest, Tailwind). התיקון דורש RN 0.87, Jest 30 ו-Tailwind 4, ולא בוצע בלי בדיקה על מכשיר.
-- **תלויות dev בשרת:** jest 29 (תיקון ב-30), ו-deepmerge-ts ב-Prisma CLI.
-- **מגבלות מוכרות:** limiters לכל instance בלי Redis. ה-backfill של המחיר המוסכם משתמש במחיר הקטלוג ביום ה-migration. overage מחושב לפי מחיר הקטלוג הנוכחי.
+- **תלויות dev בשרת:** jest 29 (תיקון ב-30), ו-deepmerge-ts ב-Prisma CLI (תיקון ב-Prisma 7; ה-API לא טוען אותו).
+- **מגבלות מוכרות:** limiters לכל instance בלי Redis. ה-throttle הגלובלי לכל instance גם עם Redis. ה-backfill של המחיר המוסכם משתמש במחיר הקטלוג ביום ה-migration. overage מחושב לפי מחיר הקטלוג הנוכחי.
+- **סבב 4, אומת בטסטים ובהרצה מקומית בלבד:**
+  - תיקוני האפליקציה (keychain, remember-me, refresh, מודל AI, קישורי מדיה) נבדקו ב-jest, tsc ו-lint. **לא נבדקו על מכשיר.**
+  - החיבור של ה-hook ושל המסך (רענון קישורים בצ'אט, צירוף מודל AI) לא מכוסה בטסט, כי אין react-native testing library.
+- **בדיקות שדורשות מכשיר** (מהסקירה):
+  - שהספרייה react-native-keychain באמת מקושרת. ב-`Podfile.lock` אין לה רשומה.
+  - שב-iOS ה-keychain שורד הסרה והתקנה מחדש של האפליקציה.
+  - ש-"התנתק" במצב offline לא מחזיר את הסשן.
+- **מדיה בעמודים ישנים בצ'אט** (נטענו דרך "earlier messages") מתרעננת רק כשפותחים את השיחה מחדש.
+- **השעיית חשבון:** אין endpoint של אדמין. השעיה ישירה ב-DB לא מעלה את sessionVersion ולא סוגרת sockets, אבל בקשות HTTP כן נחסמות לפי הסטטוס.
+- **אינדקס:** אין אינדקס על `subscription_invoices.providerInvoiceId` לבדו. החיפוש לפיו קורה רק במסלול הנדיר של `invoice.paid` בלי מנוי ידוע. כדאי להוסיף אותו כשמחברים ספק.
 
 ---
 
@@ -266,3 +327,5 @@ npm run test:e2e:local                                         # smoke מול AP
 2. האם המכסה של overage למנוי שנתי צריכה להיות חודשית? כרגע החלון הוא מחזור החיוב, כלומר 365 יום.
 3. איזה ספק תשלומים ייבחר? צריך לכתוב לו adapter לפי חוזה ה-webhook שב-`docs/production-readiness.md` סעיף 4.
 4. האם להוסיף שער גרסת מינימום לאפליקציה לפני השחרור?
+5. **grace window ל-refresh token** (מסבב 4): אם התשובה של refresh הולכת לאיבוד, למשל כשהאפליקציה עוברת לרקע, השימוש הבא בטוקן הישן נחשב גניבה, והמשתמש מנותק. אפשר לאפשר את הטוקן הקודם לכמה שניות. זה מחליש מעט את זיהוי הגניבה. החלטה של מוצר ואבטחה.
+6. **אפליקציה:** להוסיף listener ל-`quote:updated` ו-flow של checkout לתוכניות בתשלום? כרגע הן לא קיימות, והשרת כבר תומך בשתיהן.

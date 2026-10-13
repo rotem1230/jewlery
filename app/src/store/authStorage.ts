@@ -36,17 +36,31 @@ function keychain(): KeychainModule | null {
   }
 }
 
-function parse(raw: string | null | undefined): PersistedAuthSession | null {
+/** What is written: the session plus when it was saved, so the newer of two copies can be told apart. */
+type StoredSession = PersistedAuthSession & { savedAt?: number }
+
+let lastStamp = 0
+/** Strictly increasing within a run (two saves in one millisecond still order correctly). */
+function stamp(): number {
+  lastStamp = Math.max(Date.now(), lastStamp + 1)
+  return lastStamp
+}
+
+function parse(raw: string | null | undefined): StoredSession | null {
   if (!raw) return null
   try {
-    const parsed = JSON.parse(raw) as PersistedAuthSession
+    const parsed = JSON.parse(raw) as StoredSession
     return parsed?.user && parsed.accessToken ? parsed : null
   } catch {
     return null
   }
 }
 
-async function readLegacy(): Promise<PersistedAuthSession | null> {
+function withoutStamp({ user, accessToken, refreshToken }: StoredSession): PersistedAuthSession {
+  return { user, accessToken, refreshToken }
+}
+
+async function readLegacy(): Promise<StoredSession | null> {
   try {
     return parse(await AsyncStorage.getItem(LEGACY_SESSION_KEY))
   } catch {
@@ -64,27 +78,51 @@ async function removeLegacy(): Promise<void> {
 
 export async function loadAuthSession(): Promise<PersistedAuthSession | null> {
   const secure = keychain()
-  if (!secure) return readLegacy()
+  const legacy = await readLegacy()
+  if (!secure) return legacy && withoutStamp(legacy)
+  let secured: StoredSession | null
   try {
     const stored = await secure.getGenericPassword({ service: KEYCHAIN_SERVICE })
-    const session = stored ? parse(stored.password) : null
-    if (session) return session
+    secured = stored ? parse(stored.password) : null
   } catch {
-    return readLegacy()
+    return legacy && withoutStamp(legacy)
   }
-  // A session saved by an older build moves into the keychain once.
-  const legacy = await readLegacy()
-  if (legacy) {
-    await saveAuthSession(legacy)
+  // A copy in app storage is either from an older build, or newer than the keychain's: written
+  // while the keychain refused a save. The keychain's own copy wins only when it is the newer one
+  // (an older copy there would carry a refresh token the server already rotated).
+  if (secured && !(legacy && (legacy.savedAt ?? 0) > (secured.savedAt ?? 0))) {
+    return withoutStamp(secured)
   }
-  return legacy
+  if (!legacy) return null
+  // It moves into the keychain (and out of app storage) as soon as the keychain accepts it.
+  const session = withoutStamp(legacy)
+  await saveAuthSession(session)
+  return session
 }
 
-export async function saveAuthSession(session: PersistedAuthSession): Promise<void> {
+let writes: Promise<void> = Promise.resolve()
+
+/**
+ * Session writes run one at a time, in the order they were asked for: two overlapping saves (a
+ * token refresh right after a sign-in) could otherwise interleave, and the older one's cleanup
+ * after a refused keychain write would erase the newer copy.
+ */
+function serially(work: () => Promise<void>): Promise<void> {
+  const next = writes.then(work, work)
+  writes = next.catch(() => undefined)
+  return next
+}
+
+export function saveAuthSession(session: PersistedAuthSession): Promise<void> {
+  const stored: StoredSession = { ...session, savedAt: stamp() }
+  return serially(() => writeSession(stored))
+}
+
+async function writeSession(stored: StoredSession): Promise<void> {
   const secure = keychain()
   if (secure) {
     try {
-      await secure.setGenericPassword(KEYCHAIN_ACCOUNT, JSON.stringify(session), {
+      await secure.setGenericPassword(KEYCHAIN_ACCOUNT, JSON.stringify(stored), {
         service: KEYCHAIN_SERVICE,
         // Never synced to other devices or restored from a backup onto another phone.
         accessible: secure.ACCESSIBLE?.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
@@ -92,17 +130,27 @@ export async function saveAuthSession(session: PersistedAuthSession): Promise<vo
       await removeLegacy()
       return
     } catch {
-      // fall through to app storage so the user is not signed out by a keychain hiccup
+      // Fall through to app storage so the user is not signed out by a keychain hiccup. The
+      // keychain's copy is now stale: dropped if possible (the newer stamp wins on load anyway).
+      try {
+        await secure.resetGenericPassword({ service: KEYCHAIN_SERVICE })
+      } catch {
+        // ignore
+      }
     }
   }
   try {
-    await AsyncStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(session))
+    await AsyncStorage.setItem(LEGACY_SESSION_KEY, JSON.stringify(stored))
   } catch {
     // Ignore persistence failures — in-memory session still works for this run.
   }
 }
 
-export async function clearAuthSession(): Promise<void> {
+export function clearAuthSession(): Promise<void> {
+  return serially(removeSession)
+}
+
+async function removeSession(): Promise<void> {
   const secure = keychain()
   if (secure) {
     try {

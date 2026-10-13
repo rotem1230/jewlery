@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
@@ -28,7 +28,8 @@ import {
   listWizardSizeCharts,
 } from '@/src/api/masterData'
 import { uploadChatFile } from '@/src/api/uploads'
-import { mediaUrl } from '@/src/lib/media'
+import { linkForUpload, mediaUrl } from '@/src/lib/media'
+import { attachedAiJob, rememberPendingAiJob, takeFinishedAiJob } from '@/src/lib/pendingAiJobs'
 import { pickChatPhoto } from '@/src/lib/chatAttachments'
 import { apiErrorCode, isPaywallError, parseApiError } from '@/src/lib/api'
 import {
@@ -143,7 +144,9 @@ export function DesignStudioScreen() {
   const previewJewelerNotes = jewelerNotesDraft ?? design?.jewelerNotes ?? ''
   const previewInspiration = inspirationUploadDraft ?? inspirationUploadFromParameters(parameters)
   const previewAiOutput = aiOutputUploadFromParameters(parameters)
-  const aiModelUri = previewAiOutput ? mediaUrl(aiModelLink ?? design?.aiOutputUrl) : undefined
+  // The design's own link is signed at each load; the one kept from the generation only bridges
+  // the moment before the design is reloaded.
+  const aiModelUri = mediaUrl(linkForUpload(previewAiOutput, design?.aiOutputUrl, aiModelLink))
   const markers = useMemo(
     () =>
       markersFromCatalog(
@@ -194,6 +197,34 @@ export function DesignStudioScreen() {
       setBusy(false)
     }
   }
+
+  // A generation the studio stopped waiting for on an earlier visit is attached once it is done
+  // (only while the design can still be edited). The latest values are read through a ref so the
+  // check runs once per design, not on every render.
+  const latestForAi = useRef({ persist, parameters, editable: design?.status !== 'COMPLETED' })
+  latestForAi.current = { persist, parameters, editable: design?.status !== 'COMPLETED' }
+  const loadedDesignId = design?.id
+  useEffect(() => {
+    if (!loadedDesignId) return
+    let cancelled = false
+    const attachFinished = async () => {
+      const job = await takeFinishedAiJob(loadedDesignId)
+      if (cancelled || !job?.outputUploadId) return
+      const { persist: save, parameters: current, editable } = latestForAi.current
+      if (!editable || current.aiOutputUploadId === job.outputUploadId) {
+        await attachedAiJob(loadedDesignId, job.id)
+        return
+      }
+      setAiModelLink(job.outputUrl ?? null)
+      if (await save({ ...current, aiOutputUploadId: job.outputUploadId })) {
+        await attachedAiJob(loadedDesignId, job.id)
+      }
+    }
+    attachFinished().catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [loadedDesignId])
 
   const sizeDraftError = (draft: StudioSize): string | null => {
     if (itemType === 'RING' && !draft.sizeCode) return t('sizeNeedRingSize')
@@ -379,17 +410,23 @@ export function DesignStudioScreen() {
         designId: design.id,
         prompt: prompt.length >= 3 ? prompt : 'Sample jewelry inspiration',
       })
+      // Remembered until attached: if the wait below ends first (or fails), the next visit
+      // attaches the result.
+      await rememberPendingAiJob(design.id, queued.id)
       // Generation runs on the server in the background (up to ~90 s with the provider).
       const job = await waitForAiJob(queued.id)
       if (job.status === 'SUCCEEDED' && job.outputUploadId) {
         setAiModelLink(job.outputUrl ?? null)
-        await persist({ ...parameters, aiOutputUploadId: job.outputUploadId })
+        if (await persist({ ...parameters, aiOutputUploadId: job.outputUploadId })) {
+          await attachedAiJob(design.id, queued.id)
+        }
         return
       }
       if (job.status === 'QUEUED' || job.status === 'RUNNING') {
         Alert.alert(t('studioInspirationGenerate'), t('studioInspirationStillRunning'))
         return
       }
+      await attachedAiJob(design.id, queued.id)
       Alert.alert(t('authErrorTitle'), job.errorMessage || t('studioInspirationGenerateFailed'))
     } catch (err) {
       if (apiErrorCode(err) === 'AI_JOB_IN_PROGRESS') {

@@ -52,7 +52,8 @@ export type ProfileStackParamList = {
   BusinessProfilePreview: {
     name: string
     about: string
-    gallery: Array<{ id: string; uri?: string; title?: string; uploadId?: string }>
+    /** persisted: already in the portfolio (the form saved it); publishing adds only the others. */
+    gallery: Array<{ id: string; uri?: string; title?: string; uploadId?: string; persisted?: boolean }>
   }
   BusinessProfileView: undefined
 }

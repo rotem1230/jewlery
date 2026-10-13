@@ -6,8 +6,10 @@ import { VisualizationService } from '../../src/visualization/visualization.serv
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { M4A_BYTES, PNG_BYTES, uploadFile } from '../utils/files';
 import {
+  acceptQuote,
   createDraftDesign,
   createPublishedJeweler,
+  createQuote,
   firstRegionId,
   marketplaceScenario,
   registerVerified,
@@ -95,6 +97,49 @@ describe('upload content access', () => {
 
     await t.http.post(`${API}/designs/${design.id}/transition`).set(owner.auth).send({ toStatus: 'PUBLISHED' }).expect(201);
     await t.http.get(`${API}/uploads/${thumb.body.data.id}/content`).expect(200);
+  });
+
+  it("a design's thumbnail stays public once completed and turns private when archived", async () => {
+    const s = await marketplaceScenario(t);
+    const thumb = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'thumb.png').expect(201);
+    const thumbId = thumb.body.data.id as string;
+    const current = await t.prisma.design.findUniqueOrThrow({ where: { id: s.design.id } });
+    await t.http
+      .patch(`${API}/designs/${s.design.id}`)
+      .set(s.designer.auth)
+      .send({ version: current.version, thumbnailUploadId: thumbId })
+      .expect(200);
+
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    await acceptQuote(t, s.designer, quote).expect(201);
+    const completed = await t.prisma.design.findUniqueOrThrow({ where: { id: s.design.id } });
+    expect(completed.status).toBe('COMPLETED');
+    await t.http.get(`${API}/uploads/${thumbId}/content`).expect(200);
+
+    await t.http.post(`${API}/designs/${s.design.id}/transition`).set(s.designer.auth).send({ toStatus: 'ARCHIVED' }).expect(201);
+    await t.http.get(`${API}/uploads/${thumbId}/content`).expect(404);
+    // The owner still sees it, through a signed link.
+    const own = await t.http.get(`${API}/designs/${s.design.id}`).set(s.designer.auth).expect(200);
+    const thumbnailUrl = own.body.data.thumbnailUrl as string;
+    expect(thumbnailUrl).toMatch(/sig=/);
+    await t.http.get(`${API}${thumbnailUrl}`).expect(200);
+  });
+
+  it('the thumbnail of a removed design is no longer public', async () => {
+    const owner = await registerVerified(t);
+    const design = await createDraftDesign(t, owner);
+    const thumb = await uploadFile(t, owner, PNG_BYTES, 'image/png', 'thumb.png').expect(201);
+    const current = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
+    await t.http
+      .patch(`${API}/designs/${design.id}`)
+      .set(owner.auth)
+      .send({ version: current.version, thumbnailUploadId: thumb.body.data.id })
+      .expect(200);
+    await t.http.post(`${API}/designs/${design.id}/transition`).set(owner.auth).send({ toStatus: 'PUBLISHED' }).expect(201);
+    await t.http.get(`${API}/uploads/${thumb.body.data.id}/content`).expect(200);
+
+    await t.prisma.design.update({ where: { id: design.id }, data: { deletedAt: new Date() } });
+    await t.http.get(`${API}/uploads/${thumb.body.data.id}/content`).expect(404);
   });
 
   it("the jeweler's own profile returns working signed links while the profile is offline", async () => {
@@ -486,6 +531,35 @@ describe('visualization retention', () => {
       .set(s.designer.auth)
       .send({ designId: s.design.id, inputUploadId: voice.body.data.id })
       .expect(400);
+  });
+
+  it('the try-on result opens only through the signed link its owner receives', async () => {
+    const s = await marketplaceScenario(t);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    const selfie = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'selfie.png').expect(201);
+    const created = await t.http
+      .post(`${API}/visualization/jobs`)
+      .set(s.designer.auth)
+      .send({ designId: s.design.id, inputUploadId: selfie.body.data.id })
+      .expect(201);
+    const jobId = created.body.data.id as string;
+    const outputId = created.body.data.outputUploadId as string;
+    expect(created.body.data.outputUrl).toMatch(/sig=/);
+
+    const one = await t.http.get(`${API}/visualization/jobs/${jobId}`).set(s.designer.auth).expect(200);
+    const outputUrl = one.body.data.outputUrl as string;
+    expect(outputUrl).toContain(`/uploads/${outputId}/content?`);
+    expect(outputUrl).toMatch(/sig=/);
+    await t.http.get(`${API}${outputUrl}`).expect(200);
+    const list = await t.http.get(`${API}/visualization/jobs`).set(s.designer.auth).expect(200);
+    const listed = (list.body.data.items as Array<{ id: string; outputUrl: string }>).find((job) => job.id === jobId);
+    expect(listed?.outputUrl).toMatch(/sig=/);
+
+    // Without the link the file is private, and nobody else can read the job to get one.
+    await t.http.get(`${API}/uploads/${outputId}/content`).expect(404);
+    const outsider = await registerVerified(t);
+    await t.http.get(`${API}/visualization/jobs/${jobId}`).set(outsider.auth).expect(403);
+    await t.http.get(`${API}/uploads/${outputId}/content`).set(outsider.auth).expect(404);
   });
 });
 
