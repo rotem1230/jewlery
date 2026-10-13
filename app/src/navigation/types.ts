@@ -29,7 +29,13 @@ export type HomeStackParamList = {
 
 export type ChatsStackParamList = {
   ChatsList: undefined
-  ChatThread: { chatId: string; title?: string; quoteApproved?: boolean }
+  ChatThread: {
+    chatId: string
+    title?: string
+    quoteApproved?: boolean
+    /** The other participant's last read (from the inbox row): read ticks start from it. */
+    peerLastReadAt?: string | null
+  }
   QuoteDetails: { quoteId: string; chatId: string }
 }
 

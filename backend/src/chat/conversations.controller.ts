@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpStatus, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
@@ -36,6 +36,12 @@ export class ConversationsController {
   })
   create(@Body() dto: CreateConversationDto, @Req() req: AuthedRequest) {
     return this.conversations.findOrCreate(req.user, dto);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get one of my conversations (participants with their last read time)', description: WS_DESCRIPTION })
+  findOne(@Param('id', new ParseUUIDPipe({ errorHttpStatusCode: HttpStatus.NOT_FOUND })) id: string, @Req() req: AuthedRequest) {
+    return this.conversations.findOne(id, req.user.id);
   }
 
   @Get(':id/messages')

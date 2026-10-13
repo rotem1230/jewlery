@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
@@ -12,12 +12,27 @@ import { Field } from '@/src/components/ui/Field'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { PublishSuccessModal } from '@/src/components/ui/PublishSuccessModal'
 import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
-import { getDesign, duplicateDesign, transitionDesign, updateDesign } from '@/src/api/designs'
-import { listConversations } from '@/src/api/chat'
-import { listMetals, metalChoices, parseMetalChoice } from '@/src/api/masterData'
+import {
+  duplicateDesign,
+  getDesign,
+  listDesignQuotes,
+  transitionDesign,
+  updateDesign,
+} from '@/src/api/designs'
+import { listMetals, listRegions, metalChoices, parseMetalChoice } from '@/src/api/masterData'
 import { parseApiError } from '@/src/lib/api'
-import { displayName, formatMoney, imageFromMedia } from '@/src/lib/format'
+import { imageFromMedia } from '@/src/lib/format'
 import { specsFromDesign } from '@/src/lib/designSpecs'
+import {
+  completedByLabel,
+  designActions,
+  designDisplayTitle,
+  designErrorMessage,
+  listingExpiryLabel,
+  regionOptions,
+  regionPatchForPublish,
+} from '@/src/lib/designActions'
+import { previousQuoteRows } from '@/src/lib/quoteStatus'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, spacing } from '@/src/theme/tokens'
@@ -36,7 +51,6 @@ export function DesignDetailsScreen() {
   const tabNavigation = navigation.getParent<TabNav>()
   const route = useRoute<Route>()
   const accessToken = useAppSelector((s) => s.auth.accessToken)
-  const myUserId = useAppSelector((s) => s.auth.user?.id)
   const [quotesOpen, setQuotesOpen] = useState(true)
   const [publishSuccessOpen, setPublishSuccessOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -47,6 +61,7 @@ export function DesignDetailsScreen() {
   const [viewerUri, setViewerUri] = useState<string | null>(null)
   const [metalId, setMetalId] = useState('YELLOW_GOLD:14K')
   const [metalOpen, setMetalOpen] = useState(false)
+  const [regionOpen, setRegionOpen] = useState(false)
 
   const load = useCallback(
     (signal: AbortSignal) => getDesign(route.params.designId, signal),
@@ -56,30 +71,54 @@ export function DesignDetailsScreen() {
     deps: [accessToken, route.params.designId],
   })
   const quotesQuery = useAsyncData(
-    (signal) => listConversations({ designId: route.params.designId }, signal),
+    (signal) => listDesignQuotes(route.params.designId, signal),
     { deps: [accessToken, route.params.designId] },
   )
   const metalsQuery = useAsyncData((signal) => listMetals(signal), { deps: [] })
+  const regionsQuery = useAsyncData((signal) => listRegions(signal), { deps: [] })
   const metalOptions = metalChoices(metalsQuery.data ?? [], locale)
+  const regions = regionsQuery.data ?? []
 
-  const variant = (design?.status ?? 'DRAFT').toLowerCase() as
-    | 'draft'
-    | 'published'
-    | 'completed'
-    | 'archived'
-  const showQuotes = variant === 'published' || variant === 'completed' || variant === 'archived'
+  const status = design?.status ?? 'DRAFT'
+  const actions = designActions({ status, completedBy: design?.completedBy })
+  const quoteRows = previousQuoteRows(quotesQuery.data ?? [], locale)
+  const showQuotes = status !== 'DRAFT' || quoteRows.length > 0
   const specs = design ? specsFromDesign(design) : []
-  const quoteCount = design?.quoteCount ?? 0
+  const quoteCount = quotesQuery.data ? quoteRows.length : design?.quoteCount ?? 0
+  const completedBy = design ? completedByLabel(design, locale) : null
+  const expiry = status === 'PUBLISHED' ? listingExpiryLabel(design?.expiresAt, locale) : null
+  const region = regions.find((item) => item.id === design?.preferredRegionId)
+  const regionLabel = region ? (locale === 'en' && region.labelEn ? region.labelEn : region.labelHe) : null
 
-  const runTransition = async (toStatus: 'PUBLISHED' | 'ARCHIVED' | 'DRAFT') => {
+  const showError = (message: { title: string; body: string }) => Alert.alert(message.title, message.body)
+
+  const runTransition = async (toStatus: 'ARCHIVED' | 'DRAFT') => {
     if (!design) return
     setBusy(true)
     try {
       await transitionDesign(design.id, toStatus)
       await refresh()
-      if (toStatus === 'PUBLISHED') setPublishSuccessOpen(true)
     } catch (err) {
-      Alert.alert(t('authErrorTitle'), parseApiError(err))
+      showError(designErrorMessage(err, 'save', locale))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Publishing (PRD 5.5): the preferred region chosen in the sheet is saved first, so the Atelier
+  // region filter finds the design; "no preference" publishes as it is.
+  const publish = async (regionId: string) => {
+    if (!design) return
+    setBusy(true)
+    try {
+      const patch = regionPatchForPublish(design, regionId)
+      if (patch) await updateDesign(design.id, patch)
+      await transitionDesign(design.id, 'PUBLISHED')
+      await refresh()
+      setPublishSuccessOpen(true)
+    } catch (err) {
+      await refresh()
+      showError(designErrorMessage(err, 'publish', locale))
     } finally {
       setBusy(false)
     }
@@ -120,7 +159,7 @@ export function DesignDetailsScreen() {
       setEditing(false)
       await refresh()
     } catch (err) {
-      Alert.alert(t('authErrorTitle'), parseApiError(err) || t('designSaveFailed'))
+      showError(designErrorMessage(err, 'save', locale))
     } finally {
       setBusy(false)
     }
@@ -137,6 +176,11 @@ export function DesignDetailsScreen() {
     } finally {
       setBusy(false)
     }
+  }
+
+  const openStudio = () => {
+    if (!design) return
+    tabNavigation?.navigate('Home', { screen: 'DesignStudio', params: { designId: design.id } })
   }
 
   const closePublishSuccess = () => setPublishSuccessOpen(false)
@@ -163,7 +207,7 @@ export function DesignDetailsScreen() {
               <DesignDetailsCard
                 sectionTitle={t('designDetailsShort')}
                 image={imageFromMedia(design.thumbnailUrl, design.thumbnailUploadId, heroRing)}
-                title={design.title || t('designDetailsTitle')}
+                title={designDisplayTitle(design, locale)}
                 quote={design.description || ''}
                 specs={specs}
                 onMaximize={() => {
@@ -177,10 +221,20 @@ export function DesignDetailsScreen() {
                 }}
               />
 
+              {completedBy || expiry || regionLabel ? (
+                <View style={styles.facts}>
+                  {completedBy ? <Text style={styles.fact}>{completedBy}</Text> : null}
+                  {expiry ? <Text style={styles.fact}>{expiry}</Text> : null}
+                  {regionLabel ? (
+                    <Text style={styles.fact}>{`${t('dzPreferredRegion')} ${regionLabel}`}</Text>
+                  ) : null}
+                </View>
+              ) : null}
+
               {editing ? (
                 <View style={styles.editForm}>
                   <Field
-                    label={t('designDetailsTitle')}
+                    label={t('dzDesignNameLabel')}
                     value={title}
                     error={titleError}
                     onChangeText={(value) => {
@@ -227,124 +281,84 @@ export function DesignDetailsScreen() {
                     onPress={() => setEditing(false)}
                   />
                 </View>
-              ) : null}
-
-              {variant === 'draft' && !editing ? (
+              ) : (
                 <View style={styles.actions}>
+                  {actions.editInStudio ? (
+                    <BrandButton
+                      label={t('studioEditInStudio')}
+                      variant="outline"
+                      flex={false}
+                      onPress={openStudio}
+                    />
+                  ) : null}
+                  {actions.viewInStudio ? (
+                    <BrandButton
+                      label={t('dzViewInStudio')}
+                      variant="outline"
+                      flex={false}
+                      onPress={openStudio}
+                    />
+                  ) : null}
+                  {actions.publish ? (
+                    <BrandButton
+                      label={t('publishMarketplace')}
+                      variant="primary"
+                      flex={false}
+                      disabled={busy}
+                      onPress={() => setRegionOpen(true)}
+                    />
+                  ) : null}
+                  {actions.editDetails ? (
+                    <BrandButton
+                      label={t('editDesign')}
+                      variant="outline"
+                      flex={false}
+                      onPress={startEdit}
+                    />
+                  ) : null}
+                  {actions.archive || actions.orderJewelers ? (
+                    <View style={styles.actionRow}>
+                      {actions.archive ? (
+                        <View style={styles.actionSlot}>
+                          <BrandButton
+                            label={t('moveToArchive')}
+                            variant="outline"
+                            flex={false}
+                            disabled={busy}
+                            onPress={() => void runTransition('ARCHIVED')}
+                          />
+                        </View>
+                      ) : null}
+                      {actions.orderJewelers ? (
+                        <View style={styles.actionSlot}>
+                          <BrandButton
+                            label={t('orderJewelers')}
+                            variant="outline"
+                            flex={false}
+                            onPress={() => tabNavigation?.navigate('Atelier')}
+                          />
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
+                  {actions.moveToDrafts ? (
+                    <BrandButton
+                      label={t('moveBackToDrafts')}
+                      variant="outline"
+                      flex={false}
+                      disabled={busy}
+                      onPress={() => void runTransition('DRAFT')}
+                    />
+                  ) : null}
                   <BrandButton
-                    label={t('studioEditInStudio')}
-                    variant="outline"
-                    flex={false}
-                    onPress={() =>
-                      tabNavigation?.navigate('Home', {
-                        screen: 'DesignStudio',
-                        params: { designId: design.id },
-                      })
-                    }
-                  />
-                  <View style={styles.actionRow}>
-                    <View style={styles.actionSlot}>
-                      <BrandButton
-                        label={t('orderJewelers')}
-                        variant="outline"
-                        flex={false}
-                        onPress={() => tabNavigation?.navigate('Atelier')}
-                      />
-                    </View>
-                    <View style={styles.actionSlot}>
-                      <BrandButton
-                        label={t('publishMarketplace')}
-                        variant="primary"
-                        flex={false}
-                        disabled={busy}
-                        onPress={() => void runTransition('PUBLISHED')}
-                      />
-                    </View>
-                  </View>
-                  <View style={styles.actionRow}>
-                    <View style={styles.actionSlot}>
-                      <BrandButton
-                        label={t('moveToArchive')}
-                        variant="outline"
-                        flex={false}
-                        disabled={busy}
-                        onPress={() => void runTransition('ARCHIVED')}
-                      />
-                    </View>
-                    <View style={styles.actionSlot}>
-                      <BrandButton
-                        label={t('editDesign')}
-                        variant="outline"
-                        flex={false}
-                        onPress={startEdit}
-                      />
-                    </View>
-                  </View>
-                </View>
-              ) : null}
-
-              {!editing && (variant === 'published' || variant === 'completed') ? (
-                <View style={styles.actions}>
-                  <BrandButton
-                    label={t('studioEditInStudio')}
-                    variant="outline"
-                    flex={false}
-                    onPress={() =>
-                      tabNavigation?.navigate('Home', {
-                        screen: 'DesignStudio',
-                        params: { designId: design.id },
-                      })
-                    }
-                  />
-                  <BrandButton
-                    label={t('editDesign')}
-                    variant="outline"
-                    flex={false}
-                    onPress={startEdit}
-                  />
-                  <View style={styles.actionRow}>
-                    <View style={styles.actionSlot}>
-                      <BrandButton
-                        label={t('moveToArchive')}
-                        variant="outline"
-                        flex={false}
-                        disabled={busy}
-                        onPress={() => void runTransition('ARCHIVED')}
-                      />
-                    </View>
-                    <View style={styles.actionSlot}>
-                      <BrandButton
-                        label={t('orderJewelers')}
-                        variant="outline"
-                        flex={false}
-                        onPress={() => tabNavigation?.navigate('Atelier')}
-                      />
-                    </View>
-                  </View>
-                </View>
-              ) : null}
-
-              {variant === 'archived' ? (
-                <View style={styles.actions}>
-                  <BrandButton
-                    label={t('moveBackToDrafts')}
+                    label={t('designDuplicateCta')}
                     variant="outline"
                     flex={false}
                     disabled={busy}
-                    onPress={() => void runTransition('DRAFT')}
+                    onPress={() => void onDuplicate()}
                   />
                 </View>
-              ) : null}
-
-              {!editing ? (
-                <BrandButton
-                  label={t('designDuplicateCta')}
-                  variant="outline"
-                  flex={false}
-                  disabled={busy}
-                  onPress={() => void onDuplicate()}
-                />
-              ) : null}
+              )}
 
               {showQuotes ? (
                 <View style={styles.quotes}>
@@ -363,45 +377,42 @@ export function DesignDetailsScreen() {
                     </Text>
                   </Pressable>
                   {quotesOpen ? (
-                    quotesQuery.data?.items.length ? (
+                    quoteRows.length > 0 ? (
                       <View style={styles.quoteCards}>
-                        {quotesQuery.data.items.map((conv) => {
-                          const peer = conv.participants.find((p) => p.userId !== myUserId)?.user
-                          const quote = conv.lastMessage?.quote
-                          return (
-                            <QuoteOfferCard
-                              key={conv.id}
-                              name={displayName(peer?.firstName, peer?.lastName, t('jeweler'))}
-                              role={t('jeweler')}
-                              priceLabel={t('quotePriceLabel')}
-                              priceValue={quote ? formatMoney(quote.totalPrice) : '—'}
-                              deliveryLabel={t('quoteDeliveryLabel')}
-                              deliveryValue={
-                                quote
-                                  ? t('quoteDeliveryValue').replace(
-                                      '{{days}}',
-                                      String(quote.etaBusinessDays),
-                                    )
-                                  : '—'
-                              }
-                              chatLabel={t('goToChat')}
-                              onChat={() =>
-                                tabNavigation?.navigate('Chats', {
-                                  screen: 'ChatThread',
-                                  params: {
-                                    chatId: conv.id,
-                                    title: displayName(peer?.firstName, peer?.lastName),
-                                  },
-                                })
-                              }
-                            />
-                          )
-                        })}
+                        {quoteRows.map((row) => (
+                          <QuoteOfferCard
+                            key={row.id}
+                            name={row.jeweler}
+                            role={t('jeweler')}
+                            priceLabel={t('quotePriceLabel')}
+                            priceValue={row.total}
+                            deliveryLabel={t('quoteDeliveryLabel')}
+                            deliveryValue={t('quoteDeliveryValue').replace('{{days}}', String(row.etaDays))}
+                            dateLabel={t('dzQuoteDateLabel')}
+                            dateValue={row.date}
+                            statusLabel={t('dzQuoteStatusLabel')}
+                            statusValue={row.statusLabel}
+                            ctaLabel={t('dzQuoteDetailsCta')}
+                            onPress={() =>
+                              tabNavigation?.navigate('Chats', {
+                                screen: 'QuoteDetails',
+                                params: { quoteId: row.id, chatId: row.conversationId },
+                              })
+                            }
+                          />
+                        ))}
                       </View>
+                    ) : quotesQuery.error && !quotesQuery.loading ? (
+                      <ErrorState
+                        title={t('commonLoadingErrorTitle')}
+                        message={t('commonLoadingErrorMessage')}
+                        retryLabel={t('commonRetry')}
+                        onRetry={quotesQuery.retry}
+                      />
+                    ) : quotesQuery.loading ? (
+                      <ActivityIndicator color={colors.brand} />
                     ) : (
-                      <Text style={styles.quotesHint}>
-                        {quoteCount > 0 ? t('chats') : t('commonEmpty')}
-                      </Text>
+                      <Text style={styles.quotesHint}>{t('dzQuotesEmpty')}</Text>
                     )
                   ) : null}
                 </View>
@@ -437,6 +448,15 @@ export function DesignDetailsScreen() {
         }}
         onRequestClose={() => setMetalOpen(false)}
       />
+      <FilterOptionsSheet
+        visible={regionOpen}
+        options={regionOptions(regions, locale)}
+        onSelect={(option) => {
+          setRegionOpen(false)
+          publish(option.id)
+        }}
+        onRequestClose={() => setRegionOpen(false)}
+      />
     </View>
   )
 }
@@ -459,6 +479,19 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 448,
     gap: spacing.xl,
+  },
+  facts: {
+    width: '100%',
+    gap: 4,
+  },
+  fact: {
+    width: '100%',
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
   },
   actions: {
     width: '100%',

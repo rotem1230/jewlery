@@ -7,10 +7,10 @@ import {
   BAND_WIDTH_MAX_MM,
   BAND_WIDTH_MIN_MM,
   DEFAULT_WRIST_CM,
-  NECKLACE_LENGTHS_CM,
   clampBandWidthMm,
   type StudioSize,
 } from '@/src/lib/studioParams'
+import { NECKLACE_STYLES, necklaceStyleForLength } from '@/src/lib/necklaceLengths'
 
 const EARRING_LABEL: Record<string, TranslationKey> = {
   drop: 'styleEarringDrop',
@@ -73,7 +73,8 @@ export function StudioSizePanel({
   onMeasureGuide,
   locked,
 }: StudioSizePanelProps) {
-  const { t } = useTranslation()
+  const { t, locale } = useTranslation()
+  const necklaceStyle = necklaceStyleForLength(value.necklaceLengthCm)
   const [wristText, setWristText] = useState(() => String(value.wristCircumferenceCm ?? DEFAULT_WRIST_CM))
   const edit = (next: StudioSize) => {
     if (!locked) onChange(next)
@@ -97,16 +98,18 @@ export function StudioSizePanel({
 
       {itemType === 'NECKLACE' ? (
         <View style={styles.chipsWrap}>
-          {NECKLACE_LENGTHS_CM.map((cm) => {
-            const selected = value.necklaceLengthCm === cm
+          {NECKLACE_STYLES.map((style) => {
+            // A saved length inside the style's PRD range (e.g. 42 cm, Princess) selects it.
+            const selected = necklaceStyle?.code === style.code
             return (
               <Pressable
-                key={cm}
-                onPress={() => edit({ ...value, necklaceLengthCm: cm })}
+                key={style.code}
+                onPress={() => edit({ ...value, necklaceLengthCm: style.lengthCm })}
                 style={[styles.chip, selected && styles.chipOn]}
               >
                 <Text style={[styles.chipLabel, selected && styles.chipLabelOn]}>
-                  {cm} {t('sizeCm')}
+                  {locale === 'en' ? style.labelEn : style.labelHe} ·{' '}
+                  {selected ? value.necklaceLengthCm : style.lengthCm} {t('sizeCm')}
                 </Text>
               </Pressable>
             )

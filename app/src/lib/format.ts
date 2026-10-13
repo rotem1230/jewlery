@@ -11,10 +11,23 @@ export function displayName(
   return joined || fallback
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = { ILS: '₪', USD: '$', EUR: '€' }
+
+/** The sign of a currency code (₪ for ILS); other codes are shown as the code. */
+export function currencySymbol(code: string | null | undefined): string {
+  const upper = (code ?? 'ILS').toUpperCase()
+  return CURRENCY_SYMBOLS[upper] ?? upper
+}
+
+/**
+ * An amount as charged: whole amounts without decimals ("₪ 4,500"), anything else with its
+ * agorot ("₪ 49.90") — never rounded, since the exact amount is what is accepted and paid.
+ */
 export function formatMoney(value: string | number | null | undefined, symbol = '₪'): string {
   const n = typeof value === 'number' ? value : parseFloat(String(value ?? '0'))
   if (!Number.isFinite(n)) return `${symbol} 0`
-  return `${symbol} ${Math.round(n).toLocaleString('he-IL')}`
+  const whole = Number.isInteger(n)
+  return `${symbol} ${n.toLocaleString('en-US', { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })}`
 }
 
 export function imageFromUpload(

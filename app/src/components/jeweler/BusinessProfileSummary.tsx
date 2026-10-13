@@ -1,6 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native'
 import { GalleryWorkCard } from '@/src/components/atelier/GalleryWorkCard'
 import { ReviewCard } from '@/src/components/atelier/ReviewCard'
+import { BusinessInfoCard } from '@/src/components/jeweler/BusinessInfoCard'
 import { colors } from '@/src/theme/tokens'
 import type { GalleryImageItem } from '@/src/components/jeweler/GalleryImagePicker'
 
@@ -19,6 +20,13 @@ type BusinessProfileSummaryProps = {
   reviewsTitle: string
   reviews: ReviewItem[]
   reviewsEmptyLabel: string
+  /** Opening hours and service area, when the profile has them. */
+  businessInfo?: {
+    hoursTitle: string
+    hours: Array<{ label: string; text: string }>
+    areaTitle: string
+    area: string | null | undefined
+  }
 }
 
 /** Read-only business-profile block, shared by the preview and own-profile-view screens. */
@@ -30,6 +38,7 @@ export function BusinessProfileSummary({
   reviewsTitle,
   reviews,
   reviewsEmptyLabel,
+  businessInfo,
 }: BusinessProfileSummaryProps) {
   return (
     <View style={styles.column}>
@@ -37,8 +46,10 @@ export function BusinessProfileSummary({
 
       <View style={styles.aboutCard}>
         <View style={styles.aboutAccent} />
-        <Text style={styles.aboutText}>{about}</Text>
+        {about ? <Text style={styles.aboutText}>{about}</Text> : null}
       </View>
+
+      {businessInfo ? <BusinessInfoCard {...businessInfo} /> : null}
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>{galleryTitle}</Text>

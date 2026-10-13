@@ -62,6 +62,16 @@ enum DesignRequestStatus {
   EXPIRED
 }
 
+/// One jeweler's own progress on a request delivered to them (PRD 5.11 order board).
+enum RequestTargetStatus {
+  NEW
+  QUOTE_SUBMITTED
+  NEGOTIATING
+  COMPLETED
+  DECLINED
+  CLOSED
+}
+
 enum DesignRequestMode {
   TARGETED
   BROADCAST
@@ -1017,15 +1027,18 @@ model DesignRequest {
 }
 
 model DesignRequestTarget {
-  requestId        String   @db.Uuid
-  jewelerProfileId String   @db.Uuid
-  deliveredAt      DateTime @default(now())
+  requestId        String              @db.Uuid
+  jewelerProfileId String              @db.Uuid
+  deliveredAt      DateTime            @default(now())
+  status           RequestTargetStatus @default(NEW)
+  statusChangedAt  DateTime            @default(now())
 
   request        DesignRequest  @relation(fields: [requestId], references: [id], onDelete: Cascade)
   jewelerProfile JewelerProfile @relation(fields: [jewelerProfileId], references: [id], onDelete: Cascade)
 
   @@id([requestId, jewelerProfileId])
   @@index([jewelerProfileId, deliveredAt])
+  @@index([jewelerProfileId, status])
   @@map("design_request_targets")
 }
 
@@ -1126,6 +1139,7 @@ model Quote {
   acceptedAt       DateTime?
   declinedAt       DateTime?
   disclaimerPageId String?     @db.Uuid // ContentPage version snapshotted
+  designHash       String? // fingerprint of the design parameters this quote priced
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
@@ -1142,6 +1156,7 @@ model Quote {
   @@index([designId, status])
   @@index([authorUserId, status])
   @@index([conversationId])
+  @@index([status, validUntil]) // the expiry sweep
   @@map("quotes")
 }
 

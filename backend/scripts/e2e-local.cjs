@@ -252,7 +252,7 @@ async function main() {
       const r = await api('GET', '/wizard/item-types', { token: designerToken });
       const items = unwrap(r.json);
       const list = Array.isArray(items) ? items : items?.items || items?.data || [];
-      itemTypeId = list[0]?.id;
+      itemTypeId = (list.find((i) => i.code === 'RING') ?? list[0])?.id;
       if (!itemTypeId) throw new Error('no item types: ' + JSON.stringify(r.json).slice(0, 200));
       ok('wizard/item-types', list.map((i) => i.code).join(','));
     } catch (e) {
@@ -278,7 +278,12 @@ async function main() {
     try {
       const r = await api('POST', '/designs', {
         token: designerToken,
-        body: { itemTypeId, title: 'E2E Ring', parameters: {} },
+        // A design is created and published only with a valid specification (a ring needs size and metal).
+        body: {
+          itemTypeId,
+          title: 'E2E Ring',
+          parameters: { size: { standard: 'IL', sizeCode: '54' }, metal: { metalCode: 'YELLOW_GOLD', purityCode: '14K' } },
+        },
       });
       const d = unwrap(r.json);
       designId = d?.id;
@@ -330,7 +335,8 @@ async function main() {
       try {
         const r = await api('POST', '/render-jobs', {
           token: designerToken,
-          body: { designId, exportFormat: 'PNG_HD' },
+          // STL is free; an HD PNG needs the hd_export entitlement (paid plan).
+          body: { designId, exportFormat: 'STL' },
         });
         ok('render-jobs', JSON.stringify(unwrap(r.json)).slice(0, 80));
       } catch (e) {

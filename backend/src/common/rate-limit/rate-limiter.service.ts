@@ -4,6 +4,7 @@ import { RedisService } from '../../redis/redis.service';
 type Window = { count: number; resetAt: number };
 
 const SWEEP_EVERY = 500;
+const REFUND_SCRIPT = `if redis.call('EXISTS', KEYS[1]) == 1 and tonumber(redis.call('GET', KEYS[1])) > 0 then return redis.call('DECR', KEYS[1]) end return 0`;
 
 /**
  * Fixed-window counters for security-sensitive budgets (login attempts, mail-sending endpoints).
@@ -36,6 +37,24 @@ export class RateLimiterService {
       }
     }
     return this.consumeInMemory(key, limit, windowMs);
+  }
+
+  /** Gives back one hit recorded for `key` in the current window (e.g. a sign-in that succeeded). */
+  async refund(key: string): Promise<void> {
+    const client = this.redis.isAvailable() ? this.redis.getClient() : null;
+    if (client) {
+      try {
+        // Only an existing window is decremented: an expired one is never recreated.
+        await client.eval(REFUND_SCRIPT, 1, `ratelimit:${key}`);
+        return;
+      } catch (err) {
+        this.logger.warn(`Redis rate limit refund failed, using in-process window: ${(err as Error).message}`);
+      }
+    }
+    const current = this.memory.get(key);
+    if (current && current.resetAt > Date.now() && current.count > 0) {
+      current.count -= 1;
+    }
   }
 
   private consumeInMemory(key: string, limit: number, windowMs: number): boolean {

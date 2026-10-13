@@ -404,6 +404,7 @@ describe('upload validation', () => {
   it('generated outputs (exports, AI models) do not use up the personal upload quota', async () => {
     await withLimits({ dailyMaxFiles: 2 }, async () => {
       const user = await registerVerified(t);
+      await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
       const design = await createDraftDesign(t, user);
       await t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'PNG_HD' }).expect(201);
       await uploadFile(t, user, PNG_BYTES, 'image/png').expect(201);

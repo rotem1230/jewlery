@@ -31,7 +31,7 @@ export function ForgotPasswordScreen({ navigation }: Props) {
     setBusy(true)
     try {
       await forgotPassword(trimmed)
-      Alert.alert(t('authErrorTitle'), t('authForgotSent'), [
+      Alert.alert(t('shAuthForgotSentTitle'), t('authForgotSent'), [
         { text: t('login'), onPress: () => navigation.navigate('Login') },
       ])
     } catch (err) {

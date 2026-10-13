@@ -49,15 +49,13 @@ export function listAtelierBanners(signal?: AbortSignal): Promise<AtelierBanner[
   return apiGet<AtelierBanner[]>('/atelier/banners', { signal, anonymous: true })
 }
 
-export async function getAtelierDesign(
-  id: string,
-  signal?: AbortSignal,
-): Promise<AtelierDesign | null> {
-  for (const page of [1, 2, 3]) {
-    const res = await listAtelierDesigns({ page }, signal)
-    const found = res.items.find((item) => item.id === id)
-    if (found) return found
-    if (page >= res.pagination.totalPages) break
-  }
-  return null
+/**
+ * One live listing by id. Rejects with a 404 ApiError once the listing is not live any more
+ * (expired, unpublished, completed or removed) — see `isNotFound` in lib/atelierView.
+ */
+export function getAtelierDesign(id: string, signal?: AbortSignal): Promise<AtelierDesign> {
+  return apiGet<AtelierDesign>(`/atelier/designs/${encodeURIComponent(id)}`, {
+    signal,
+    anonymous: true,
+  })
 }

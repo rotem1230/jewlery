@@ -31,10 +31,6 @@ export const DEFAULT_APP_CONFIGS: DefaultConfigEntry[] = [
     value: { emailVerifyMinutes: 60 * 24, passwordResetMinutes: 30 },
   },
   {
-    key: 'lockout',
-    value: { maxAttempts: 5, lockMinutes: 15 },
-  },
-  {
     key: 'lead_definition',
     value: { mode: 'design_request_delivery' },
   },

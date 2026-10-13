@@ -92,6 +92,10 @@ export class RenderJobsService {
     }
     // Authorize before any write.
     this.assertOwnerOrAdmin(found, user);
+    // High-resolution exports are a paid feature (PRD 5.10); STL and standard exports are not.
+    if (dto.exportFormat === 'PNG_HD' && !user.roles.includes(UserRole.ADMIN)) {
+      await this.entitlements.assert(user.id, 'hd_export');
+    }
 
     const limit = await this.dailyLimit();
     const [hasPriority, hasNoWatermark] = await Promise.all([

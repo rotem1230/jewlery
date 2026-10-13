@@ -1,5 +1,5 @@
 /** POST /visualization/jobs — try-on selfie. Not Tripo. */
-import { apiPost } from '@/src/lib/api'
+import { apiGet, apiPost } from '@/src/lib/api'
 
 export type VisualizationJob = {
   id: string
@@ -16,4 +16,12 @@ export function createVisualizationJob(payload: {
   inputUploadId: string
 }): Promise<VisualizationJob> {
   return apiPost<VisualizationJob>('/visualization/jobs', payload)
+}
+
+/**
+ * The signed-in user's evaluated feature flags (`GET /feature-flags`), e.g. `phase2_visualization`
+ * that gates try-on.
+ */
+export function getFeatureFlags(signal?: AbortSignal): Promise<Record<string, boolean>> {
+  return apiGet<Record<string, boolean>>('/feature-flags', { signal })
 }

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpException,
@@ -53,6 +54,12 @@ export class UploadsController {
   @Post('presign')
   presign(@Body() dto: CreatePresignDto, @Req() req: AuthedRequest) {
     return this.uploads.createPresign(req.user.id, dto.mimeType, dto.sizeBytes, dto.checksumSha256);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete an upload of mine that nothing uses (409 UPLOAD_IN_USE otherwise)' })
+  remove(@Param('id', new ParseUUIDPipe({ errorHttpStatusCode: 404 })) id: string, @Req() req: AuthedRequest) {
+    return this.uploads.removeOwn(id, req.user.id);
   }
 
   @Post(':id/confirm')

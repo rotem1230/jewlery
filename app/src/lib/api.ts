@@ -10,6 +10,7 @@
  *   rejects (401) signs the user out; an outage or timeout keeps the session for a later retry.
  */
 import { API_BASE_URL } from '@/src/config/env'
+import { t, type TranslationKey } from '@/src/i18n'
 
 export { API_BASE_URL }
 
@@ -233,8 +234,32 @@ export function apiErrorCode(err: unknown): string | undefined {
   }
 }
 
-/** Best-effort message from `{ success, message }` JSON or the raw body. */
+/** Codes whose English server message is replaced by an explanation in the user's language. */
+const ERROR_CODE_MESSAGES = new Map<string, TranslationKey>([
+  ['DESIGN_EXPIRED', 'shErrDesignExpired'],
+  ['DESIGN_CHANGED_SINCE_QUOTE', 'shErrDesignChangedSinceQuote'],
+  ['QUOTE_EXPIRED', 'shErrQuoteExpired'],
+  ['QUOTE_NOT_PENDING', 'shErrQuoteNotPending'],
+  ['QUOTE_PENDING', 'shErrQuotePending'],
+  ['ORDER_COMPLETED', 'shErrOrderCompleted'],
+  ['PAYWALL', 'shErrPaywall'],
+  ['FEATURE_DISABLED', 'shErrFeatureDisabled'],
+  ['DESIGN_COMPLETED', 'shErrDesignCompleted'],
+  ['DESIGN_NOT_PUBLISHED', 'shErrDesignNotPublished'],
+  ['REQUEST_NOT_OPEN', 'shErrRequestNotOpen'],
+])
+
+/** The localized explanation of a known error `code`, or undefined (callers pick their fallback). */
+export function knownApiErrorMessage(err: unknown): string | undefined {
+  const code = apiErrorCode(err)
+  const key = code ? ERROR_CODE_MESSAGES.get(code) : undefined
+  return key ? t(key) : undefined
+}
+
+/** A known error code's explanation, else best-effort message from `{ success, message }` JSON or the raw body. */
 export function parseApiError(err: unknown): string {
+  const known = knownApiErrorMessage(err)
+  if (known) return known
   if (err instanceof ApiError) {
     try {
       const json = JSON.parse(err.body) as {

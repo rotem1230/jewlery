@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
+  Alert,
   Image,
   RefreshControl,
   ScrollView,
@@ -8,27 +9,29 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
-import { useNavigation } from '@react-navigation/native'
+import { useFocusEffect, useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { HomeHeader } from '@/src/components/home/HomeHeader'
 import { FilterChip } from '@/src/components/designs/FilterChip'
+import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { getMyOrders } from '@/src/api/jewelerProfiles'
 import { getHomeSummary } from '@/src/api/home'
+import { parseApiError } from '@/src/lib/api'
 import { imageFromUpload } from '@/src/lib/format'
+import { ORDER_TABS, boardFromPages, orderBadge, type BadgeTone, type OrdersTab } from '@/src/lib/jewelerOrders'
 import { formatHeTimeAgo } from '@/src/hooks/useMyBusinessProfile'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, radii } from '@/src/theme/tokens'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
-import type { DesignRequest, DesignRequestStatus } from '@/src/types/api'
+import type { DesignRequest, Paginated } from '@/src/types/api'
 import type { MyOrdersStackParamList } from '@/src/navigation/types'
 import jewelerAvatar from '../../../assets/images/designs/jeweler-avatar-1.png'
 import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<MyOrdersStackParamList, 'OrdersList'>
-type OrderStatus = 'submitted' | 'negotiating' | 'completed'
-type FilterId = 'all' | OrderStatus
+type OrdersPage = Paginated<DesignRequest>
 
 function greetingKey(): TranslationKey {
   const hour = new Date().getHours()
@@ -37,54 +40,95 @@ function greetingKey(): TranslationKey {
   return 'jewelerGreetingEvening'
 }
 
-function uiStatus(status: DesignRequestStatus | string): OrderStatus {
-  if (status === 'NEGOTIATING') return 'negotiating'
-  if (status === 'COMPLETED') return 'completed'
-  return 'submitted'
+const BADGE_STYLES: Record<BadgeTone, { box: object; text: object }> = {
+  new: { box: { backgroundColor: colors.brand }, text: { color: colors.textInverse } },
+  active: {
+    box: { backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.borderSubtle },
+    text: { color: colors.textSecondary },
+  },
+  done: { box: { backgroundColor: '#ECFDF3' }, text: { color: '#067647' } },
+  closed: { box: { backgroundColor: '#F2F4F7' }, text: { color: colors.textSecondary } },
 }
 
+/**
+ * Jeweler home: the orders board (PRD 5.11). Tabs and badges follow this jeweler's own status
+ * (`myStatus`), filtered on the server; the counters come from `/home/summary` only.
+ */
 export function MyOrdersScreen() {
   const { t, locale } = useTranslation()
   const navigation = useNavigation<Nav>()
   const user = useAppSelector((s) => s.auth.user)
   const accessToken = useAppSelector((s) => s.auth.accessToken)
-  const [filter, setFilter] = useState<FilterId>('all')
+  const [tab, setTab] = useState<OrdersTab>('all')
+  // Pages after the first, kept only while they belong to the first page they continue.
+  const [more, setMore] = useState<{ base: unknown; pages: OrdersPage[] }>({ base: null, pages: [] })
+  const [loadingMore, setLoadingMore] = useState(false)
 
-  const load = useCallback((signal: AbortSignal) => getMyOrders({ tab: 'all' }, signal), [])
+  const load = useCallback(
+    async (signal: AbortSignal) => ({ tab, page: await getMyOrders({ tab, page: 1 }, signal) }),
+    [tab],
+  )
   const { data, loading, refreshing, error, refresh, retry } = useAsyncData(load, {
-    deps: [accessToken],
+    deps: [accessToken, tab],
   })
-  const homeQuery = useAsyncData((signal) => getHomeSummary(signal), { deps: [accessToken] })
+  const {
+    data: home,
+    loading: homeLoading,
+    refreshing: homeRefreshing,
+    refresh: refreshHome,
+  } = useAsyncData((signal) => getHomeSummary(signal), { deps: [accessToken] })
+
+  // Coming back from an order (declined, quoted, withdrawn): the board and counters are reloaded.
+  const firstFocus = useRef(true)
+  useFocusEffect(
+    useCallback(() => {
+      if (firstFocus.current) {
+        firstFocus.current = false
+        return
+      }
+      refresh()
+      refreshHome()
+    }, [refresh, refreshHome]),
+  )
 
   const isDemo = user?.id === 'demo'
   const name = isDemo
     ? t('profileDemoName')
-    : (homeQuery.data?.greeting?.name ?? user?.firstName ?? t('jeweler'))
-  const orders = useMemo(() => data?.items ?? [], [data])
+    : (home?.greeting?.name ?? user?.firstName ?? t('jeweler'))
 
-  const counts = useMemo(() => {
-    const submitted = orders.filter((o) => uiStatus(o.status) === 'submitted').length
-    const negotiating = orders.filter((o) => uiStatus(o.status) === 'negotiating').length
-    const completed = orders.filter((o) => uiStatus(o.status) === 'completed').length
-    return { all: orders.length, submitted, negotiating, completed }
-  }, [orders])
+  // A previous tab's page is not shown while the selected tab loads.
+  const firstPage = data?.tab === tab ? data.page : null
+  const board = useMemo(
+    () => boardFromPages(firstPage ? [firstPage, ...(more.base === firstPage ? more.pages : [])] : []),
+    [firstPage, more],
+  )
 
-  const visibleOrders =
-    filter === 'all' ? orders : orders.filter((o) => uiStatus(o.status) === filter)
+  const loadMore = async () => {
+    if (!firstPage || !board.hasMore || loadingMore) return
+    const base = firstPage
+    setLoadingMore(true)
+    try {
+      const next = await getMyOrders({ tab, page: board.nextPage })
+      setMore((prev) => ({ base, pages: [...(prev.base === base ? prev.pages : []), next] }))
+    } catch (err) {
+      Alert.alert(t('authErrorTitle'), parseApiError(err))
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
-  const inProgressCount = homeQuery.data?.inProgress ?? counts.submitted + counts.negotiating
-  const newRequestsCount = homeQuery.data?.newRequests ?? orders.filter((o) => o.status === 'OPEN').length
+  const onRefresh = () => {
+    refresh()
+    refreshHome()
+  }
 
-  const filters: Array<{ id: FilterId; labelKey: TranslationKey; count: number }> = [
-    { id: 'all', labelKey: 'jewelerFilterAll', count: counts.all },
-    { id: 'submitted', labelKey: 'jewelerFilterSubmitted', count: counts.submitted },
-    { id: 'negotiating', labelKey: 'jewelerFilterNegotiating', count: counts.negotiating },
-    { id: 'completed', labelKey: 'jewelerFilterCompleted', count: counts.completed },
-  ]
+  // Server counters only: a dash while loading or when they could not be loaded.
+  const counter = (value: number | undefined) => (homeLoading || value == null ? '—' : value)
 
   const renderOrder = (order: DesignRequest) => {
-    const status = uiStatus(order.status)
-    const isNew = order.status === 'OPEN'
+    const badge = orderBadge(order.myStatus)
+    const itemType = order.design?.itemType
+    const typeLabel = (locale === 'en' ? itemType?.labelEn : itemType?.labelHe) ?? itemType?.labelHe ?? ''
     return (
       <TouchableOpacity
         key={order.id}
@@ -98,14 +142,16 @@ export function MyOrdersScreen() {
           resizeMode="cover"
         />
         <View style={styles.orderInfo}>
-          <Text style={styles.orderTitle}>{order.design?.title || t('jewelerOrder1Title')}</Text>
-          <Text style={styles.orderMaterial}>{order.design?.itemType?.labelHe ?? ''}</Text>
+          <Text style={styles.orderTitle}>
+            {order.design?.title || typeLabel || t('jwUntitledDesign')}
+          </Text>
+          {typeLabel ? <Text style={styles.orderMaterial}>{typeLabel}</Text> : null}
           <Text style={styles.orderTime}>{formatHeTimeAgo(order.createdAt, locale)}</Text>
-          <View style={[styles.badge, isNew ? styles.badgeNew : styles.badgeWaiting]}>
-            <Text style={[styles.badgeText, isNew ? styles.badgeTextNew : styles.badgeTextWaiting]}>
-              {t(isNew ? 'jewelerBadgeNew' : status === 'completed' ? 'jewelerFilterCompleted' : 'jewelerBadgeWaiting')}
-            </Text>
-          </View>
+          {badge ? (
+            <View style={[styles.badge, BADGE_STYLES[badge.tone].box]}>
+              <Text style={[styles.badgeText, BADGE_STYLES[badge.tone].text]}>{t(badge.labelKey)}</Text>
+            </View>
+          ) : null}
         </View>
       </TouchableOpacity>
     )
@@ -118,7 +164,9 @@ export function MyOrdersScreen() {
         style={styles.flex}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
+        refreshControl={
+          <RefreshControl refreshing={refreshing || homeRefreshing} onRefresh={onRefresh} />
+        }
       >
         <View style={styles.column}>
           <View style={styles.greetingCard}>
@@ -132,11 +180,11 @@ export function MyOrdersScreen() {
             <View style={styles.statsRow}>
               <View style={styles.statCard}>
                 <Text style={styles.statLabel}>{t('jewelerStatInProgress')}</Text>
-                <Text style={styles.statValue}>{loading ? '—' : inProgressCount}</Text>
+                <Text style={styles.statValue}>{counter(home?.inProgress)}</Text>
               </View>
               <View style={styles.statCard}>
                 <Text style={styles.statLabel}>{t('jewelerStatNewRequests')}</Text>
-                <Text style={styles.statValue}>{loading ? '—' : newRequestsCount}</Text>
+                <Text style={styles.statValue}>{counter(home?.newRequests)}</Text>
               </View>
             </View>
           </View>
@@ -146,28 +194,40 @@ export function MyOrdersScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.filters}
           >
-            {filters.map((item) => (
+            {ORDER_TABS.map((item) => (
               <FilterChip
                 key={item.id}
                 label={t(item.labelKey)}
-                count={item.count}
-                selected={filter === item.id}
-                onPress={() => setFilter(item.id)}
+                // The server counts the selected tab only; other tabs show no number rather than a guess.
+                count={item.id === tab && firstPage ? board.total : undefined}
+                selected={tab === item.id}
+                onPress={() => setTab(item.id)}
               />
             ))}
           </ScrollView>
 
-          {error && orders.length === 0 && !loading ? (
+          {error && board.items.length === 0 && !loading ? (
             <ErrorState
               title={t('commonLoadingErrorTitle')}
               message={t('commonLoadingErrorMessage')}
               retryLabel={t('commonRetry')}
               onRetry={retry}
             />
-          ) : visibleOrders.length === 0 && !loading ? (
+          ) : board.items.length === 0 && firstPage ? (
             <Text style={styles.empty}>{t('ordersEmpty')}</Text>
           ) : (
-            <View style={styles.orders}>{visibleOrders.map(renderOrder)}</View>
+            <View style={styles.orders}>
+              {board.items.map(renderOrder)}
+              {board.hasMore ? (
+                <BrandButton
+                  label={t('jwLoadMore')}
+                  variant="outline"
+                  flex={false}
+                  disabled={loadingMore}
+                  onPress={() => loadMore()}
+                />
+              ) : null}
+            </View>
           )}
         </View>
       </ScrollView>
@@ -321,23 +381,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 16,
   },
-  badgeNew: {
-    backgroundColor: colors.brand,
-  },
-  badgeWaiting: {
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle,
-  },
   badgeText: {
     fontFamily: 'Heebo',
     fontSize: 12,
     fontWeight: '500',
-  },
-  badgeTextNew: {
-    color: colors.textInverse,
-  },
-  badgeTextWaiting: {
-    color: colors.textSecondary,
   },
 })

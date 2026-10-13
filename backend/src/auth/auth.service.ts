@@ -25,9 +25,11 @@ import {
   RegisterDto,
   ResendVerifyDto,
   ResetPasswordDto,
+  AddRoleDto,
   SwitchRoleDto,
   VerifyEmailDto,
 } from './dto/auth.dto';
+import { AuditService } from '../audit/audit.service';
 import { AuthResult, RegisterResult, SafeUser } from './interfaces/auth-user.interface';
 import { OAuthTokenVerifier } from './oauth/oauth-token-verifier';
 import { PasswordService } from './services/password.service';
@@ -92,6 +94,7 @@ export class AuthService implements OnModuleDestroy {
     private readonly featureFlags: FeatureFlagsService,
     private readonly limiter: RateLimiterService,
     private readonly oauthVerifier: OAuthTokenVerifier,
+    private readonly audit: AuditService,
   ) {}
 
   private sanitize(user: User): SafeUser {
@@ -299,8 +302,9 @@ export class AuthService implements OnModuleDestroy {
 
   async login(dto: LoginDto, clientIp: string): Promise<AuthResult> {
     const email = dto.email.toLowerCase();
+    const budgetKey = `auth-login:${clientIp}:${email}`;
     const allowed = await this.limiter.consume(
-      `auth-login:${clientIp}:${email}`,
+      budgetKey,
       this.config.get<number>('auth.loginThrottleLimit', 5),
       this.config.get<number>('auth.loginThrottleWindowMs', 15 * 60_000),
     );
@@ -387,6 +391,9 @@ export class AuthService implements OnModuleDestroy {
       throw invalidCredentials();
     }
 
+    // The budget limits guessing: a sign-in that proved the password does not use it up (the
+    // wrong guesses before it still count).
+    await this.limiter.refund(budgetKey);
     return { user: this.sanitize(updated), tokens };
   }
 
@@ -583,6 +590,40 @@ export class AuthService implements OnModuleDestroy {
     this.tokens.announceSessionsEnded(user.id);
 
     return { ok: true };
+  }
+
+  /** Adds the designer or jeweler role (PRD 5.1: a user can be both); the active role stays. */
+  async addRole(user: User, dto: AddRoleDto): Promise<AuthResult> {
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const current = await tx.user.findUniqueOrThrow({ where: { id: user.id } });
+      if (
+        current.deletedAt ||
+        current.sessionVersion !== user.sessionVersion ||
+        !SIGN_IN_STATUSES.includes(current.status)
+      ) {
+        return null;
+      }
+      const added = !current.roles.includes(dto.role);
+      const updated = added
+        ? await tx.user.update({ where: { id: user.id }, data: { roles: { push: dto.role } } })
+        : current;
+      const safe = this.sanitize(updated);
+      return { added, result: { user: safe, tokens: await this.tokens.issueTokens(safe, undefined, tx) } };
+    });
+    if (!outcome) {
+      throw sessionEnded();
+    }
+    if (outcome.added) {
+      await this.audit.log({
+        actorUserId: user.id,
+        action: 'user.role_added',
+        entityType: 'User',
+        entityId: user.id,
+        after: { role: dto.role },
+      });
+    }
+    return outcome.result;
   }
 
   async switchRole(user: User, dto: SwitchRoleDto): Promise<AuthResult> {

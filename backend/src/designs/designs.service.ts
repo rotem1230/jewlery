@@ -12,10 +12,18 @@ import { AppConfigService } from '../cms/app-config.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
+import { stableJson } from './design-fingerprint';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { WizardEngineService } from '../wizard/wizard-engine.service';
-import { CreateDesignDto, LockDesignDto, QueryDesignsDto, UpdateDesignDto } from './dto/design.dto';
+import { AdminUnlockDesignDto, CreateDesignDto, LockDesignDto, QueryDesignsDto, UpdateDesignDto } from './dto/design.dto';
+
+const COMPLETED_BY_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  jewelerProfile: { select: { businessName: true } },
+} satisfies Prisma.UserSelect;
 
 const PAGE_SIZE = 20;
 const DEFAULT_PUBLISH_TTL_DAYS = 30;
@@ -55,6 +63,16 @@ export class DesignsService {
       }
       return undefined;
     }, obj);
+  }
+
+  /** Who made a completed design: the jeweler's business, else their name (PRD 5.3). */
+  private completedBy(
+    user: { id: string; firstName: string | null; lastName: string | null; jewelerProfile: { businessName: string } | null } | null,
+  ) {
+    if (!user) {
+      return null;
+    }
+    return { id: user.id, name: user.jewelerProfile?.businessName || this.fullName(user) };
   }
 
   private fullName(user: { firstName: string | null; lastName: string | null } | null): string | null {
@@ -116,7 +134,7 @@ export class DesignsService {
     for (const field of design.lockedFields) {
       const oldValue = this.getByPath(design.parameters, field);
       const newValue = this.getByPath(nextParameters, field);
-      if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+      if (stableJson(oldValue) !== stableJson(newValue)) {
         throw new ForbiddenException({
           success: false,
           message: `Field "${field}" is locked and cannot be edited`,
@@ -148,6 +166,10 @@ export class DesignsService {
       if (!region) {
         throw new NotFoundException({ success: false, message: 'Unknown region' });
       }
+    }
+
+    if (dto.parameters !== undefined) {
+      await this.assertValidParameters(dto.itemTypeId, dto.parameters);
     }
 
     const design = await this.prisma.design.create({
@@ -192,7 +214,7 @@ export class DesignsService {
         include: {
           itemType: true,
           preferredRegion: true,
-          completedBy: { select: { id: true, firstName: true, lastName: true } },
+          completedBy: { select: COMPLETED_BY_SELECT },
           _count: { select: { quotes: true } },
         },
       }),
@@ -204,7 +226,7 @@ export class DesignsService {
       ...design,
       thumbnailUrl: this.access.urlFor(design.thumbnailUploadId),
       quoteCount: _count.quotes,
-      completedBy: completedBy ? { id: completedBy.id, name: this.fullName(completedBy) } : null,
+      completedBy: this.completedBy(completedBy),
     }));
 
     return {
@@ -236,7 +258,7 @@ export class DesignsService {
       include: {
         itemType: true,
         preferredRegion: true,
-        completedBy: { select: { id: true, firstName: true, lastName: true } },
+        completedBy: { select: COMPLETED_BY_SELECT },
         _count: { select: { quotes: true } },
       },
     });
@@ -264,7 +286,7 @@ export class DesignsService {
       thumbnailUrl: this.access.urlFor(rest.thumbnailUploadId),
       aiOutputUrl: await this.aiOutputUrl(design),
       quoteCount: _count.quotes,
-      completedBy: completedBy ? { id: completedBy.id, name: this.fullName(completedBy) } : null,
+      completedBy: this.completedBy(completedBy),
       versions,
     };
   }
@@ -307,14 +329,7 @@ export class DesignsService {
     }
 
     if (dto.parameters !== undefined) {
-      const validation = await this.wizard.validateParameters(design.itemTypeId, dto.parameters);
-      if (!validation.valid) {
-        throw new BadRequestException({
-          success: false,
-          message: 'Design parameters failed validation',
-          errors: validation.errors,
-        });
-      }
+      await this.assertValidParameters(design.itemTypeId, dto.parameters);
     }
 
     // Conditional on the version the client edited, so two concurrent saves cannot both win.
@@ -355,6 +370,17 @@ export class DesignsService {
     });
 
     return updated;
+  }
+
+  private async assertValidParameters(itemTypeId: string, parameters: unknown): Promise<void> {
+    const validation = await this.wizard.validateParameters(itemTypeId, parameters);
+    if (!validation.valid) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Design parameters failed validation',
+        errors: validation.errors,
+      });
+    }
   }
 
   async duplicate(id: string, user: User): Promise<Design> {
@@ -408,6 +434,8 @@ export class DesignsService {
     const data: Prisma.DesignUpdateInput = { status: toStatus, version: { increment: 1 } };
 
     if (toStatus === DesignStatus.PUBLISHED) {
+      // Jewelers quote what is published: it must be a complete, valid specification.
+      await this.assertValidParameters(design.itemTypeId, design.parameters);
       const requireFeasibility = await this.appConfig.get('require_feasibility_before_publish');
       const feasibilityOk =
         design.feasibilityStatus === FeasibilityStatus.APPROVED ||
@@ -477,6 +505,35 @@ export class DesignsService {
       entityId: id,
       before: { lockedFields: previousFields },
       after: { lockedFields: updated.lockedFields },
+    });
+
+    return updated;
+  }
+
+  /** Support unlocks locked fields (PRD 5.3: a lock is final for the designer, not for support). */
+  async adminUnlock(id: string, adminUserId: string, dto: AdminUnlockDesignDto): Promise<Design> {
+    const { previousFields, updated } = await this.prisma.$transaction(async (tx) => {
+      const [row] = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "designs" WHERE id = ${id}::uuid AND "deletedAt" IS NULL FOR UPDATE`;
+      if (!row) {
+        throw new NotFoundException({ success: false, message: 'Design not found' });
+      }
+      const current = await tx.design.findUniqueOrThrow({ where: { id } });
+      const remaining = current.lockedFields.filter((field) => !dto.fields.includes(field));
+      const saved = await tx.design.update({
+        where: { id },
+        data: { lockedFields: remaining, lockedAt: remaining.length > 0 ? current.lockedAt : null, version: { increment: 1 } },
+      });
+      return { previousFields: current.lockedFields, updated: saved };
+    });
+
+    await this.snapshotVersion(updated, adminUserId, 'unlock');
+    await this.audit.log({
+      actorUserId: adminUserId,
+      action: 'design.unlock',
+      entityType: 'Design',
+      entityId: id,
+      before: { lockedFields: previousFields },
+      after: { lockedFields: updated.lockedFields, reason: dto.reason },
     });
 
     return updated;

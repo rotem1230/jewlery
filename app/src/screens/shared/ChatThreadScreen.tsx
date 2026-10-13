@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -25,6 +26,8 @@ import { QuoteApprovedBanner } from '@/src/components/chats/QuoteApprovedBanner'
 import { Skeleton } from '@/src/components/ui/Skeleton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { useConversationThread, type ThreadBubble } from '@/src/hooks/useConversationThread'
+import { quoteCardLines } from '@/src/lib/quoteView'
+import { restoreDraft, sendErrorMessage } from '@/src/lib/chatThread'
 import { pickChatPhoto, takeChatPhoto, voiceFileName } from '@/src/lib/chatAttachments'
 import {
   cancelVoiceRecording,
@@ -62,8 +65,10 @@ function ThreadMessage({
   durationMs,
   onTogglePlay,
   onImagePress,
+  contactLabel,
 }: {
   item: ThreadBubble
+  contactLabel: string
   playing: boolean
   positionMs: number
   durationMs: number
@@ -99,13 +104,27 @@ function ThreadMessage({
     )
   }
   if (item.kind === 'system') {
-    return <Text style={styles.systemText}>{item.text}</Text>
+    return (
+      <View>
+        <Text style={styles.systemText}>{item.text}</Text>
+        {item.contactUrl ? (
+          <Pressable
+            accessibilityRole="link"
+            style={styles.contactButton}
+            onPress={() => Linking.openURL(item.contactUrl as string).catch(() => undefined)}
+          >
+            <Text style={styles.contactButtonText}>{contactLabel}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    )
   }
   return (
     <ChatBubble
       side={item.side}
       text={item.text}
       time={item.time}
+      delivery={item.delivery}
       avatar={item.avatar}
       avatarLabel={item.avatarLabel}
     />
@@ -148,7 +167,23 @@ export function ChatThreadScreen() {
     playbackDurationMs,
     togglePlayback,
     latestQuote,
-  } = useConversationThread(route.params.chatId)
+  } = useConversationThread(route.params.chatId, route.params.peerLastReadAt)
+  const quoteCard = latestQuote?.id
+    ? quoteCardLines({
+        currency: latestQuote.currency ?? 'ILS',
+        totalPrice: latestQuote.totalPrice ?? null,
+        materialsCost: latestQuote.materialsCost ?? null,
+        laborCost: latestQuote.laborCost ?? null,
+        etaBusinessDays: latestQuote.etaBusinessDays ?? null,
+        design: latestQuote.design,
+      })
+    : null
+  // The latest handoff link in the thread (posted as a system message when a quote is accepted).
+  const handoffUrl = groups
+    .flatMap((group) => group.items)
+    .map((item) => item.contactUrl)
+    .filter(Boolean)
+    .pop()
 
   useEffect(() => {
     return () => {
@@ -172,7 +207,13 @@ export function ChatThreadScreen() {
     const text = draft.trim()
     if (!text || sending) return
     setDraft('')
-    void send(text).then(scrollToEnd)
+    send(text)
+      .then(scrollToEnd)
+      .catch((err: unknown) => {
+        // Nothing typed is lost: the text goes back into the input, with the reason.
+        setDraft((current) => restoreDraft(current, text))
+        Alert.alert(t('chatSendFailedTitle'), sendErrorMessage(err))
+      })
   }
 
   const onSendPhotoFile = (file: LocalFile) => {
@@ -258,7 +299,7 @@ export function ChatThreadScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={0}
     >
-      <ScreenTopBar title={route.params.title || t('chatThreadTitle')} onBack={() => navigation.goBack()} />
+      <ScreenTopBar title={route.params.title || t('shChatThreadFallbackTitle')} onBack={() => navigation.goBack()} />
 
       <ScrollView
         ref={scrollRef}
@@ -272,27 +313,12 @@ export function ChatThreadScreen() {
           {latestQuote?.id ? (
             <ChatQuoteCard
               title={t('chatQuoteTitle')}
-              spec={latestQuote.design?.title ?? ''}
+              spec={quoteCard?.spec ?? ''}
               totalLabel={t('chatQuoteTotalLabel')}
-              totalValue={
-                latestQuote.totalPrice != null
-                  ? `₪ ${Math.round(Number(latestQuote.totalPrice)).toLocaleString('he-IL')}`
-                  : t('chatQuoteTotalValue')
-              }
-              materials={
-                latestQuote.materialsCost != null
-                  ? `${t('chatQuoteMaterials').split(':')[0]}: ₪ ${Math.round(Number(latestQuote.materialsCost)).toLocaleString('he-IL')}`
-                  : t('chatQuoteMaterials')
-              }
-              labor={
-                latestQuote.laborCost != null
-                  ? `${t('chatQuoteLabor').split(':')[0]}: ₪ ${Math.round(Number(latestQuote.laborCost)).toLocaleString('he-IL')}`
-                  : t('chatQuoteLabor')
-              }
-              delivery={t('chatQuoteDelivery').replace(
-                '14',
-                String(latestQuote.etaBusinessDays ?? 14),
-              )}
+              totalValue={quoteCard?.total ?? '—'}
+              materials={`${t('chatQuoteMaterials').split(':')[0]}: ${quoteCard?.materials ?? '—'}`}
+              labor={`${t('chatQuoteLabor').split(':')[0]}: ${quoteCard?.labor ?? '—'}`}
+              delivery={t('chatQuoteDelivery').replace('14', String(quoteCard?.etaDays ?? '—'))}
               ctaLabel={t('chatQuoteCta')}
               onPressCta={() =>
                 navigation.navigate('QuoteDetails', {
@@ -344,6 +370,7 @@ export function ChatThreadScreen() {
                       durationMs={playingUri === item.mediaUri ? playbackDurationMs : 0}
                       onTogglePlay={togglePlayback}
                       onImagePress={setViewerUri}
+                      contactLabel={t('chatContactJeweler')}
                     />
                   ))}
                 </View>
@@ -359,6 +386,10 @@ export function ChatThreadScreen() {
               body={t('chatQuoteApprovedBody')}
               linkLabel={t('chatQuoteApprovedLink')}
               onPressLink={() => {
+                if (handoffUrl) {
+                  Linking.openURL(handoffUrl).catch(() => undefined)
+                  return
+                }
                 if (!latestQuote?.id) return
                 navigation.navigate('QuoteDetails', {
                   quoteId: latestQuote.id,
@@ -433,6 +464,20 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     color: colors.textSecondary,
     textAlign: 'center',
+  },
+  contactButton: {
+    alignSelf: 'center',
+    marginBottom: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: '#25D366',
+  },
+  contactButtonText: {
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
   systemText: {
     width: '100%',

@@ -6,6 +6,7 @@ import { BusinessProfileSummary } from '@/src/components/jeweler/BusinessProfile
 import { BusinessProfileSkeleton } from '@/src/components/jeweler/BusinessProfileSkeleton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { useMyBusinessProfile } from '@/src/hooks/useMyBusinessProfile'
+import { DAY_LABEL_KEYS, hoursRows } from '@/src/lib/businessHours'
 import { colors } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import type { ProfileStackParamList } from '@/src/navigation/types'
@@ -20,7 +21,7 @@ type Nav = NativeStackNavigationProp<ProfileStackParamList, 'BusinessProfileView
 export function BusinessProfileViewScreen() {
   const { t } = useTranslation()
   const navigation = useNavigation<Nav>()
-  const { profile, loading, refreshing, error, refresh, retry } = useMyBusinessProfile()
+  const { profile, data: raw, loading, refreshing, error, refresh, retry } = useMyBusinessProfile()
 
   const showSkeleton = loading && !profile
   const showError = !loading && !profile && error
@@ -75,6 +76,15 @@ export function BusinessProfileViewScreen() {
               reviewsTitle={t('businessProfileReviewsLabel')}
               reviews={profile.reviews}
               reviewsEmptyLabel={t('businessProfileReviewsEmpty')}
+              businessInfo={{
+                hoursTitle: t('jwHoursLabel'),
+                hours: hoursRows(raw?.businessHours).map((row) => ({
+                  label: t(DAY_LABEL_KEYS[row.day]),
+                  text: row.text,
+                })),
+                areaTitle: t('jwServiceAreaLabel'),
+                area: raw?.serviceAreaText,
+              }}
             />
           ) : (
             <ErrorState

@@ -6,6 +6,8 @@ type AtelierDesignCardProps = {
   title: string
   metal: string
   publishedLabel: string
+  /** The listing period, e.g. "בתוקף עד 20.11.2026"; omitted when the listing has no end date. */
+  expiryLabel?: string
   ctaLabel: string
   image: ImageSourcePropType
   onPress?: () => void
@@ -20,6 +22,7 @@ export function AtelierDesignCard({
   title,
   metal,
   publishedLabel,
+  expiryLabel,
   ctaLabel,
   image,
   onPress,
@@ -44,6 +47,11 @@ export function AtelierDesignCard({
           <Text style={styles.published} numberOfLines={1}>
             {publishedLabel}
           </Text>
+          {expiryLabel ? (
+            <Text style={styles.published} numberOfLines={1}>
+              {expiryLabel}
+            </Text>
+          ) : null}
 
           <Pressable
             onPress={onPress}

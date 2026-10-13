@@ -8,42 +8,20 @@ import { Field } from '@/src/components/ui/Field'
 import { PhoneField } from '@/src/components/auth/PhoneField'
 import { Button } from '@/src/components/ui/Button'
 import { colors } from '@/src/theme/tokens'
-import { useTranslation, type TranslationKey } from '@/src/i18n'
+import { useTranslation } from '@/src/i18n'
 import { useAppDispatch, useAppSelector } from '@/src/store/hooks'
 import { listDesigns } from '@/src/api/designs'
 import { listConversations } from '@/src/api/chat'
-import { changePassword, getMe, login, logout, switchRole, updateMe } from '@/src/api/auth'
+import { changePassword, getMe, login, logout, updateMe } from '@/src/api/auth'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { displayName as formatDisplayName, splitFullName } from '@/src/lib/format'
 import { parseApiError } from '@/src/lib/api'
+import { profileMenuItems, roleToAdd, roleToSwitch, type MarketplaceRole } from '@/src/lib/accountRoles'
 import { sessionFromAuth } from '@/src/lib/session'
 import { passwordIssue, toE164Phone } from '@/src/lib/validation'
+import { addAccountRole, switchAccountRole } from '@/src/store/authActions'
 import { clearSession, setSession } from '@/src/store/store'
 import type { ProfileStackParamList } from '@/src/navigation/types'
-
-type NoParamProfileRoute = {
-  [K in keyof ProfileStackParamList]: ProfileStackParamList[K] extends undefined ? K : never
-}[keyof ProfileStackParamList]
-
-type MenuItem = {
-  id: string
-  labelKey: TranslationKey
-  route?: NoParamProfileRoute
-}
-
-const DESIGNER_MENU_ITEMS: MenuItem[] = [
-  { id: 'pricing', labelKey: 'profilePricing', route: 'Pricing' },
-  { id: 'about', labelKey: 'profileAbout', route: 'Terms' },
-  { id: 'help', labelKey: 'profileHelp', route: 'Faq' },
-  { id: 'faq', labelKey: 'profileFaq', route: 'Faq' },
-  { id: 'terms', labelKey: 'profileTerms', route: 'Terms' },
-]
-
-const JEWELER_MENU_ITEMS: MenuItem[] = [
-  { id: 'help', labelKey: 'profileHelp', route: 'Faq' },
-  { id: 'faq', labelKey: 'profileFaq', route: 'Faq' },
-  { id: 'terms', labelKey: 'profileTerms', route: 'Terms' },
-]
 
 type ProfileNav = NativeStackNavigationProp<ProfileStackParamList, 'ProfileHome'>
 
@@ -59,7 +37,7 @@ export function ProfileScreen() {
   const dispatch = useAppDispatch()
 
   const isJeweler = user?.activeRole === 'JEWELER'
-  const menuItems = isJeweler ? JEWELER_MENU_ITEMS : DESIGNER_MENU_ITEMS
+  const menuItems = profileMenuItems(user?.activeRole)
   const isDemo = user?.id === 'demo'
   const displayName = isDemo
     ? t(isJeweler ? 'profileDemoNameJeweler' : 'profileDemoName')
@@ -136,23 +114,45 @@ export function ProfileScreen() {
     }
   }
 
-  const otherRole = user?.roles.includes('JEWELER') && user.roles.includes('DESIGNER')
-    ? user.activeRole === 'JEWELER'
-      ? 'DESIGNER'
-      : 'JEWELER'
-    : null
+  const otherRole = roleToSwitch(user)
+  // PRD 5.1: a designer can also become a jeweler (and the other way round) at any time.
+  const addableRole = isDemo || !user ? null : roleToAdd(user.roles)
 
-  const onSwitchRole = async () => {
-    if (!otherRole) return
+  const switchTo = (role: MarketplaceRole) => {
     setBusy(true)
-    try {
-      const result = await switchRole(otherRole)
-      dispatch(setSession(sessionFromAuth(result)))
-    } catch (err) {
-      Alert.alert(t('authErrorTitle'), parseApiError(err))
-    } finally {
-      setBusy(false)
-    }
+    dispatch(switchAccountRole(role))
+      .catch((err: unknown) => Alert.alert(t('authErrorTitle'), parseApiError(err)))
+      .finally(() => setBusy(false))
+  }
+
+  const onSwitchRole = () => {
+    if (otherRole) switchTo(otherRole)
+  }
+
+  const addRoleToAccount = (role: MarketplaceRole) => {
+    setBusy(true)
+    dispatch(addAccountRole(role))
+      .then(() => {
+        // The active role stays as it was; switching now is offered, never forced.
+        Alert.alert(t('shProfileRoleAddedTitle'), t('shProfileRoleAddedBody'), [
+          { text: t('shProfileSwitchLater'), style: 'cancel' },
+          { text: t('shProfileSwitchNow'), onPress: () => switchTo(role) },
+        ])
+      })
+      .catch((err: unknown) => Alert.alert(t('authErrorTitle'), parseApiError(err)))
+      .finally(() => setBusy(false))
+  }
+
+  const onAddRole = () => {
+    if (!addableRole) return
+    Alert.alert(
+      t('shProfileJoinConfirmTitle'),
+      t(addableRole === 'JEWELER' ? 'shProfileJoinConfirmJeweler' : 'shProfileJoinConfirmDesigner'),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        { text: t('shProfileJoinConfirmCta'), onPress: () => addRoleToAccount(addableRole) },
+      ],
+    )
   }
 
   const onChangePassword = async () => {
@@ -257,8 +257,13 @@ export function ProfileScreen() {
                 {t('profileChangePassword')}
               </Button>
               {otherRole ? (
-                <Button fullWidth disabled={busy} onPress={() => void onSwitchRole()}>
+                <Button fullWidth disabled={busy} onPress={onSwitchRole}>
                   {t(otherRole === 'JEWELER' ? 'profileSwitchToJeweler' : 'profileSwitchToDesigner')}
+                </Button>
+              ) : null}
+              {addableRole ? (
+                <Button fullWidth variant="outline" disabled={busy} onPress={onAddRole}>
+                  {t(addableRole === 'JEWELER' ? 'shProfileJoinAsJeweler' : 'shProfileJoinAsDesigner')}
                 </Button>
               ) : null}
             </View>
@@ -281,9 +286,7 @@ export function ProfileScreen() {
             {menuItems.map((item) => (
               <Pressable
                 key={item.id}
-                onPress={() => {
-                  if (item.route) navigation.navigate(item.route)
-                }}
+                onPress={() => navigation.navigate(item.route)}
                 style={({ pressed }) => [styles.menuRow, pressed && styles.pressed]}
                 accessibilityRole="button"
               >

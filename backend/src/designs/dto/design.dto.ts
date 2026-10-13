@@ -104,6 +104,23 @@ export class TransitionDesignDto {
   toStatus!: DesignStatus;
 }
 
+/** Support unlocking fields a designer locked (PRD 5.3); the reason is kept in the audit log. */
+export class AdminUnlockDesignDto {
+  @ApiProperty({ type: [String], description: 'Locked parameter paths to unlock, e.g. ["metal"]' })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  @ArrayMaxSize(50)
+  @MaxLength(100, { each: true })
+  fields!: string[];
+
+  @ApiProperty({ description: 'Why support unlocked them (kept in the audit log)' })
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  reason!: string;
+}
+
 export class LockDesignDto {
   @ApiProperty({ type: [String], description: 'Parameter paths to lock, e.g. ["size","metal"]' })
   @IsArray()

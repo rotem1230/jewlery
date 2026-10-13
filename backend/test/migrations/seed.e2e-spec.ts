@@ -66,6 +66,53 @@ describe('database seed', () => {
     expect(plan.price).toBe('59.90');
   });
 
+  it('chat system messages are in Hebrew; a re-seed upgrades the old English text but keeps an operator edit', async () => {
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    const body = async (eventKey: string) =>
+      (
+        await db.sql.$queryRawUnsafe<Array<{ body: string }>>(
+          `SELECT "body" FROM "system_message_templates" WHERE "eventKey" = $1 AND "locale" = 'he'`,
+          eventKey,
+        )
+      )[0]?.body;
+    expect(await body('quote.accepted')).toContain('ההצעה אושרה בהצלחה');
+    expect(await body('handoff.created')).toContain('{{whatsappUrl}}');
+
+    await db.sql.$executeRawUnsafe(
+      `UPDATE "system_message_templates" SET "body" = 'Custom wording' WHERE "eventKey" = 'quote.accepted'`,
+    );
+    await db.sql.$executeRawUnsafe(
+      `UPDATE "system_message_templates" SET "body" = 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}' WHERE "eventKey" = 'handoff.created'`,
+    );
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    expect(await body('quote.accepted')).toBe('Custom wording');
+    expect(await body('handoff.created')).not.toContain('Continue the handoff');
+  });
+
+  it('the ring size chart follows the PRD, and sizes it dropped are no longer offered', async () => {
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    // A database seeded before: its US 5.00 row is still active.
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "size_charts" ("id", "itemTypeId", "standard", "sizeCode", "sortOrder", "isActive")
+       SELECT gen_random_uuid(), "id", 'US', '5.00', 0, true FROM "item_types" WHERE "code" = 'RING'`,
+    );
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    const active = await db.sql.$queryRawUnsafe<Array<{ standard: string; sizeCode: string }>>(
+      `SELECT s."standard", s."sizeCode" FROM "size_charts" s JOIN "item_types" i ON i."id" = s."itemTypeId"
+        WHERE i."code" = 'RING' AND s."isActive" ORDER BY s."standard", s."sortOrder"`,
+    );
+    expect(active.filter((r) => r.standard === 'IL').map((r) => r.sizeCode)).toEqual(['52', '54', '56', '58', '60', '62', '64']);
+    expect(active.filter((r) => r.standard === 'US').map((r) => r.sizeCode)).toEqual([
+      '6.00',
+      '7.00',
+      '7.75',
+      '8.50',
+      '9.25',
+      '10.00',
+      '10.75',
+    ]);
+  });
+
   it('refuses to seed demo accounts in production', async () => {
     const run = seed({ NODE_ENV: 'production', SEED_DEMO_DATA: 'true' });
     expect(run.ok).toBe(false);

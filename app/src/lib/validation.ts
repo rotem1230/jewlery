@@ -10,13 +10,13 @@ export function isValidEmail(value: string): boolean {
   return EMAIL_RE.test(value.trim())
 }
 
-/** Backend policy: min 8, at least one letter, at least one number. */
+/** Backend policy: min 8, at least one letter (any alphabet, Hebrew included), at least one number. */
 export function passwordIssue(
   password: string,
 ): 'empty' | 'short' | 'letter' | 'number' | null {
   if (!password) return 'empty'
   if (password.length < 8) return 'short'
-  if (!/[A-Za-z]/.test(password)) return 'letter'
+  if (!/\p{L}/u.test(password)) return 'letter'
   if (!/\d/.test(password)) return 'number'
   return null
 }

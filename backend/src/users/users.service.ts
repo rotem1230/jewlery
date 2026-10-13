@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import {
   DesignRequestStatus,
   DeviceToken,
   Prisma,
   ProfilePublishStatus,
   QuoteStatus,
+  RequestTargetStatus,
   User,
   UserPreference,
   UserStatus,
@@ -36,6 +37,8 @@ export const PUBLIC_USER_SELECT = {
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly password: PasswordService,
@@ -263,10 +266,18 @@ export class UsersService {
         },
         data: { status: DesignRequestStatus.CANCELLED },
       });
+      await tx.designRequestTarget.updateMany({
+        where: {
+          request: { requesterId: userId },
+          status: { in: [RequestTargetStatus.NEW, RequestTargetStatus.QUOTE_SUBMITTED, RequestTargetStatus.NEGOTIATING] },
+        },
+        data: { status: RequestTargetStatus.CLOSED, statusChangedAt: now },
+      });
       await tx.deviceToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
       return openQuotes;
     });
     this.sessionEvents.sessionsRevoked(userId);
+    await this.purgeOwnUploads(userId);
     for (const quote of withdrawn) {
       this.gateway.emitToConversation(quote.conversationId, 'quote:updated', {
         quoteId: quote.id,
@@ -282,6 +293,27 @@ export class UsersService {
     });
 
     return { ok: true };
+  }
+
+  /**
+   * After an account is deleted, its files that nothing else uses (avatar, selfies, unsent photos)
+   * are removed (PRD 7.2). A file still part of a conversation, a design or a profile stays with it.
+   */
+  private async purgeOwnUploads(userId: string): Promise<void> {
+    const uploads = await this.prisma.upload.findMany({
+      where: { ownerUserId: userId, deletedAt: null },
+      select: { id: true, bucket: true, objectKey: true },
+    });
+    for (const upload of uploads) {
+      try {
+        if (!(await this.uploads.isReferencedElsewhere(upload.id))) {
+          await this.uploads.discard(upload);
+        }
+      } catch (err) {
+        // The account is already deleted; a file left behind is reported, not fatal.
+        this.logger.error(`Could not purge upload ${upload.id} of deleted user ${userId}: ${(err as Error).message}`);
+      }
+    }
   }
 
   async registerDevice(userId: string, dto: RegisterDeviceDto): Promise<DeviceToken> {

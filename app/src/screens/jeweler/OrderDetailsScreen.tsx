@@ -12,9 +12,13 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { getAtelierRequest } from '@/src/api/atelier'
 import { getPublicUser } from '@/src/api/auth'
 import { createConversation } from '@/src/api/chat'
+import { declineMyOrder } from '@/src/api/jewelerProfiles'
+import { withdrawQuote } from '@/src/api/quotes'
 import { parseApiError } from '@/src/lib/api'
-import { displayName, formatMoney, imageFromUpload } from '@/src/lib/format'
-import { specsFromParameters } from '@/src/lib/designSpecs'
+import { listingExpiry } from '@/src/lib/atelierView'
+import { currencySymbol, displayName, formatMoney, imageFromUpload } from '@/src/lib/format'
+import { jewelerErrorKey, shouldReload, type JewelerAction } from '@/src/lib/jewelerErrors'
+import { designSpecRows, orderActions, orderBadge } from '@/src/lib/jewelerOrders'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation } from '@/src/i18n'
@@ -25,6 +29,11 @@ type Nav = NativeStackNavigationProp<MyOrdersStackParamList, 'OrderDetails'>
 type Route = RouteProp<MyOrdersStackParamList, 'OrderDetails'>
 type TabNav = BottomTabNavigationProp<JewelerTabParamList>
 
+/**
+ * One work request (PRD 8): the client's name (their phone is not shown before a quote is
+ * accepted — decision D1), the full design specification, the jeweler's quote, and the actions:
+ * quote / edit / withdraw, chat, or decline the request.
+ */
 export function OrderDetailsScreen() {
   const { t, locale } = useTranslation()
   const navigation = useNavigation<Nav>()
@@ -47,11 +56,31 @@ export function OrderDetailsScreen() {
 
   const request = data?.request
   const requester = data?.requester
-  const quote = request?.quotes?.[0]
-  const specs = useMemo(
-    () => specsFromParameters(request?.design?.parameters, request?.design?.itemType?.labelHe),
-    [request],
-  )
+  const actions = useMemo(() => (request ? orderActions(request) : null), [request])
+  const quote = actions?.quote ?? null
+
+  const specs = useMemo(() => {
+    const rows = designSpecRows(request?.design)
+    if (request?.message?.trim()) {
+      rows.push({ label: t('jwRequestMessage'), value: request.message.trim(), fullWidth: true })
+    }
+    return rows
+  }, [request, t])
+
+  const details = useMemo(() => {
+    const lines: string[] = []
+    const badge = orderBadge(actions?.status)
+    if (badge) lines.push(`${t('jwStatusLabel')} ${t(badge.labelKey)}`)
+    const expiry = listingExpiry(request?.design?.expiresAt, locale)
+    if (expiry) lines.push(t(expiry.expired ? 'jwExpiredOn' : 'jwValidUntil').replace('{{date}}', expiry.date))
+    return lines
+  }, [actions, request, locale, t])
+
+  const showError = (err: unknown, action: JewelerAction) => {
+    const key = jewelerErrorKey(err, action)
+    Alert.alert(t('authErrorTitle'), key ? t(key) : parseApiError(err))
+    if (shouldReload(err)) retry()
+  }
 
   const openChat = async () => {
     if (!request) return
@@ -69,9 +98,63 @@ export function OrderDetailsScreen() {
     }
   }
 
+  const openQuoteForm = (quoteId?: string) => {
+    if (!request) return
+    tabNavigation.navigate('Atelier', {
+      screen: 'SubmitQuote',
+      params: {
+        designId: request.designId,
+        requestId: request.id,
+        quoteId,
+        conversationId: quoteId ? quote?.conversationId : undefined,
+      },
+    })
+  }
+
+  const decline = async () => {
+    if (!request) return
+    setBusy(true)
+    try {
+      await declineMyOrder(request.id)
+      // The board reloads when it regains focus.
+      navigation.goBack()
+    } catch (err) {
+      showError(err, 'decline')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmDecline = () =>
+    Alert.alert(t('jwDeclineConfirmTitle'), t('jwDeclineConfirmMessage'), [
+      { text: t('cancel'), style: 'cancel' },
+      { text: t('jwDeclineConfirmCta'), style: 'destructive', onPress: () => decline() },
+    ])
+
+  const withdraw = async () => {
+    if (!quote) return
+    setBusy(true)
+    try {
+      await withdrawQuote(quote.id)
+      Alert.alert(t('jwWithdrawDone'))
+      retry()
+    } catch (err) {
+      showError(err, 'withdraw')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const confirmWithdraw = () =>
+    Alert.alert(t('jwWithdrawConfirmTitle'), t('jwWithdrawConfirmMessage'), [
+      { text: t('cancel'), style: 'cancel' },
+      { text: t('jwWithdrawCta'), style: 'destructive', onPress: () => withdraw() },
+    ])
+
   const dateLabel = request
     ? new Date(request.createdAt).toLocaleDateString(locale === 'he' ? 'he-IL' : 'en-GB')
     : ''
+  const itemType = request?.design?.itemType
 
   return (
     <View style={styles.root}>
@@ -89,14 +172,12 @@ export function OrderDetailsScreen() {
               retryLabel={t('commonRetry')}
               onRetry={retry}
             />
-          ) : request ? (
+          ) : request && actions ? (
             <>
               <ClientInfoCard
                 title={t('jewelerOrderDetailClientTitle')}
                 nameLabel={t('jewelerOrderDetailClientNameLabel')}
                 name={displayName(requester?.firstName, requester?.lastName, t('designer'))}
-                phoneLabel={t('jewelerOrderDetailClientPhoneLabel')}
-                phone={requester?.email ?? '—'}
                 dateLabel={t('jewelerOrderDetailClientDateLabel')}
                 date={dateLabel}
               />
@@ -104,8 +185,9 @@ export function OrderDetailsScreen() {
               <DesignSummaryCard
                 sectionTitle={t('jewelerOrderDetailDesignTitle')}
                 image={imageFromUpload(request.design?.thumbnailUploadId, heroRing)}
-                title={request.design?.title || t('jewelerOrderDetailDesignHeadline')}
-                quote={request.design?.description || request.message || ''}
+                title={request.design?.title || itemType?.labelHe || t('jwUntitledDesign')}
+                details={details}
+                quote={request.design?.description ?? ''}
                 specs={specs}
               />
 
@@ -113,28 +195,30 @@ export function OrderDetailsScreen() {
                 <PriceOfferCard
                   title={t('jewelerOrderDetailPriceTitle')}
                   totalLabel={t('jewelerOrderDetailPriceTotalLabel')}
-                  amount={formatMoney(quote.totalPrice).replace('₪ ', '')}
-                  currencySymbol="₪"
+                  amount={formatMoney(quote.totalPrice, '').trim()}
+                  currencySymbol={currencySymbol(quote.currency)}
                 />
               ) : null}
 
               <View style={styles.actions}>
-                <BrandButton
-                  label={t('jewelerOrderDetailEditOffer')}
-                  variant="primary"
-                  flex={false}
-                  onPress={() =>
-                    tabNavigation.navigate('Atelier', {
-                      screen: 'SubmitQuote',
-                      params: {
-                        designId: request.designId,
-                        requestId: request.id,
-                        quoteId: quote?.id,
-                        conversationId: quote?.conversationId,
-                      },
-                    })
-                  }
-                />
+                {actions.canEditQuote && quote ? (
+                  <BrandButton
+                    label={t('jewelerOrderDetailEditOffer')}
+                    variant="primary"
+                    flex={false}
+                    disabled={busy}
+                    onPress={() => openQuoteForm(quote.id)}
+                  />
+                ) : null}
+                {actions.canSubmitQuote ? (
+                  <BrandButton
+                    label={t('jwSubmitOffer')}
+                    variant="primary"
+                    flex={false}
+                    disabled={busy}
+                    onPress={() => openQuoteForm()}
+                  />
+                ) : null}
                 <BrandButton
                   label={t('jewelerOrderDetailGoToChat')}
                   variant="outline"
@@ -142,6 +226,24 @@ export function OrderDetailsScreen() {
                   disabled={busy}
                   onPress={() => void openChat()}
                 />
+                {actions.canWithdrawQuote ? (
+                  <BrandButton
+                    label={t('jwWithdrawCta')}
+                    variant="outline"
+                    flex={false}
+                    disabled={busy}
+                    onPress={confirmWithdraw}
+                  />
+                ) : null}
+                {actions.canDecline ? (
+                  <BrandButton
+                    label={t('jwDeclineCta')}
+                    variant="outline"
+                    flex={false}
+                    disabled={busy}
+                    onPress={confirmDecline}
+                  />
+                ) : null}
               </View>
             </>
           ) : null}

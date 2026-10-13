@@ -1,15 +1,21 @@
 import { Image, type ImageSourcePropType, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import Svg, { Path } from 'react-native-svg'
 import { colors } from '@/src/theme/tokens'
+import { useTranslation } from '@/src/i18n'
+import type { Delivery } from '@/src/lib/chatThread'
 
 type ChatBubbleProps = {
   text: string
   time: string
   /** Incoming = jeweler (left/white). Outgoing = designer (right/brand). */
   side: 'incoming' | 'outgoing'
+  /** Outgoing only: one grey tick once sent, two blue ticks once the other side read it. */
+  delivery?: Delivery
   avatar?: ImageSourcePropType
   avatarLabel?: string
 }
+
+const READ_TICK = '#4FC3F7'
 
 const AVATAR = 40
 const SIDE_INSET = 16
@@ -36,11 +42,26 @@ function DoubleCheck({ color }: { color: string }) {
   )
 }
 
+function SingleCheck({ color }: { color: string }) {
+  return (
+    <Svg width={14} height={10} viewBox="0 0 14 10" fill="none">
+      <Path
+        d="M3.2 5.2 L5.4 7.4 L10.4 2"
+        stroke={color}
+        strokeWidth={1.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  )
+}
+
 /**
  * Figma chat row — avatar bottom-aligned with bubble;
  * square corner on the avatar side at the bottom of the bubble.
  */
-export function ChatBubble({ text, time, side, avatar, avatarLabel }: ChatBubbleProps) {
+export function ChatBubble({ text, time, side, delivery, avatar, avatarLabel }: ChatBubbleProps) {
+  const { t } = useTranslation()
   const outgoing = side === 'outgoing'
   const { width: screenW } = useWindowDimensions()
   const bubbleMaxW = Math.min(screenW * 0.68, screenW - SIDE_INSET * 2 - AVATAR - AVATAR_GAP)
@@ -61,7 +82,18 @@ export function ChatBubble({ text, time, side, avatar, avatarLabel }: ChatBubble
         outgoing ? { marginRight: AVATAR + AVATAR_GAP } : { marginLeft: AVATAR + AVATAR_GAP },
       ]}
     >
-      <DoubleCheck color="#4FC3F7" />
+      {outgoing && delivery ? (
+        <View
+          accessible
+          accessibilityLabel={t(delivery === 'read' ? 'shChatTickRead' : 'shChatTickSent')}
+        >
+          {delivery === 'read' ? (
+            <DoubleCheck color={READ_TICK} />
+          ) : (
+            <SingleCheck color={colors.textSecondary} />
+          )}
+        </View>
+      ) : null}
       <Text style={styles.time}>{time}</Text>
     </View>
   )

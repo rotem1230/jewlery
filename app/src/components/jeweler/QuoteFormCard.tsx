@@ -1,16 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
 import { ChevronDown } from 'lucide-react-native'
+import { QUOTE_NOTES_MAX, deliveryOptions, type QuoteFormValues } from '@/src/lib/quoteForm'
 import { colors, radii } from '@/src/theme/tokens'
 
-const DELIVERY_OPTIONS_DAYS = [7, 14, 21, 30]
-
-export type QuoteFormValues = {
-  materialsCost: string
-  laborCost: string
-  hoursWorked: string
-  deliveryDays: number
-}
+export type { QuoteFormValues }
 
 type QuoteFormCardProps = {
   title: string
@@ -19,14 +13,16 @@ type QuoteFormCardProps = {
   hoursWorkedLabel: string
   deliveryTimeLabel: string
   deliveryDaysUnit: (days: number) => string
+  notesLabel: string
+  notesPlaceholder: string
   totalLabel: string
   currencySymbol: string
   initialValues?: QuoteFormValues
-  errors?: { materialsCost?: string; laborCost?: string; hoursWorked?: string }
+  errors?: { materialsCost?: string; laborCost?: string; hoursWorked?: string; notes?: string }
   onChange?: (values: QuoteFormValues) => void
 }
 
-/** Figma "הגשת הצעת מחיר" — editable materials/labor/hours/delivery quote form. */
+/** Figma "הגשת הצעת מחיר" — editable materials/labor/hours/delivery/notes quote form. */
 export function QuoteFormCard({
   title,
   materialsCostLabel,
@@ -34,6 +30,8 @@ export function QuoteFormCard({
   hoursWorkedLabel,
   deliveryTimeLabel,
   deliveryDaysUnit,
+  notesLabel,
+  notesPlaceholder,
   totalLabel,
   currencySymbol,
   initialValues,
@@ -43,19 +41,20 @@ export function QuoteFormCard({
   const [materialsCost, setMaterialsCost] = useState(initialValues?.materialsCost ?? '')
   const [laborCost, setLaborCost] = useState(initialValues?.laborCost ?? '')
   const [hoursWorked, setHoursWorked] = useState(initialValues?.hoursWorked ?? '')
-  const [deliveryIndex, setDeliveryIndex] = useState(() => {
-    const days = initialValues?.deliveryDays ?? 7
-    const index = DELIVERY_OPTIONS_DAYS.indexOf(days)
-    return index >= 0 ? index : 0
-  })
+  const [notes, setNotes] = useState(initialValues?.notes ?? '')
+  // An existing quote's own delivery time stays a choice, so editing never changes it silently.
+  const options = useMemo(() => deliveryOptions(initialValues?.deliveryDays), [initialValues?.deliveryDays])
+  const [deliveryIndex, setDeliveryIndex] = useState(() =>
+    Math.max(0, options.indexOf(initialValues?.deliveryDays ?? options[0])),
+  )
 
   useEffect(() => {
     if (!initialValues) return
     setMaterialsCost(initialValues.materialsCost)
     setLaborCost(initialValues.laborCost)
     setHoursWorked(initialValues.hoursWorked)
-    const index = DELIVERY_OPTIONS_DAYS.indexOf(initialValues.deliveryDays)
-    if (index >= 0) setDeliveryIndex(index)
+    setNotes(initialValues.notes)
+    setDeliveryIndex(Math.max(0, deliveryOptions(initialValues.deliveryDays).indexOf(initialValues.deliveryDays)))
   }, [initialValues])
 
   const emit = (next: Partial<QuoteFormValues>) => {
@@ -63,7 +62,8 @@ export function QuoteFormCard({
       materialsCost,
       laborCost,
       hoursWorked,
-      deliveryDays: DELIVERY_OPTIONS_DAYS[deliveryIndex],
+      deliveryDays: options[deliveryIndex],
+      notes,
       ...next,
     }
     onChange?.(values)
@@ -75,12 +75,12 @@ export function QuoteFormCard({
     return (Number.isFinite(materials) ? materials : 0) + (Number.isFinite(labor) ? labor : 0)
   }, [materialsCost, laborCost])
 
-  const deliveryDays = DELIVERY_OPTIONS_DAYS[deliveryIndex]
+  const deliveryDays = options[deliveryIndex]
 
   const cycleDelivery = () => {
-    const nextIndex = (deliveryIndex + 1) % DELIVERY_OPTIONS_DAYS.length
+    const nextIndex = (deliveryIndex + 1) % options.length
     setDeliveryIndex(nextIndex)
-    emit({ deliveryDays: DELIVERY_OPTIONS_DAYS[nextIndex] })
+    emit({ deliveryDays: options[nextIndex] })
   }
 
   return (
@@ -136,6 +136,24 @@ export function QuoteFormCard({
             <Text style={styles.deliveryValue}>{deliveryDaysUnit(deliveryDays)}</Text>
           </TouchableOpacity>
         </View>
+      </View>
+
+      <View style={styles.notesField}>
+        <Text style={styles.label}>{notesLabel}</Text>
+        <TextInput
+          value={notes}
+          onChangeText={(next) => {
+            setNotes(next)
+            emit({ notes: next })
+          }}
+          placeholder={notesPlaceholder}
+          placeholderTextColor={colors.textSecondary}
+          multiline
+          maxLength={QUOTE_NOTES_MAX}
+          textAlign="right"
+          style={[styles.notesInput, errors?.notes ? styles.inputError : null]}
+        />
+        {errors?.notes ? <Text style={styles.error}>{errors.notes}</Text> : null}
       </View>
 
       <View style={styles.totalRow}>
@@ -244,6 +262,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#F04438',
     textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  notesField: {
+    width: '100%',
+    gap: 6,
+    alignItems: 'flex-end',
+  },
+  notesInput: {
+    width: '100%',
+    minHeight: 88,
+    borderWidth: 1,
+    borderColor: colors.borderSubtle,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    color: colors.ink,
+    textAlignVertical: 'top',
     writingDirection: 'rtl',
   },
   deliveryBox: {

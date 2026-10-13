@@ -313,4 +313,98 @@ describe('data migrations on existing data', () => {
     // Stored as UTC wall-clock like every Prisma DateTime (not shifted by the session time zone).
     expect(Math.abs(stamp.updatedAt.getTime() - Date.now())).toBeLessThan(5 * 60_000);
   });
+  it("each jeweler's existing deliveries get the order status of what already happened to them", async () => {
+    db = await scratchDatabase('mig_order_status');
+    db.migrateTo('20261013110000_session_version');
+    const designer = await insertUser(null, '2026-01-01 10:00:00');
+    const region = randomUUID();
+    await db.sql.$executeRawUnsafe(`INSERT INTO "regions" ("id", "code", "labelHe") VALUES ($1::uuid, 'MIG_REGION', 'אזור')`, region);
+    const jeweler = async () => {
+      const userId = await insertUser(null, '2026-01-01 10:00:00');
+      const profileId = randomUUID();
+      await db.sql.$executeRawUnsafe(
+        `INSERT INTO "jeweler_profiles" ("id", "userId", "businessName", "regionId", "phone", "updatedAt")
+         VALUES ($1::uuid, $2::uuid, 'Atelier', $3::uuid, '+972501234567', now())`,
+        profileId,
+        userId,
+        region,
+      );
+      return { userId, profileId };
+    };
+    const itemType = randomUUID();
+    await db.sql.$executeRawUnsafe(`INSERT INTO "item_types" ("id", "code", "labelHe") VALUES ($1::uuid, 'MIGORDER', 'טבעת')`, itemType);
+    const design = randomUUID();
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "designs" ("id", "ownerUserId", "itemTypeId", "parameters", "updatedAt")
+       VALUES ($1::uuid, $2::uuid, $3::uuid, '{}'::jsonb, now())`,
+      design,
+      designer,
+      itemType,
+    );
+    const conversation = randomUUID();
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "conversations" ("id", "designId", "updatedAt") VALUES ($1::uuid, $2::uuid, now())`,
+      conversation,
+      design,
+    );
+    const request = async (status: string) => {
+      const id = randomUUID();
+      await db.sql.$executeRawUnsafe(
+        `INSERT INTO "design_requests" ("id", "designId", "requesterId", "mode", "status", "updatedAt")
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'TARGETED', $4::"DesignRequestStatus", now())`,
+        id,
+        design,
+        designer,
+        status,
+      );
+      return id;
+    };
+    const deliver = (requestId: string, profileId: string) =>
+      db.sql.$executeRawUnsafe(
+        `INSERT INTO "design_request_targets" ("requestId", "jewelerProfileId") VALUES ($1::uuid, $2::uuid)`,
+        requestId,
+        profileId,
+      );
+    const quote = (requestId: string, authorUserId: string, status: string) =>
+      db.sql.$executeRawUnsafe(
+        `INSERT INTO "quotes" ("id", "conversationId", "designId", "designRequestId", "authorUserId", "materialsCost", "laborCost",
+                               "totalPrice", "currency", "etaBusinessDays", "status", "updatedAt")
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, 100, 50, 150, 'ILS', 10, $6::"QuoteStatus", now())`,
+        randomUUID(),
+        conversation,
+        design,
+        requestId,
+        authorUserId,
+        status,
+      );
+
+    const winner = await jeweler();
+    const loser = await jeweler();
+    const pending = await jeweler();
+    const untouched = await jeweler();
+    const completed = await request('COMPLETED');
+    await deliver(completed, winner.profileId);
+    await deliver(completed, loser.profileId);
+    await quote(completed, winner.userId, 'ACCEPTED');
+    await quote(completed, loser.userId, 'DECLINED');
+    const open = await request('QUOTE_SUBMITTED');
+    await deliver(open, pending.profileId);
+    await deliver(open, untouched.profileId);
+    await quote(open, pending.userId, 'PENDING');
+    const cancelled = await request('CANCELLED');
+    await deliver(cancelled, untouched.profileId);
+
+    db.migrateTo('20261013120000_jeweler_order_status');
+
+    const rows = await db.sql.$queryRawUnsafe<Array<{ requestId: string; jewelerProfileId: string; status: string }>>(
+      `SELECT "requestId", "jewelerProfileId", "status"::text AS "status" FROM "design_request_targets"`,
+    );
+    const status = (requestId: string, profileId: string) =>
+      rows.find((row) => row.requestId === requestId && row.jewelerProfileId === profileId)?.status;
+    expect(status(completed, winner.profileId)).toBe('COMPLETED');
+    expect(status(completed, loser.profileId)).toBe('CLOSED');
+    expect(status(open, pending.profileId)).toBe('QUOTE_SUBMITTED');
+    expect(status(open, untouched.profileId)).toBe('NEW');
+    expect(status(cancelled, untouched.profileId)).toBe('CLOSED');
+  });
 });

@@ -17,7 +17,7 @@ import {
 } from 'class-validator';
 
 export class QueryConversationsDto {
-  @ApiPropertyOptional({ description: 'Free-text search over design title and message body' })
+  @ApiPropertyOptional({ description: "Free-text search over design title, message body and the other participants' names" })
   @IsOptional()
   @IsString()
   @MaxLength(200)

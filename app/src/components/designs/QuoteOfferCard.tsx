@@ -17,10 +17,16 @@ type QuoteOfferCardProps = {
   deliveryValue: string
   priceLabel: string
   deliveryLabel: string
-  chatLabel: string
+  /** Quote date and status lines (previous quotes of a design). */
+  dateLabel?: string
+  dateValue?: string
+  statusLabel?: string
+  statusValue?: string
+  ctaLabel: string
   avatar?: ImageSourcePropType
   avatarColor?: string
-  onChat?: () => void
+  /** The CTA and the whole card open the quote. */
+  onPress?: () => void
 }
 
 const androidFont = Platform.OS === 'android' ? { includeFontPadding: false as const } : null
@@ -42,7 +48,7 @@ function ChatChevron() {
 }
 
 /**
- * Figma ZOREF quote card — chat CTA left, avatar+copy right, light shadow.
+ * Figma ZOREF quote card — CTA left, avatar+copy right, light shadow.
  */
 export function QuoteOfferCard({
   name,
@@ -51,23 +57,32 @@ export function QuoteOfferCard({
   priceValue,
   deliveryLabel,
   deliveryValue,
-  chatLabel,
+  dateLabel,
+  dateValue,
+  statusLabel,
+  statusValue,
+  ctaLabel,
   avatar,
   avatarColor = '#C4B5A5',
-  onChat,
+  onPress,
 }: QuoteOfferCardProps) {
   return (
-    <View style={styles.card}>
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole="button"
+      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+    >
       <View style={styles.row}>
         <Pressable
-          onPress={onChat}
+          onPress={onPress}
           accessibilityRole="button"
           style={({ pressed }) => [styles.chatPressable, pressed && styles.pressed]}
         >
           <View style={styles.chatBtn}>
             <ChatChevron />
             <Text style={styles.chatLabel} numberOfLines={1}>
-              {chatLabel}
+              {ctaLabel}
             </Text>
           </View>
         </Pressable>
@@ -94,10 +109,22 @@ export function QuoteOfferCard({
               <Text style={styles.metaLabel}>{deliveryLabel} </Text>
               <Text style={styles.metaValue}>{deliveryValue}</Text>
             </Text>
+            {dateLabel && dateValue ? (
+              <Text style={styles.metaLine}>
+                <Text style={styles.metaLabel}>{dateLabel} </Text>
+                <Text style={styles.metaValue}>{dateValue}</Text>
+              </Text>
+            ) : null}
+            {statusLabel && statusValue ? (
+              <Text style={styles.metaLine}>
+                <Text style={styles.metaLabel}>{statusLabel} </Text>
+                <Text style={styles.metaValue}>{statusValue}</Text>
+              </Text>
+            ) : null}
           </View>
         </View>
       </View>
-    </View>
+    </Pressable>
   )
 }
 

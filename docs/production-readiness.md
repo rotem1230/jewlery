@@ -102,7 +102,9 @@ media over lowering it).
   storage limits the API to instances sharing that volume. A CDN or caching proxy in front of the
   signed media URLs is recommended.
 - **Background jobs** (`JOBS_ENABLED=true`): outbox delivery, subscription lifecycle, visualization
-  retention purge, stale AI jobs. All are safe to run on several instances at once.
+  retention purge (also once at start-up), stale AI jobs, and expiring pending quotes past their
+  `validUntil` (every 10 minutes). All are safe to run on several instances at once (conditional
+  updates).
 
 ## 4. Payments
 
@@ -176,6 +178,13 @@ free plans only; buying needs the provider integration of section 4).
 | Reviews | the business-profile editor lists the jeweler's own reviews with `GET /reviews/mine` (also while the profile is offline); `GET /reviews?jewelerProfileId=` is the public listing. |
 | Designs | a completed design cannot be edited, rolled back or republished (`409 DESIGN_COMPLETED`). |
 | Public profiles | jeweler phone / e-mail are no longer public (shared in the handoff after acceptance). |
+| Jeweler orders (round 5) | each jeweler has their own order status: `GET /jeweler-profiles/me/orders` items carry `myStatus` (NEW, QUOTE_SUBMITTED, NEGOTIATING, COMPLETED, DECLINED, CLOSED) and the response `tabCounts`; tabs filter on it. `POST /jeweler-profiles/me/orders/:requestId/decline` (`409 QUOTE_PENDING` / `ORDER_COMPLETED`). `GET /atelier/requests/:id` shows a jeweler all their own quotes on the design. |
+| Quotes (round 5) | accepting a quote priced on a design that changed since answers `409 DESIGN_CHANGED_SINCE_QUOTE` (the jeweler re-prices with `PATCH /quotes/:id`); quoting or requesting a listing past `expiresAt` answers `409 DESIGN_EXPIRED`; editing a quote that is no longer pending answers `409 QUOTE_NOT_PENDING`. `GET /designs/:id/quotes` (owner) lists every quote of a design. Chat messages and the live `message:new` quote card include the quote with its design (item type, parameters). |
+| Roles (round 5) | `POST /auth/roles { role: DESIGNER \| JEWELER }` adds a role and returns new tokens (ADMIN → 400). |
+| Chat (round 5) | `GET /conversations/:id` (participants with `lastReadAt`); `q` also matches the other participant's name and business name; each conversation keeps one unread `message.new` notification, read with the conversation. |
+| Validation (round 5) | designs are validated against their item type on create and before publishing (400 with `errors`); a jeweler profile phone must be E.164 (`+972…`); `PNG_HD` exports need the `hd_export` entitlement (`403 PAYWALL`). A password's letter may be of any alphabet. |
+| Uploads (round 5) | `DELETE /uploads/:id` removes an upload of mine that nothing uses (`409 UPLOAD_IN_USE` otherwise). Deleting an account removes the user's files nothing else uses (a picture sent in a chat stays). A listed design's inspiration / custom-element pictures are public like its thumbnail. |
+| Banners (round 5) | `GET /atelier/banners` returns what is shown and `sponsored: true`, never the budget. |
 | Portfolio | `POST /jeweler-profiles/me/portfolio` with a picture already in the portfolio returns the existing item (no duplicate); publishing from the app adds only pictures not saved yet. |
 | Build | release builds need `API_BASE_URL` (https) and `GOOGLE_WEB_CLIENT_ID` at build time — a release bundle without an https `API_BASE_URL` fails to build (for Xcode archives, export it in `ios/.xcode.env.local`); Android release builds are signed with the upload key from `MALINVOSKY_UPLOAD_*` Gradle properties (never the debug key). Sessions are stored in the OS keychain; when the keychain refuses a write the session falls back to app storage (and moves back once the keychain works). |
 
@@ -187,6 +196,12 @@ free plans only; buying needs the provider integration of section 4).
   - `event_logs` with `eventKey = 'subscription.provider_cancellation_required'` (cancel at the provider);
   - `outbox_events` with `deadAt` set (notifications that failed 10 times);
   - error logs — `Prisma P2025` errors (a record vanished under an update) usually point at a bug.
+- **Support tools (round 5):** `POST /admin/designs/:id/unlock { fields, reason }` (admin) unlocks
+  locked design fields; the reason is kept in `audit_logs` (`design.unlock`). Account lockout is set
+  by `LOGIN_MAX_ATTEMPTS` / `LOGIN_LOCK_MINUTES` (the `lockout` app-config row was never read and is
+  no longer seeded; an existing row can be deleted). Chat system messages for an accepted quote are
+  the `system_message_templates` rows (Hebrew): the seed creates them and replaces only the original
+  English text, never an operator's wording.
 - **Feature flags** start disabled (`phase2_*`, `phase3_*`); enable them deliberately. Geo search
   (`phase3_postgis`) only ever reveals the rounded (~1 km) location.
 - **Backups:** daily PostgreSQL backups plus the media volume.

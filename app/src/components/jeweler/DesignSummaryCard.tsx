@@ -10,6 +10,8 @@ type DesignSummaryCardProps = {
   title: string
   quote: string
   specs: DesignSpec[]
+  /** Short lines under the title, e.g. the listing period ("בתוקף עד …"). */
+  details?: string[]
 }
 
 /**
@@ -22,6 +24,7 @@ export function DesignSummaryCard({
   title,
   quote,
   specs,
+  details,
 }: DesignSummaryCardProps) {
   return (
     <View style={styles.card}>
@@ -36,7 +39,12 @@ export function DesignSummaryCard({
 
       <View style={styles.copy}>
         <Text style={styles.title}>{title}</Text>
-        <Text style={styles.quote}>{quote}</Text>
+        {details?.map((line) => (
+          <Text key={line} style={styles.detail}>
+            {line}
+          </Text>
+        ))}
+        {quote ? <Text style={styles.quote}>{quote}</Text> : null}
       </View>
 
       <SpecGrid items={specs} />
@@ -87,6 +95,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  detail: {
+    width: '100%',
+    fontFamily: 'Heebo',
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.brand,
     textAlign: 'right',
     writingDirection: 'rtl',
   },

@@ -1,12 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { DesignRequestStatus, User, UserRole } from '@prisma/client';
+import { DesignStatus, RequestTargetStatus, User, UserRole } from '@prisma/client';
+import { effectiveOrderStatus, IN_PROGRESS_ORDER_STATUSES, OPEN_REQUEST_STATUSES } from '../atelier/order-status';
 import { AppConfigService } from '../cms/app-config.service';
 import { PrismaService } from '../database/prisma.service';
-
-const IN_PROGRESS_STATUSES: DesignRequestStatus[] = [
-  DesignRequestStatus.QUOTE_SUBMITTED,
-  DesignRequestStatus.NEGOTIATING,
-];
 
 @Injectable()
 export class HomeService {
@@ -59,12 +55,21 @@ export class HomeService {
       };
     }
 
+    const now = new Date();
     const [newRequests, inProgress, recentTargets] = await Promise.all([
+      // New: not acted on yet, on a request still open for a listing still live.
       this.prisma.designRequestTarget.count({
-        where: { jewelerProfileId: profile.id, request: { status: DesignRequestStatus.OPEN } },
+        where: {
+          jewelerProfileId: profile.id,
+          status: RequestTargetStatus.NEW,
+          request: {
+            status: { in: OPEN_REQUEST_STATUSES },
+            design: { status: DesignStatus.PUBLISHED, deletedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+          },
+        },
       }),
       this.prisma.designRequestTarget.count({
-        where: { jewelerProfileId: profile.id, request: { status: { in: IN_PROGRESS_STATUSES } } },
+        where: { jewelerProfileId: profile.id, status: { in: IN_PROGRESS_ORDER_STATUSES } },
       }),
       this.prisma.designRequestTarget.findMany({
         where: { jewelerProfileId: profile.id },
@@ -78,6 +83,9 @@ export class HomeService {
                   id: true,
                   title: true,
                   thumbnailUploadId: true,
+                  status: true,
+                  expiresAt: true,
+                  deletedAt: true,
                   itemType: { select: { code: true, labelHe: true } },
                 },
               },
@@ -95,6 +103,7 @@ export class HomeService {
       recentRequests: recentTargets.map((target) => ({
         requestId: target.requestId,
         status: target.request.status,
+        myStatus: effectiveOrderStatus(target.status, target.request.status, target.request.design),
         deliveredAt: target.deliveredAt,
         design: target.request.design,
       })),

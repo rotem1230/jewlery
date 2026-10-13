@@ -20,6 +20,7 @@ import {
 import { AppConfigService } from '../cms/app-config.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
+import { OPEN_REQUEST_STATUSES } from './order-status';
 import { lockUser } from '../database/row-locks';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { PromotionsService } from '../promotions/promotions.service';
@@ -41,12 +42,6 @@ const GEO_SEARCH_FLAG = 'phase3_postgis';
  */
 const MIN_GEO_RADIUS_KM = 1;
 const DEFAULT_MATCHING_WEIGHTS = { regionMatchWeight: 50, specialtyOverlapWeight: 10 };
-/** Requests a jeweler is still working on; a design is not delivered twice while one is open. */
-const OPEN_REQUEST_STATUSES: DesignRequestStatus[] = [
-  DesignRequestStatus.OPEN,
-  DesignRequestStatus.QUOTE_SUBMITTED,
-  DesignRequestStatus.NEGOTIATING,
-];
 
 /** What the public design feed exposes; reviewer ids, locks and acceptance data stay internal. */
 const PUBLIC_DESIGN_SELECT = {
@@ -70,6 +65,15 @@ const PUBLIC_JEWELER_INCLUDE = {
   logoUpload: { select: { id: true, mimeType: true } },
   portfolio: { orderBy: { sortOrder: 'asc' }, take: 4, select: PUBLIC_PORTFOLIO_SELECT },
 } satisfies Prisma.JewelerProfileInclude;
+
+/** A design that is listed now: published, not removed, not past its listing period. */
+function liveListing(now: Date = new Date()): Prisma.DesignWhereInput {
+  return {
+    status: DesignStatus.PUBLISHED,
+    deletedAt: null,
+    OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+  };
+}
 
 @Injectable()
 export class AtelierService {
@@ -124,19 +128,21 @@ export class AtelierService {
     });
   }
 
+  /** Paid banners as shown: what to display and that it is sponsored, never the budget. */
   private async activeBanners() {
     const now = new Date();
-    return this.prisma.promotion.findMany({
+    const rows = await this.prisma.promotion.findMany({
       where: { placement: BANNER_PLACEMENT, isActive: true, startAt: { lte: now }, endAt: { gte: now } },
       orderBy: { priority: 'desc' },
+      select: { id: true, placement: true, entityType: true, entityId: true, meta: true, startAt: true, endAt: true },
     });
+    return rows.map((row) => ({ ...row, sponsored: true as const }));
   }
 
   async designs(query: QueryAtelierDesignsDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
     const where: Prisma.DesignWhereInput = {
-      status: DesignStatus.PUBLISHED,
-      deletedAt: null,
+      ...liveListing(),
       owner: { deletedAt: null },
     };
     if (query.regionId) {
@@ -297,6 +303,18 @@ export class AtelierService {
     };
   }
 
+  /** One live listing by id (the screens that open a design from a request or a quote). */
+  async design(id: string) {
+    const design = await this.prisma.design.findFirst({
+      where: { id, ...liveListing(), owner: { deletedAt: null } },
+      select: PUBLIC_DESIGN_SELECT,
+    });
+    if (!design) {
+      throw new NotFoundException({ success: false, message: 'Design not found' });
+    }
+    return design;
+  }
+
   async createRequest(user: User, dto: CreateAtelierRequestDto) {
     const design = await this.prisma.design.findFirst({ where: { id: dto.designId, deletedAt: null } });
     if (!design) {
@@ -311,6 +329,9 @@ export class AtelierService {
         message: 'Publish the design before requesting quotes',
         code: 'DESIGN_NOT_PUBLISHED',
       });
+    }
+    if (design.expiresAt && design.expiresAt.getTime() <= Date.now()) {
+      throw new ConflictException({ success: false, message: 'This listing has expired', code: 'DESIGN_EXPIRED' });
     }
 
     let targetProfileIds: string[];
@@ -485,7 +506,21 @@ export class AtelierService {
     const request = await this.prisma.designRequest.findUnique({
       where: { id },
       include: {
-        design: { select: { id: true, title: true, ownerUserId: true, thumbnailUploadId: true } },
+        design: {
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            ownerUserId: true,
+            thumbnailUploadId: true,
+            parameters: true,
+            jewelerNotes: true,
+            status: true,
+            publishedAt: true,
+            expiresAt: true,
+            itemType: true,
+          },
+        },
         targets: { include: { jewelerProfile: { select: { id: true, businessName: true, userId: true } } } },
         quotes: true,
       },
@@ -502,12 +537,17 @@ export class AtelierService {
     }
 
     // Competing jewelers see neither each other's prices nor who else received the request; the
-    // requester sees every delivery and every quote.
+    // requester sees every delivery and every quote. A jeweler sees all their own quotes on the
+    // design, also one sent from the Atelier feed before (or without) this request.
     if (!isRequester && !isAdmin) {
+      const own = await this.prisma.quote.findMany({
+        where: { designId: request.designId, authorUserId: user.id },
+        orderBy: { createdAt: 'desc' },
+      });
       return {
         ...request,
         targets: request.targets.filter((target) => target.jewelerProfile.userId === user.id),
-        quotes: request.quotes.filter((quote) => quote.authorUserId === user.id),
+        quotes: own,
       };
     }
     return request;

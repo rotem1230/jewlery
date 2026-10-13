@@ -18,7 +18,8 @@ import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
 import { getDesign, lockDesign, updateDesign } from '@/src/api/designs'
 import { createInspiration, waitForAiJob } from '@/src/api/ai'
 import { createRenderJob, type RenderExportFormat } from '@/src/api/renderJobs'
-import { createVisualizationJob } from '@/src/api/visualization'
+import { createVisualizationJob, getFeatureFlags } from '@/src/api/visualization'
+import { getMyEntitlements } from '@/src/api/subscriptions'
 import {
   CATEGORY_CODE,
   listElements,
@@ -27,11 +28,13 @@ import {
   listStones,
   listWizardSizeCharts,
 } from '@/src/api/masterData'
-import { uploadChatFile } from '@/src/api/uploads'
+import { deleteUpload, uploadChatFile } from '@/src/api/uploads'
 import { linkForUpload, mediaUrl } from '@/src/lib/media'
 import { attachedAiJob, rememberPendingAiJob, takeFinishedAiJob } from '@/src/lib/pendingAiJobs'
 import { pickChatPhoto } from '@/src/lib/chatAttachments'
-import { apiErrorCode, isPaywallError, parseApiError } from '@/src/lib/api'
+import { apiErrorCode, parseApiError } from '@/src/lib/api'
+import { isDesignReadOnly } from '@/src/lib/designActions'
+import { jobRefusal, tryOnGate, withPhotoRemovedOnRefusal } from '@/src/lib/tryOn'
 import {
   FALLBACK_ELEMENTS,
   FALLBACK_METALS,
@@ -41,6 +44,7 @@ import {
   WRIST_MAX_CM,
   WRIST_MIN_CM,
   aiOutputUploadFromParameters,
+  bandWidthConflict,
   elementsFromParameters,
   inspirationUploadFromParameters,
   isNecklaceLength,
@@ -95,6 +99,7 @@ function jewelryCategory(code: string | undefined): JewelryCategory {
 /**
  * Figma 3D wizard: local catalog/AI GLB + six live tabs. PATCH parameters on סיימתי.
  * Inspiration generate is the only path that creates an AI job.
+ * A completed design (accepted quote) opens in view mode: no edit tabs, nothing is saved.
  */
 export function DesignStudioScreen() {
   const { t, locale } = useTranslation()
@@ -135,6 +140,7 @@ export function DesignStudioScreen() {
 
   const parameters = design?.parameters ?? {}
   const itemType = itemTypeCode(design?.itemType?.code)
+  const readOnly = design ? isDesignReadOnly(design) : false
   const sizeLocked = Boolean(design?.lockedFields?.includes('size'))
   const savedSize = sizeFromParameters(parameters)
   const previewSize = sizeDraft ?? savedSize
@@ -147,6 +153,15 @@ export function DesignStudioScreen() {
   // The design's own link is signed at each load; the one kept from the generation only bridges
   // the moment before the design is reloaded.
   const aiModelUri = mediaUrl(linkForUpload(previewAiOutput, design?.aiOutputUrl, aiModelLink))
+  // Live check of the server rule: a ring band no narrower than the chosen setting's minimum.
+  const bandConflict = bandWidthConflict(
+    itemType,
+    previewSize.bandWidthMm,
+    previewSetting,
+    settingsQuery.data ?? [],
+    locale === 'en' ? 'en' : 'he',
+  )
+  const panelConflict = tab === 'size' || tab === 'setting' ? bandConflict : null
   const markers = useMemo(
     () =>
       markersFromCatalog(
@@ -201,8 +216,8 @@ export function DesignStudioScreen() {
   // A generation the studio stopped waiting for on an earlier visit is attached once it is done
   // (only while the design can still be edited). The latest values are read through a ref so the
   // check runs once per design, not on every render.
-  const latestForAi = useRef({ persist, parameters, editable: design?.status !== 'COMPLETED' })
-  latestForAi.current = { persist, parameters, editable: design?.status !== 'COMPLETED' }
+  const latestForAi = useRef({ persist, parameters, editable: Boolean(design) && !readOnly })
+  latestForAi.current = { persist, parameters, editable: Boolean(design) && !readOnly }
   const loadedDesignId = design?.id
   useEffect(() => {
     if (!loadedDesignId) return
@@ -228,7 +243,7 @@ export function DesignStudioScreen() {
 
   const sizeDraftError = (draft: StudioSize): string | null => {
     if (itemType === 'RING' && !draft.sizeCode) return t('sizeNeedRingSize')
-    if (itemType === 'NECKLACE' && !isNecklaceLength(draft.necklaceLengthCm)) return t('studioNeedNecklace')
+    if (itemType === 'NECKLACE' && !isNecklaceLength(draft.necklaceLengthCm)) return t('dzNeedNecklaceLength')
     if (itemType === 'BRACELET') {
       const wrist = draft.wristCircumferenceCm
       if (wrist == null || wrist < WRIST_MIN_CM || wrist > WRIST_MAX_CM) return t('sizeNeedWrist')
@@ -238,6 +253,11 @@ export function DesignStudioScreen() {
 
   const flushDrafts = async (): Promise<boolean> => {
     if (!design) return false
+    if (readOnly) return true
+    if (bandConflict && (sizeDraft || settingDraft)) {
+      Alert.alert(t('authErrorTitle'), bandConflict.message)
+      return false
+    }
     if (sizeDraft && !sizeLocked) {
       const error = sizeDraftError(sizeDraft)
       if (error) {
@@ -350,6 +370,10 @@ export function DesignStudioScreen() {
   }
 
   const onFinish = async () => {
+    if (panelConflict) {
+      Alert.alert(t('authErrorTitle'), panelConflict.message)
+      return
+    }
     if (tab === 'size') {
       if (!sizeDraft) {
         closePanel()
@@ -486,15 +510,56 @@ export function DesignStudioScreen() {
     tabNavigation?.navigate('MyDesigns', { screen: 'DesignDetails', params: { designId: design.id } })
   }
 
+  const showPaywall = (message: string) => {
+    Alert.alert(t('authErrorTitle'), message, [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('studioPaywallCta'),
+        onPress: () => tabNavigation?.navigate('Profile', { screen: 'Pricing' }),
+      },
+    ])
+  }
+
+  /**
+   * Try-on (PRD 5.10). The personal photo is picked and uploaded only once the feature is on and
+   * the plan includes it, so a refused try-on never sends the photo. A refusal after the upload
+   * (e.g. the daily limit) deletes the photo again (`withPhotoRemovedOnRefusal`).
+   */
   const onTryOn = async () => {
     if (!design) return
     if (!(await flushDrafts())) return
+    setBusy(true)
+    let gate: ReturnType<typeof tryOnGate>
+    try {
+      const [flags, entitlements] = await Promise.all([
+        getFeatureFlags().catch(() => null),
+        getMyEntitlements(),
+      ])
+      gate = tryOnGate(flags, entitlements)
+    } catch (err) {
+      Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioTryOnFailed'))
+      return
+    } finally {
+      setBusy(false)
+    }
+    if (gate === 'coming_soon') {
+      Alert.alert(t('dzTryOnComingSoonTitle'), t('dzTryOnComingSoon'))
+      return
+    }
+    if (gate === 'paywall') {
+      showPaywall(t('studioTryOnPaywall'))
+      return
+    }
     try {
       const file = await pickChatPhoto()
       if (!file) return
       setBusy(true)
       const upload = await uploadChatFile(file)
-      const job = await createVisualizationJob({ designId: design.id, inputUploadId: upload.id })
+      const job = await withPhotoRemovedOnRefusal(
+        upload.id,
+        () => createVisualizationJob({ designId: design.id, inputUploadId: upload.id }),
+        deleteUpload,
+      )
       const output = mediaUrl(job.outputUrl)
       if (job.status === 'SUCCEEDED' && output) {
         setPreviewUri(output)
@@ -502,17 +567,11 @@ export function DesignStudioScreen() {
       }
       Alert.alert(t('authErrorTitle'), t('studioTryOnFailed'))
     } catch (err) {
-      if (isPaywallError(err)) {
-        Alert.alert(t('authErrorTitle'), t('studioTryOnPaywall'), [
-          { text: t('cancel'), style: 'cancel' },
-          {
-            text: t('studioPaywallCta'),
-            onPress: () => tabNavigation?.navigate('Profile', { screen: 'Pricing' }),
-          },
-        ])
-        return
-      }
-      Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioTryOnFailed'))
+      const refusal = jobRefusal(err)
+      if (refusal === 'coming_soon') Alert.alert(t('dzTryOnComingSoonTitle'), t('dzTryOnComingSoon'))
+      else if (refusal === 'paywall') showPaywall(t('studioTryOnPaywall'))
+      else if (refusal === 'quota') Alert.alert(t('authErrorTitle'), t('dzTryOnQuota'))
+      else Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioTryOnFailed'))
     } finally {
       setBusy(false)
     }
@@ -539,7 +598,11 @@ export function DesignStudioScreen() {
         Alert.alert(t('studioExportReady'), uri)
       }
     } catch (err) {
-      Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioExportFailed'))
+      // HD needs the hd_export entitlement (PRD 5.8); STL is free.
+      const refusal = jobRefusal(err)
+      if (refusal === 'paywall') showPaywall(t('dzExportPaywall'))
+      else if (refusal === 'quota') Alert.alert(t('authErrorTitle'), t('dzExportQuota'))
+      else Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioExportFailed'))
     } finally {
       setBusy(false)
     }
@@ -695,12 +758,13 @@ export function DesignStudioScreen() {
                 />
               ) : null}
               </ScrollView>
+              {panelConflict ? <Text style={styles.warning}>{panelConflict.message}</Text> : null}
               <View style={styles.panelActions}>
                 <BrandButton
                   label={t('studioFinishCta')}
                   hug
                   flex={false}
-                  disabled={busy}
+                  disabled={busy || Boolean(panelConflict)}
                   onPress={() => void onFinish()}
                 />
                 <BrandButton
@@ -718,6 +782,7 @@ export function DesignStudioScreen() {
 
           {!tab && design ? (
             <View style={styles.exitBar}>
+              {readOnly ? <Text style={styles.readOnly}>{t('dzStudioReadOnly')}</Text> : null}
               <View style={styles.exitRow}>
                 <BrandButton
                   label={t('studioTryOnCta')}
@@ -741,7 +806,7 @@ export function DesignStudioScreen() {
             </View>
           ) : null}
 
-          <StudioTabBar active={tab} onSelect={selectTab} />
+          {readOnly ? null : <StudioTabBar active={tab} onSelect={selectTab} />}
         </>
       )}
       <ChatImageViewer imageUri={previewUri} onClose={() => setPreviewUri(null)} />
@@ -819,6 +884,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.ink,
     textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  warning: {
+    fontFamily: 'Heebo',
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#B42318',
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  readOnly: {
+    fontFamily: 'Heebo',
+    fontSize: 13,
+    fontWeight: '500',
+    color: colors.textSecondary,
+    textAlign: 'center',
     writingDirection: 'rtl',
   },
   panelActions: {

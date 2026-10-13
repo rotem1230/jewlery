@@ -66,6 +66,11 @@ export function switchRole(role: 'DESIGNER' | 'JEWELER'): Promise<AuthResult> {
   return apiPost<AuthResult>('/auth/switch-role', { role })
 }
 
+/** Adds a role to the account (idempotent); the active role does not change — see `switchRole`. */
+export function addRole(role: 'DESIGNER' | 'JEWELER'): Promise<AuthResult> {
+  return apiPost<AuthResult>('/auth/roles', { role })
+}
+
 /** The server reads the identity (and a verified e-mail) from the ID token only. */
 export function oauthGoogle(payload: {
   idToken: string

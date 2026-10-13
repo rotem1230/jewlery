@@ -11,6 +11,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   MaxLength,
   Min,
   MinLength,
@@ -55,10 +56,12 @@ export class JewelerDraftPayloadDto {
   @MaxLength(2000)
   bio?: string;
 
-  @ApiPropertyOptional({ description: 'E.164 phone number' })
+  @ApiPropertyOptional({ description: 'E.164 phone number', example: '+972501234567' })
   @IsOptional()
   @IsString()
   @MaxLength(32)
+  // The WhatsApp link handed to a customer after acceptance is built from it (PRD 5.6).
+  @Matches(/^\+[1-9]\d{7,14}$/, { message: 'phone must be an international number, e.g. +972501234567' })
   phone?: string;
 
   @ApiPropertyOptional()

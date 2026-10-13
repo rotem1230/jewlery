@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DesignStatus, ProfilePublishStatus, Upload, User, UserRole } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { designPictureReferences } from './design-pictures';
 
 const SIGNATURE_HEX = /^[a-f0-9]{64}$/;
 
@@ -68,7 +69,7 @@ export class UploadAccessService {
       return true;
     }
     const owner = upload.ownerUserId;
-    const [avatars, logos, portfolio, thumbnails] = await Promise.all([
+    const [avatars, logos, portfolio, thumbnails, designPictures] = await Promise.all([
       this.prisma.user.count({ where: { id: owner, avatarUploadId: upload.id, deletedAt: null } }),
       this.prisma.jewelerProfile.count({
         where: { userId: owner, logoUploadId: upload.id, publishStatus: ProfilePublishStatus.PUBLISHED },
@@ -84,8 +85,18 @@ export class UploadAccessService {
           status: { in: [DesignStatus.PUBLISHED, DesignStatus.COMPLETED] },
         },
       }),
+      // Pictures a listed design is specified with (PRD 5.4): its inspiration and custom elements,
+      // which the jewelers pricing it need to see.
+      this.prisma.design.count({
+        where: {
+          ownerUserId: owner,
+          deletedAt: null,
+          status: { in: [DesignStatus.PUBLISHED, DesignStatus.COMPLETED] },
+          OR: designPictureReferences(upload.id),
+        },
+      }),
     ]);
-    return avatars + logos + portfolio + thumbnails > 0;
+    return avatars + logos + portfolio + thumbnails + designPictures > 0;
   }
 
   async canRead(upload: Pick<Upload, 'id' | 'ownerUserId'>, user: Pick<User, 'id' | 'roles'>): Promise<boolean> {

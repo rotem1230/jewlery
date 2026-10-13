@@ -6,6 +6,7 @@ import {
   IsArray,
   IsEmail,
   IsEnum,
+  IsIn,
   IsOptional,
   IsString,
   Matches,
@@ -109,6 +110,13 @@ export class ResetPasswordDto {
   @MinLength(8)
   @MaxLength(MAX_PASSWORD)
   newPassword!: string;
+}
+
+/** A role a user can take on themselves (PRD 5.1); ADMIN is never self-assigned. */
+export class AddRoleDto {
+  @ApiProperty({ enum: [UserRole.DESIGNER, UserRole.JEWELER], example: UserRole.JEWELER })
+  @IsIn([UserRole.DESIGNER, UserRole.JEWELER])
+  role!: typeof UserRole.DESIGNER | typeof UserRole.JEWELER;
 }
 
 export class SwitchRoleDto {

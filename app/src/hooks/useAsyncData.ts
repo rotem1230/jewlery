@@ -21,33 +21,41 @@ export function useAsyncData<T>(loader: Loader<T>, opts?: { immediate?: boolean;
   const [status, setStatus] = useState<AsyncStatus>('idle')
   const [error, setError] = useState<Error | null>(null)
   const mountedRef = useRef(true)
+  // Only the latest request may write: a filter change or refresh supersedes (and aborts) the one
+  // in flight, so a slower older answer never replaces a newer one.
+  const activeRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      activeRef.current?.abort()
     }
   }, [])
 
   const load = useCallback(async (mode: 'initial' | 'refresh' | 'retry') => {
+    activeRef.current?.abort()
     const controller = new AbortController()
+    activeRef.current = controller
+    const isCurrent = () => mountedRef.current && activeRef.current === controller
     if (mountedRef.current) {
       setStatus(mode === 'initial' ? 'loading' : 'refreshing')
       if (mode !== 'refresh') setError(null)
     }
     try {
       const result = await loaderRef.current(controller.signal)
-      if (!mountedRef.current) return
+      if (!isCurrent()) return
       setData(result)
       setError(null)
       setStatus('success')
     } catch (err) {
-      if (!mountedRef.current) return
+      if (!isCurrent()) return
       if (err instanceof Error && err.name === 'AbortError') return
       setError(err instanceof Error ? err : new Error('Failed to load'))
       setStatus(mode === 'initial' ? 'error' : 'success')
+    } finally {
+      if (activeRef.current === controller) activeRef.current = null
     }
-    return () => controller.abort()
   }, [])
 
   useEffect(() => {

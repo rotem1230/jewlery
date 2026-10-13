@@ -5,9 +5,11 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { ScreenTopBar } from '@/src/components/layout/ScreenTopBar'
 import { BusinessProfileSummary } from '@/src/components/jeweler/BusinessProfileSummary'
 import { BrandButton } from '@/src/components/ui/BrandButton'
-import { addPortfolioItem, publishJewelerProfile } from '@/src/api/jewelerProfiles'
+import { addPortfolioItem, previewJewelerProfile, publishJewelerProfile } from '@/src/api/jewelerProfiles'
 import { parseApiError } from '@/src/lib/api'
+import { DAY_LABEL_KEYS, hoursRows } from '@/src/lib/businessHours'
 import { portfolioItemsToAdd } from '@/src/lib/portfolio'
+import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useTranslation } from '@/src/i18n'
 import type { ProfileStackParamList } from '@/src/navigation/types'
 import heroRing from '../../../assets/images/home/hero-ring.png'
@@ -22,6 +24,8 @@ export function BusinessProfilePreviewScreen() {
   const route = useRoute<Route>()
   const [busy, setBusy] = useState(false)
   const { name, about, gallery } = route.params
+  // The saved draft as it would be published: its opening hours and service area.
+  const { data: draft } = useAsyncData(() => previewJewelerProfile(), { deps: [] })
 
   const onPublish = async () => {
     setBusy(true)
@@ -59,6 +63,15 @@ export function BusinessProfilePreviewScreen() {
             reviewsTitle={t('businessProfileReviewsLabel')}
             reviews={[]}
             reviewsEmptyLabel={t('businessProfileReviewsEmpty')}
+            businessInfo={{
+              hoursTitle: t('jwHoursLabel'),
+              hours: hoursRows(draft?.businessHours).map((row) => ({
+                label: t(DAY_LABEL_KEYS[row.day]),
+                text: row.text,
+              })),
+              areaTitle: t('jwServiceAreaLabel'),
+              area: draft?.serviceAreaText,
+            }}
           />
 
           <View style={styles.actions}>

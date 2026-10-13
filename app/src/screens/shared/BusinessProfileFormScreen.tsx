@@ -18,14 +18,22 @@ import { Button } from '@/src/components/ui/Button'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { GalleryImagePicker, type GalleryImageItem } from '@/src/components/jeweler/GalleryImagePicker'
 import { SelectableReviewCard } from '@/src/components/jeweler/SelectableReviewCard'
+import { BusinessHoursEditor } from '@/src/components/jeweler/BusinessHoursEditor'
 import {
   addPortfolioItem,
   getMyBusinessProfile,
-  previewJewelerProfile,
   publishJewelerProfile,
   removePortfolioItem,
   upsertJewelerDraft,
 } from '@/src/api/jewelerProfiles'
+import {
+  DAY_LABEL_KEYS,
+  draftPayload,
+  hoursFormFromProfile,
+  validateHours,
+  type DayHours,
+  type HoursError,
+} from '@/src/lib/businessHours'
 import { featureReview, listMyReviews } from '@/src/api/reviews'
 import { listRegions } from '@/src/api/masterData'
 import { uploadChatFile } from '@/src/api/uploads'
@@ -41,7 +49,7 @@ import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { isValidEmail, toE164Phone } from '@/src/lib/validation'
 import type { ProfileStackParamList } from '@/src/navigation/types'
-import type { JewelerReview, Region } from '@/src/types/api'
+import type { BusinessHour, JewelerReview, Region } from '@/src/types/api'
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList, 'BusinessProfileForm'>
 type Route = RouteProp<ProfileStackParamList, 'BusinessProfileForm'>
@@ -75,6 +83,9 @@ export function BusinessProfileFormScreen() {
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [bio, setBio] = useState('')
+  const [hours, setHours] = useState<DayHours[]>(() => hoursFormFromProfile(null))
+  const [hoursErrors, setHoursErrors] = useState<Partial<Record<number, HoursError>>>({})
+  const [serviceArea, setServiceArea] = useState('')
   const [gallery, setGallery] = useState<GalleryEntry[]>([])
   const [featuredReviewIds, setFeaturedReviewIds] = useState<string[]>([])
   const [hydrated, setHydrated] = useState(false)
@@ -100,6 +111,8 @@ export function BusinessProfileFormScreen() {
       setPhone(raw.phone ?? '')
       setEmail(raw.email ?? '')
       setBio(raw.bio ?? '')
+      setHours(hoursFormFromProfile(raw.businessHours))
+      setServiceArea(raw.serviceAreaText ?? '')
       setLogoUploadId(raw.logoUploadId ?? raw.logoUpload?.id ?? null)
       setLogoLink(raw.logoUrl ?? null)
       setGallery(
@@ -184,14 +197,18 @@ export function BusinessProfileFormScreen() {
   }
 
   /** Saves the draft, and the new gallery pictures when the profile exists; true when it saved them. */
-  const persistDraftAndGallery = async (e164: string): Promise<boolean> => {
+  const persistDraftAndGallery = async (e164: string, businessHours: BusinessHour[]): Promise<boolean> => {
     await upsertJewelerDraft({
-      payload: {
-        businessName: name.trim(),
-        bio: bio.trim() || undefined,
+      // The whole draft: what the form edits, plus the specialties it does not, so saving keeps them.
+      payload: draftPayload({
+        businessName: name,
+        bio,
         phone: e164,
-        email: email.trim() || undefined,
-      },
+        email,
+        businessHours,
+        serviceAreaText: serviceArea,
+        specialties: raw?.specialties,
+      }),
       regionId: regionId ?? undefined,
       logoUploadId: logoUploadId ?? undefined,
     })
@@ -218,16 +235,18 @@ export function BusinessProfileFormScreen() {
     if (!phone.trim()) next.phone = t('validationRequired')
     else if (!e164) next.phone = t('validationPhone')
     if (trimmedEmail && !isValidEmail(trimmedEmail)) next.email = t('validationEmail')
+    const checkedHours = validateHours(hours)
     setErrors(next)
-    if (Object.keys(next).length > 0 || !e164) return
+    setHoursErrors(checkedHours.errors)
+    if (Object.keys(next).length > 0 || Object.keys(checkedHours.errors).length > 0 || !e164) return
     setBusy(true)
     try {
-      const gallerySaved = await persistDraftAndGallery(e164)
+      const gallerySaved = await persistDraftAndGallery(e164, checkedHours.hours)
       if (isEdit) {
         await publishJewelerProfile()
         navigation.navigate('BusinessProfileView')
       } else {
-        await previewJewelerProfile().catch(() => undefined)
+        // The preview screen loads the saved draft as it would be published.
         navigation.navigate('BusinessProfilePreview', {
           name: name.trim(),
           about: bio.trim(),
@@ -362,6 +381,35 @@ export function BusinessProfileFormScreen() {
               multiline
               textAlign="right"
               style={styles.bioInput}
+            />
+          </View>
+
+          <Field
+            label={t('jwServiceAreaLabel')}
+            value={serviceArea}
+            onChangeText={setServiceArea}
+            placeholder={t('jwServiceAreaPlaceholder')}
+            maxLength={500}
+          />
+
+          <View style={styles.field}>
+            <Text style={styles.label}>{t('jwHoursLabel')}</Text>
+            <Text style={styles.hint}>{t('jwHoursHint')}</Text>
+            <BusinessHoursEditor
+              rows={hours}
+              dayLabel={(day) => t(DAY_LABEL_KEYS[day])}
+              openLabel={t('jwHoursOpenLabel')}
+              closeLabel={t('jwHoursCloseLabel')}
+              errors={Object.fromEntries(
+                Object.entries(hoursErrors).map(([day, error]) => [
+                  day,
+                  t(error === 'order' ? 'jwHoursCloseBeforeOpen' : 'jwHoursInvalidTime'),
+                ]),
+              )}
+              onChange={(next) => {
+                setHours(next)
+                setHoursErrors({})
+              }}
             />
           </View>
 

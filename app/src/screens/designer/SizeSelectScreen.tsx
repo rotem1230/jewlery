@@ -1,5 +1,15 @@
 import { useMemo, useState } from 'react'
-import { Alert, Image, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native'
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native'
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { ChevronDown } from 'lucide-react-native'
@@ -18,6 +28,8 @@ import {
   parseMetalChoice,
 } from '@/src/api/masterData'
 import { createWizardDesign, wizardFailAlert } from '@/src/lib/wizard'
+import { RING_SIZE_FALLBACK, ringSizeOptions, type RingSizeOption } from '@/src/lib/ringSizes'
+import { NECKLACE_STYLES, necklaceStyleForLength, necklaceStyleLabel } from '@/src/lib/necklaceLengths'
 import type { HomeStackParamList } from '@/src/navigation/types'
 import necklineShallow from '../../../assets/images/categories/neckline-shallow.png'
 import necklineMedium from '../../../assets/images/categories/neckline-medium.png'
@@ -33,28 +45,9 @@ const NECKLINE_IMAGE_BY_DEPTH = {
 type Nav = NativeStackNavigationProp<HomeStackParamList, 'SizeSelect'>
 type Route = RouteProp<HomeStackParamList, 'SizeSelect'>
 
-type RingSizeOption = {
-  id: string
-  size: string
-  us: string
-  diameter: string
-  standard: string
-  sizeCode: string
-}
-
-const RING_SIZES: RingSizeOption[] = [
-  { id: '52', size: '52', us: 'US 6.00', diameter: '16.55', standard: 'IL', sizeCode: '52' },
-  { id: '54', size: '54', us: 'US 7.00', diameter: '17.19', standard: 'IL', sizeCode: '54' },
-  { id: '56', size: '56', us: 'US 7.75', diameter: '17.83', standard: 'IL', sizeCode: '56' },
-  { id: '58', size: '58', us: 'US 8.50', diameter: '18.47', standard: 'IL', sizeCode: '58' },
-  { id: '60', size: '60', us: 'US 9.25', diameter: '19.10', standard: 'IL', sizeCode: '60' },
-  { id: '62', size: '62', us: 'US 10.00', diameter: '19.76', standard: 'IL', sizeCode: '62' },
-  { id: '64', size: '64', us: 'US 10.75', diameter: '20.40', standard: 'IL', sizeCode: '64' },
-]
-
-const LENGTH_OPTIONS_BY_CATEGORY: Record<'necklace', string[]> = {
-  necklace: ['42', '45', '50'],
-}
+/** PRD necklace styles (Choker / Princess / Matinee / Opera), one length each. */
+const NECKLACE_LENGTHS = NECKLACE_STYLES.map((style) => String(style.lengthCm))
+const DEFAULT_NECKLACE_LENGTH = String(NECKLACE_STYLES.find((style) => style.code === 'PRINCESS')?.lengthCm ?? 45)
 
 const CATEGORY_TITLE_KEY: Record<'ring' | 'necklace' | 'bracelet', TranslationKey> = {
   ring: 'categoryRing',
@@ -64,7 +57,8 @@ const CATEGORY_TITLE_KEY: Record<'ring' | 'necklace' | 'bracelet', TranslationKe
 
 /**
  * Figma "בחירת מידה" — step 2 of the design wizard, branches by category:
- * ring gets a numeric IL/US size table, necklace/bracelet get a length picker.
+ * ring gets the IL/US size chart from the server (one row per size, IL paired with US; the PRD
+ * chart only offline), necklace gets the PRD lengths, bracelet a wrist measurement.
  */
 export function SizeSelectScreen() {
   const { t, locale } = useTranslation()
@@ -73,7 +67,6 @@ export function SizeSelectScreen() {
   const category = route.params.category as 'ring' | 'necklace' | 'bracelet'
   const isRing = category === 'ring'
   const isBracelet = category === 'bracelet'
-  const fallbackLengths = useMemo(() => LENGTH_OPTIONS_BY_CATEGORY[category as 'necklace'] ?? [], [category])
 
   const chartsQuery = useAsyncData(
     (signal) => listWizardSizeCharts(CATEGORY_CODE[category], signal),
@@ -82,35 +75,29 @@ export function SizeSelectScreen() {
   const metalsQuery = useAsyncData((signal) => listMetals(signal), { deps: [] })
   const choices = metalChoices(metalsQuery.data ?? [], locale)
 
+  // The server chart; the PRD chart only when it cannot be loaded (offline) or is empty.
+  const chartsFailed = Boolean(chartsQuery.error) && !chartsQuery.loading
   const ringOptions = useMemo<RingSizeOption[]>(() => {
-    const charts = chartsQuery.data ?? []
-    if (!isRing || charts.length === 0) return RING_SIZES
-    return charts.map((chart) => ({
-      id: chart.id,
-      size: chart.sizeCode,
-      us: `${chart.standard} ${chart.sizeCode}`,
-      diameter: String(chart.diameterMinMm ?? chart.diameterMaxMm ?? ''),
-      standard: chart.standard,
-      sizeCode: chart.sizeCode,
-    }))
-  }, [chartsQuery.data, isRing])
+    if (!isRing) return []
+    const charts = chartsQuery.data
+    if (charts && charts.length > 0) return ringSizeOptions(charts)
+    if (charts || chartsFailed) return ringSizeOptions(RING_SIZE_FALLBACK)
+    return []
+  }, [chartsFailed, chartsQuery.data, isRing])
 
+  // A necklace chart from the server (lengthCm rows) wins; otherwise the PRD styles.
   const lengths = useMemo(() => {
     const charts = chartsQuery.data ?? []
-    if (isRing || isBracelet || charts.length === 0) return fallbackLengths
+    if (category !== 'necklace' || charts.length === 0) return NECKLACE_LENGTHS
     const fromCharts = charts
-      .map((chart) =>
-        chart.lengthCm != null && chart.lengthCm !== ''
-          ? String(Number(chart.lengthCm))
-          : chart.sizeCode,
-      )
+      .map((chart) => (chart.lengthCm != null && chart.lengthCm !== '' ? String(Number(chart.lengthCm)) : ''))
       .filter(Boolean)
-    return fromCharts.length ? fromCharts : fallbackLengths
-  }, [chartsQuery.data, fallbackLengths, isBracelet, isRing])
+    return fromCharts.length ? fromCharts : NECKLACE_LENGTHS
+  }, [category, chartsQuery.data])
 
   const [standardSelected, setStandardSelected] = useState(true)
   const [ringSizeId, setRingSizeId] = useState<string | null>(null)
-  const [lengthValue, setLengthValue] = useState(fallbackLengths[1] ?? fallbackLengths[0])
+  const [lengthValue, setLengthValue] = useState(DEFAULT_NECKLACE_LENGTH)
   const [wristCm, setWristCm] = useState('16.5')
   const [busy, setBusy] = useState(false)
   const [metalId, setMetalId] = useState('YELLOW_GOLD:14K')
@@ -151,7 +138,7 @@ export function SizeSelectScreen() {
                 metal,
               }
             : {
-                size: { necklaceLengthCm: parseFloat(lengthValue) || 45 },
+                size: { necklaceLengthCm: parseFloat(lengthValue) || Number(DEFAULT_NECKLACE_LENGTH) },
                 metal,
               }
       const id = await createWizardDesign(category, title, parameters)
@@ -210,11 +197,13 @@ export function SizeSelectScreen() {
                 <Text style={styles.standardLabel}>{t('sizeStandard')}</Text>
               </TouchableOpacity>
 
+              {ringOptions.length === 0 ? <ActivityIndicator color={colors.brand} /> : null}
               {ringOptions.map((option) => {
                 const selected = !standardSelected && ringSizeId === option.id
                 return (
                   <TouchableOpacity
                     key={option.id}
+                    accessibilityLabel={option.label}
                     onPress={() => {
                       setStandardSelected(false)
                       setRingSizeId(option.id)
@@ -223,10 +212,12 @@ export function SizeSelectScreen() {
                   >
                     <RadioDot selected={selected} />
                     <View style={styles.ringInfo}>
-                      <Text style={styles.ringUs}>{option.us}</Text>
-                      <Text style={styles.ringDiameter}>
-                        {t('sizeDiameterLabel')} {option.diameter} {t('sizeMm')}
-                      </Text>
+                      {option.us ? <Text style={styles.ringUs}>{option.us}</Text> : null}
+                      {option.diameter ? (
+                        <Text style={styles.ringDiameter}>
+                          {t('sizeDiameterLabel')} {option.diameter} {t('sizeMm')}
+                        </Text>
+                      ) : null}
                     </View>
                     <Text style={styles.ringSize}>{option.size}</Text>
                   </TouchableOpacity>
@@ -238,6 +229,7 @@ export function SizeSelectScreen() {
               {lengths.map((cm, index) => {
                 const selected = lengthValue === cm
                 const depth = index === 0 ? 'shallow' : index === lengths.length - 1 ? 'deep' : 'medium'
+                const style = necklaceStyleForLength(Number(cm))
                 return (
                   <TouchableOpacity
                     key={cm}
@@ -245,9 +237,12 @@ export function SizeSelectScreen() {
                     style={[styles.lengthRow, selected && styles.rowSelected]}
                   >
                     <RadioDot selected={selected} />
-                    <Text style={styles.lengthValue}>
-                      {cm} {t('sizeCm')}
-                    </Text>
+                    <View style={styles.lengthInfo}>
+                      <Text style={styles.lengthValue}>
+                        {cm} {t('sizeCm')}
+                      </Text>
+                      {style ? <Text style={styles.lengthStyle}>{necklaceStyleLabel(style, locale)}</Text> : null}
+                    </View>
                     <Image
                       source={NECKLINE_IMAGE_BY_DEPTH[depth]}
                       style={styles.necklineImage}
@@ -504,8 +499,20 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSubtle,
     borderRadius: 12,
   },
-  lengthValue: {
+  lengthInfo: {
     flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  lengthStyle: {
+    fontFamily: 'Heebo',
+    fontSize: 13,
+    fontWeight: '400',
+    color: colors.textSecondary,
+    textAlign: 'center',
+    writingDirection: 'rtl',
+  },
+  lengthValue: {
     fontFamily: 'Heebo',
     fontSize: 16,
     fontWeight: '500',

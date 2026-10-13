@@ -11,7 +11,9 @@ import { QuoteApproveSuccessModal } from '@/src/components/ui/QuoteApproveSucces
 import { acceptQuote, declineQuote, getQuote } from '@/src/api/quotes'
 import { createJewelryPaymentIntent } from '@/src/api/jewelryPayments'
 import { apiErrorCode, parseApiError } from '@/src/lib/api'
-import { contentBodyText, formatMoney, imageFromUpload } from '@/src/lib/format'
+import { contentBodyText, currencySymbol, displayName, formatMoney, imageFromUpload } from '@/src/lib/format'
+import { quoteTechRows, type QuoteTechRow } from '@/src/lib/quoteView'
+import { canAcceptQuote, effectiveQuoteStatus, quoteAcceptErrorMessage, quoteStatusLabel } from '@/src/lib/quoteStatus'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, spacing } from '@/src/theme/tokens'
@@ -42,24 +44,28 @@ export function QuoteDetailsScreen() {
     deps: [accessToken, route.params.quoteId],
   })
 
-  const canAccept = quote?.status === 'PENDING' && quote.authorUserId !== userId
+  // Expired, withdrawn or declined quotes show their status and offer no accept.
+  const canAccept = quote ? canAcceptQuote(quote, userId) : false
+  const statusLabel = quote ? quoteStatusLabel(effectiveQuoteStatus(quote), locale) : ''
   const canPayInApp = quote?.status === 'ACCEPTED' && quote.authorUserId !== userId
 
+  const techLabel: Record<QuoteTechRow['key'], string> = {
+    type: t('quoteTechTypeLabel'),
+    material: t('quoteTechMaterialLabel'),
+    materials: t('quoteTechMaterialsCostLabel'),
+    labor: t('quoteTechLaborLabel'),
+    date: t('quoteTechDateLabel'),
+  }
   const techRows: TechRow[] = quote
-    ? [
-        { label: t('quoteTechTypeLabel'), value: quote.design?.title ?? '' },
-        { label: t('quoteTechMaterialLabel'), value: quote.currency },
-        {
-          label: t('quoteTechMaterialsCostLabel'),
-          value: formatMoney(quote.materialsCost),
-        },
-        { label: t('quoteTechLaborLabel'), value: formatMoney(quote.laborCost) },
-        {
-          label: t('quoteTechDateLabel'),
-          value: new Date(quote.createdAt).toLocaleDateString(locale === 'he' ? 'he-IL' : 'en-GB'),
-        },
-      ]
+    ? quoteTechRows(quote, locale === 'en' ? 'en' : 'he').map((row) => ({ label: techLabel[row.key], value: row.value }))
     : []
+  const symbol = currencySymbol(quote?.currency)
+  const jewelerName =
+    quote?.author?.businessName ?? displayName(quote?.author?.firstName, quote?.author?.lastName, t('quoteJewelerFallback'))
+  const successMessage = t('quoteSuccessMessage')
+    .replace('{jeweler}', jewelerName)
+    .replace('{design}', quote?.design?.title ?? quote?.design?.itemType?.labelHe ?? '')
+    .replace('{total}', formatMoney(quote?.totalPrice, symbol))
 
   const onAccept = async () => {
     if (!quote) return
@@ -70,9 +76,17 @@ export function QuoteDetailsScreen() {
       await refresh()
       setSuccessVisible(true)
     } catch (err) {
-      if (apiErrorCode(err) === 'QUOTE_CHANGED') {
+      const code = apiErrorCode(err)
+      if (code === 'QUOTE_CHANGED') {
         await refresh()
         Alert.alert(t('quoteChangedTitle'), t('quoteChangedBody'))
+        return
+      }
+      // The design changed since pricing, the quote or the listing expired, or it is no longer open.
+      const refusal = quoteAcceptErrorMessage(code, locale)
+      if (refusal) {
+        await refresh()
+        Alert.alert(refusal.title, refusal.body)
         return
       }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
@@ -89,6 +103,12 @@ export function QuoteDetailsScreen() {
       await refresh()
       navigation.navigate('ChatThread', { chatId: route.params.chatId })
     } catch (err) {
+      const refusal = quoteAcceptErrorMessage(apiErrorCode(err), locale)
+      if (refusal) {
+        await refresh()
+        Alert.alert(refusal.title, refusal.body)
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
     } finally {
       setBusy(false)
@@ -150,7 +170,7 @@ export function QuoteDetailsScreen() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>{t('quoteSummaryTitle')}</Text>
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryValue}>{formatMoney(quote?.totalPrice)}</Text>
+              <Text style={styles.summaryValue}>{formatMoney(quote?.totalPrice, symbol)}</Text>
               <Text style={styles.summaryLabel}>{t('quoteSummaryTotalLabel')}</Text>
             </View>
             <View style={styles.summaryRow}>
@@ -162,6 +182,12 @@ export function QuoteDetailsScreen() {
               </Text>
               <Text style={styles.summaryLabel}>{t('quoteSummaryDeliveryLabel')}</Text>
             </View>
+            {statusLabel ? (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryValue}>{statusLabel}</Text>
+                <Text style={styles.summaryLabel}>{t('dzQuoteStatusTitle')}</Text>
+              </View>
+            ) : null}
           </View>
 
           <View style={styles.card}>
@@ -219,7 +245,7 @@ export function QuoteDetailsScreen() {
       <QuoteApproveSuccessModal
         visible={successVisible}
         title={t('quoteSuccessTitle')}
-        message={t('quoteSuccessMessage')}
+        message={successMessage}
         detail={t('quoteSuccessDetail')}
         ctaLabel={t('quoteSuccessCta')}
         onCta={goToChat}

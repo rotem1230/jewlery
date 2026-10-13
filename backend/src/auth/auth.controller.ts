@@ -14,6 +14,7 @@ import {
   RegisterDto,
   ResendVerifyDto,
   ResetPasswordDto,
+  AddRoleDto,
   SwitchRoleDto,
   VerifyEmailDto,
 } from './dto/auth.dto';
@@ -152,6 +153,19 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Current user profile' })
   me(@Req() req: AuthedRequest) {
     return this.authService.me(req.user);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('roles')
+  @ApiOperation({
+    summary: 'Add the designer or jeweler role to the current account',
+    description: 'The active role does not change; switch to the new role with switch-role. Adding a role the account has is a no-op.',
+  })
+  @ApiResponse({ status: 201, description: 'Role added; new token pair issued' })
+  @ApiResponse({ status: 400, description: 'Only DESIGNER or JEWELER can be added' })
+  addRole(@Req() req: AuthedRequest, @Body() dto: AddRoleDto) {
+    return this.authService.addRole(req.user, dto);
   }
 
   @ApiBearerAuth()

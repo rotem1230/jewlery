@@ -14,6 +14,7 @@ import {
   Prisma,
   Quote,
   QuoteStatus,
+  RequestTargetStatus,
   User,
   UserRole,
 } from '@prisma/client';
@@ -25,13 +26,24 @@ import { StateMachineService } from '../common/state-machine/state-machine.servi
 import { AUTH_ERROR } from '../auth/constants';
 import { PrismaService } from '../database/prisma.service';
 import { shareLockUser } from '../database/row-locks';
+import { moveOrders } from '../atelier/order-status';
+import { designFingerprint } from '../designs/design-fingerprint';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, MAX_AMOUNT, UpdateQuoteDto } from './dto/quote.dto';
+import { QUOTE_AUTHOR_SELECT, QUOTE_DESIGN_SELECT, withBusinessName } from './quote-view';
 
 const DEFAULT_CURRENCY = 'ILS';
 const MAX_TOTAL = new Prisma.Decimal(MAX_AMOUNT);
 /** Waiting for the design lock counts toward the timeout; leave room for a busy design. */
 const DECISION_TX = { maxWait: 5_000, timeout: 15_000 };
+/** Pending quotes expired per sweep (the next sweep takes the rest). */
+const EXPIRY_BATCH = 200;
+
+/** Chat messages posted when a quote is accepted (PRD 5.6); an operator can reword them. */
+const ACCEPTED_MESSAGE = 'ההצעה אושרה בהצלחה! כדי להשלים את התהליך אפשר עכשיו לתאם ישירות עם {{jewelerName}}.';
+const HANDOFF_MESSAGE = 'הנה קישור להמשך התקשרות ישירה עם {{jewelerName}}: {{whatsappUrl}}';
+/** When the jeweler left no phone number there is no link to give: the chat stays the channel. */
+const HANDOFF_WITHOUT_LINK_MESSAGE = 'להמשך התקשרות עם {{jewelerName}} המשיכו בצ׳אט הזה.';
 
 /** Total = materials + labor must still fit the Decimal(12, 2) column. */
 function assertStorableTotal(total: Prisma.Decimal): void {
@@ -57,6 +69,14 @@ function quoteUpdate(quote: Pick<Quote, 'id' | 'status' | 'totalPrice' | 'curren
 }
 
 /** Thrown inside the accept transaction to roll it back with a client-facing conflict. */
+function isExpired(expiresAt: Date | null | undefined): boolean {
+  return !!expiresAt && expiresAt.getTime() <= Date.now();
+}
+
+function designExpired(): ConflictException {
+  return new ConflictException({ success: false, message: 'This listing has expired', code: 'DESIGN_EXPIRED' });
+}
+
 class AcceptConflict extends Error {
   constructor(
     readonly code: string,
@@ -77,12 +97,16 @@ export class QuotesService {
     private readonly gateway: ChatGateway,
   ) {}
 
-  private fullName(user: { firstName: string | null; lastName: string | null } | null | undefined): string {
-    if (!user) {
-      return 'the jeweler';
+  /** The jeweler as the designer knows them: the business name, else their own name. */
+  private jewelerName(
+    user: { firstName: string | null; lastName: string | null; jewelerProfile?: { businessName: string } | null } | null | undefined,
+  ): string {
+    const business = user?.jewelerProfile?.businessName?.trim();
+    if (business) {
+      return business;
     }
-    const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
-    return name.length > 0 ? name : 'the jeweler';
+    const name = `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim();
+    return name.length > 0 ? name : 'הצורף';
   }
 
   private renderTemplate(template: string, vars: Record<string, string>): string {
@@ -157,6 +181,9 @@ export class QuotesService {
         code: 'DESIGN_NOT_PUBLISHED',
       });
     }
+    if (isExpired(design.expiresAt)) {
+      throw designExpired();
+    }
 
     if (dto.designRequestId) {
       const request = await this.prisma.designRequest.findUnique({
@@ -203,14 +230,19 @@ export class QuotesService {
       }
       // Shared lock: an accept on this design (FOR UPDATE) cannot interleave, so a quote is never
       // added to a design that was completed after the checks above.
-      const [current] = await tx.$queryRaw<Array<{ status: string; deletedAt: Date | null }>>`
-        SELECT "status", "deletedAt" FROM "designs" WHERE "id" = ${dto.designId}::uuid FOR SHARE`;
+      const [current] = await tx.$queryRaw<
+        Array<{ status: string; deletedAt: Date | null; expiresAt: Date | null; parameters: unknown }>
+      >`
+        SELECT "status", "deletedAt", "expiresAt", "parameters" FROM "designs" WHERE "id" = ${dto.designId}::uuid FOR SHARE`;
       if (!current || current.deletedAt || current.status !== DesignStatus.PUBLISHED) {
         throw new ConflictException({
           success: false,
           message: 'This design is not open for quotes',
           code: 'DESIGN_NOT_PUBLISHED',
         });
+      }
+      if (isExpired(current.expiresAt)) {
+        throw designExpired();
       }
 
       const createdQuote = await tx.quote.create({
@@ -228,6 +260,8 @@ export class QuotesService {
           notes: dto.notes ?? null,
           validUntil: dto.validUntil ? new Date(dto.validUntil) : null,
           disclaimerPageId: disclaimer?.id ?? null,
+          // The design as it is now is what this price is for (an accept checks it is unchanged).
+          designHash: designFingerprint(current.parameters),
         },
       });
 
@@ -243,7 +277,10 @@ export class QuotesService {
           quoteId: createdQuote.id,
           payload: this.cardPayload(createdQuote),
         },
-        include: { sender: { select: { id: true, firstName: true, lastName: true, avatarUploadId: true } } },
+        include: {
+          sender: { select: { id: true, firstName: true, lastName: true, avatarUploadId: true } },
+          quote: { include: { design: { select: QUOTE_DESIGN_SELECT } } },
+        },
       });
 
       await tx.conversation.update({
@@ -270,6 +307,14 @@ export class QuotesService {
           });
         }
       }
+      // This jeweler's own order(s) for the design: a quote is now submitted (also after an earlier
+      // quote was declined, or the request was declined and then quoted anyway).
+      await moveOrders(
+        tx,
+        { designId: dto.designId, jewelerUserIds: [user.id], openRequestsOnly: true },
+        [RequestTargetStatus.NEW, RequestTargetStatus.NEGOTIATING, RequestTargetStatus.CLOSED, RequestTargetStatus.DECLINED],
+        RequestTargetStatus.QUOTE_SUBMITTED,
+      );
 
       return { quote: createdQuote, message: createdMessage };
     });
@@ -304,8 +349,8 @@ export class QuotesService {
       where: { id },
       include: {
         disclaimerPage: true,
-        author: { select: { id: true, firstName: true, lastName: true } },
-        design: { select: { id: true, title: true, thumbnailUploadId: true, status: true, ownerUserId: true } },
+        author: { select: QUOTE_AUTHOR_SELECT },
+        design: { select: { ...QUOTE_DESIGN_SELECT, ownerUserId: true } },
         conversation: { include: { participants: true } },
       },
     });
@@ -316,6 +361,7 @@ export class QuotesService {
     // while they are still in the conversation.
     const {
       conversation,
+      author,
       design: { ownerUserId, ...design },
       ...rest
     } = quote;
@@ -327,7 +373,104 @@ export class QuotesService {
     if (!allowed) {
       throw new ForbiddenException({ success: false, message: 'Not authorized to view this quote' });
     }
-    return { ...rest, design };
+    return { ...rest, author: withBusinessName(author), design };
+  }
+
+  /** Every quote a design received, newest first, for its owner to compare (PRD 5.6). */
+  async listForDesign(designId: string, user: User) {
+    const design = await this.prisma.design.findUnique({
+      where: { id: designId },
+      select: { ownerUserId: true, deletedAt: true },
+    });
+    if (!design || design.deletedAt) {
+      throw new NotFoundException({ success: false, message: 'Design not found' });
+    }
+    if (design.ownerUserId !== user.id && !user.roles.includes(UserRole.ADMIN)) {
+      throw new ForbiddenException({ success: false, message: 'Only the design owner can list its quotes' });
+    }
+    const now = new Date();
+    const quotes = await this.prisma.quote.findMany({
+      where: { designId },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        conversationId: true,
+        designRequestId: true,
+        status: true,
+        materialsCost: true,
+        laborCost: true,
+        totalPrice: true,
+        currency: true,
+        etaBusinessDays: true,
+        notes: true,
+        validUntil: true,
+        acceptedAt: true,
+        declinedAt: true,
+        createdAt: true,
+        author: { select: QUOTE_AUTHOR_SELECT },
+      },
+    });
+    return quotes.map(({ author, ...quote }) => ({
+      ...quote,
+      // Past its validity it can no longer be accepted, even before the sweep marks it.
+      status: this.isExpired(quote, now) ? QuoteStatus.EXPIRED : quote.status,
+      author: withBusinessName(author),
+    }));
+  }
+
+  private isExpired(quote: Pick<Quote, 'status' | 'validUntil'>, now: Date): boolean {
+    return quote.status === QuoteStatus.PENDING && quote.validUntil !== null && quote.validUntil.getTime() < now.getTime();
+  }
+
+  /**
+   * Pending quotes past their validity become EXPIRED (PRD 5.6). The jeweler's order returns to
+   * New while its request still takes quotes, and the conversation's open card is updated.
+   */
+  async expireStale(now = new Date()): Promise<number> {
+    const stale = await this.prisma.quote.findMany({
+      where: { status: QuoteStatus.PENDING, validUntil: { lt: now } },
+      select: { id: true, conversationId: true, designId: true, authorUserId: true },
+      orderBy: { validUntil: 'asc' },
+      take: EXPIRY_BATCH,
+    });
+    let expired = 0;
+    for (const quote of stale) {
+      // Conditional: a quote accepted, withdrawn or extended meanwhile is left as it is.
+      const changed = await this.prisma.$transaction(async (tx) => {
+        const moved = await tx.quote.updateMany({
+          where: { id: quote.id, status: QuoteStatus.PENDING, validUntil: { lt: now } },
+          data: { status: QuoteStatus.EXPIRED },
+        });
+        if (moved.count !== 1) {
+          return false;
+        }
+        await tx.quoteEvent.create({
+          data: {
+            quoteId: quote.id,
+            fromStatus: QuoteStatus.PENDING,
+            toStatus: QuoteStatus.EXPIRED,
+            actorUserId: null,
+            note: 'Expired: past its validity',
+          },
+        });
+        await moveOrders(
+          tx,
+          { designId: quote.designId, jewelerUserIds: [quote.authorUserId], openRequestsOnly: true },
+          [RequestTargetStatus.QUOTE_SUBMITTED, RequestTargetStatus.NEGOTIATING],
+          RequestTargetStatus.NEW,
+        );
+        return true;
+      });
+      if (changed) {
+        expired += 1;
+        this.gateway.emitToConversation(quote.conversationId, 'quote:updated', {
+          quoteId: quote.id,
+          status: QuoteStatus.EXPIRED,
+        });
+      }
+    }
+    return expired;
   }
 
   private async loadForDecision(id: string) {
@@ -424,6 +567,15 @@ export class QuotesService {
         if (!author || author.deletedAt) {
           throw new AcceptConflict('QUOTE_NOT_PENDING', 'The jeweler who made this quote has closed their account');
         }
+        // The price is for the design as it was quoted: an edit since then (e.g. another metal) needs
+        // the jeweler to update the quote first. Quotes from before fingerprints carry none.
+        const priced = await tx.quote.findUniqueOrThrow({ where: { id }, select: { designHash: true } });
+        if (priced.designHash && priced.designHash !== designFingerprint(design.parameters)) {
+          throw new AcceptConflict(
+            'DESIGN_CHANGED_SINCE_QUOTE',
+            'The design changed after this quote was made; ask the jeweler to update the quote',
+          );
+        }
 
         const claimed = await tx.quote.updateMany({
           where: {
@@ -455,6 +607,27 @@ export class QuotesService {
             // Editors holding the pre-acceptance version are refused as stale.
             version: { increment: 1 },
           },
+        });
+
+        // Every jeweler's order for this design: the winner's completes, the others' close.
+        await moveOrders(
+          tx,
+          { designId: existing.designId, jewelerUserIds: [existing.authorUserId] },
+          [RequestTargetStatus.NEW, RequestTargetStatus.QUOTE_SUBMITTED, RequestTargetStatus.NEGOTIATING, RequestTargetStatus.CLOSED],
+          RequestTargetStatus.COMPLETED,
+        );
+        await moveOrders(
+          tx,
+          { designId: existing.designId, exceptJewelerUserId: existing.authorUserId },
+          [RequestTargetStatus.NEW, RequestTargetStatus.QUOTE_SUBMITTED, RequestTargetStatus.NEGOTIATING],
+          RequestTargetStatus.CLOSED,
+        );
+        await tx.designRequest.updateMany({
+          where: {
+            designId: existing.designId,
+            status: { in: [DesignRequestStatus.OPEN, DesignRequestStatus.QUOTE_SUBMITTED, DesignRequestStatus.NEGOTIATING] },
+          },
+          data: { status: DesignRequestStatus.COMPLETED },
         });
 
         // Locked above, before the claim: a concurrent withdraw or edit either committed first (and is
@@ -494,9 +667,9 @@ export class QuotesService {
           where: { id: existing.authorUserId },
           include: { jewelerProfile: true },
         });
-        const phone = jeweler?.jewelerProfile?.phone ?? jeweler?.phone ?? null;
+        const phone = jeweler?.jewelerProfile?.phone || jeweler?.phone || null;
         const whatsappUrl = this.toWhatsappUrl(phone);
-        const jewelerName = this.fullName(jeweler);
+        const jewelerName = this.jewelerName(jeweler);
 
         const [acceptedTemplate, handoffTemplate] = await Promise.all([
           tx.systemMessageTemplate.findUnique({ where: { eventKey_locale: { eventKey: 'quote.accepted', locale: 'he' } } }),
@@ -509,10 +682,7 @@ export class QuotesService {
             conversationId: existing.conversationId,
             senderId: null,
             type: MessageType.SYSTEM,
-            body: this.renderTemplate(
-              acceptedTemplate?.body ?? 'The quote from {{jewelerName}} was accepted.',
-              templateVars,
-            ),
+            body: this.renderTemplate(acceptedTemplate?.body ?? ACCEPTED_MESSAGE, templateVars),
             payload: toJsonValue({ eventKey: 'quote.accepted', quoteId: id }),
           },
         });
@@ -522,7 +692,7 @@ export class QuotesService {
             senderId: null,
             type: MessageType.SYSTEM,
             body: this.renderTemplate(
-              handoffTemplate?.body ?? 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}',
+              whatsappUrl ? (handoffTemplate?.body ?? HANDOFF_MESSAGE) : HANDOFF_WITHOUT_LINK_MESSAGE,
               templateVars,
             ),
             payload: toJsonValue({ eventKey: 'handoff.created', quoteId: id, whatsappUrl }),
@@ -543,6 +713,19 @@ export class QuotesService {
               jewelerUserId: existing.authorUserId,
               acceptedAt,
               declinedQuoteIds: declined.map((q) => q.id),
+            }),
+          },
+        });
+        // The contact handoff is on the record (PRD 5.6); the phone number itself stays in the message.
+        await tx.eventLog.create({
+          data: {
+            eventKey: 'handoff.created',
+            entityType: 'Quote',
+            entityId: id,
+            payload: toJsonValue({
+              conversationId: existing.conversationId,
+              messageId: handoffMsg.id,
+              channel: whatsappUrl ? 'whatsapp' : 'chat',
             }),
           },
         });
@@ -593,21 +776,30 @@ export class QuotesService {
       return this.findOne(id, user);
     }
     const declinedAt = new Date();
-    const changed = await this.prisma.quote.updateMany({
-      where: { id, status: QuoteStatus.PENDING },
-      data: { status: QuoteStatus.DECLINED, declinedAt },
-    });
-    if (changed.count !== 1) {
-      throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
-    }
-    await this.prisma.quoteEvent.create({
-      data: {
-        quoteId: id,
-        fromStatus: QuoteStatus.PENDING,
-        toStatus: QuoteStatus.DECLINED,
-        actorUserId: user.id,
-        note: dto.note ?? null,
-      },
+    await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.quote.updateMany({
+        where: { id, status: QuoteStatus.PENDING },
+        data: { status: QuoteStatus.DECLINED, declinedAt },
+      });
+      if (changed.count !== 1) {
+        throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
+      }
+      await tx.quoteEvent.create({
+        data: {
+          quoteId: id,
+          fromStatus: QuoteStatus.PENDING,
+          toStatus: QuoteStatus.DECLINED,
+          actorUserId: user.id,
+          note: dto.note ?? null,
+        },
+      });
+      // The jeweler's order for the design closes (a new quote reopens it).
+      await moveOrders(
+        tx,
+        { designId: quote.designId, jewelerUserIds: [quote.authorUserId] },
+        [RequestTargetStatus.QUOTE_SUBMITTED, RequestTargetStatus.NEGOTIATING],
+        RequestTargetStatus.CLOSED,
+      );
     });
 
     this.gateway.emitToConversation(quote.conversationId, 'quote:updated', { quoteId: id, status: QuoteStatus.DECLINED });
@@ -632,15 +824,24 @@ export class QuotesService {
     if (quote.status === QuoteStatus.WITHDRAWN) {
       return this.findOne(id, user);
     }
-    const changed = await this.prisma.quote.updateMany({
-      where: { id, status: QuoteStatus.PENDING },
-      data: { status: QuoteStatus.WITHDRAWN },
-    });
-    if (changed.count !== 1) {
-      throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
-    }
-    await this.prisma.quoteEvent.create({
-      data: { quoteId: id, fromStatus: QuoteStatus.PENDING, toStatus: QuoteStatus.WITHDRAWN, actorUserId: user.id },
+    await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.quote.updateMany({
+        where: { id, status: QuoteStatus.PENDING },
+        data: { status: QuoteStatus.WITHDRAWN },
+      });
+      if (changed.count !== 1) {
+        throw new ConflictException({ success: false, message: 'This quote is no longer pending', code: 'QUOTE_NOT_PENDING' });
+      }
+      await tx.quoteEvent.create({
+        data: { quoteId: id, fromStatus: QuoteStatus.PENDING, toStatus: QuoteStatus.WITHDRAWN, actorUserId: user.id },
+      });
+      // The order returns to New while its request still takes quotes.
+      await moveOrders(
+        tx,
+        { designId: quote.designId, jewelerUserIds: [user.id], openRequestsOnly: true },
+        [RequestTargetStatus.QUOTE_SUBMITTED, RequestTargetStatus.NEGOTIATING],
+        RequestTargetStatus.NEW,
+      );
     });
     this.gateway.emitToConversation(quote.conversationId, 'quote:updated', { quoteId: id, status: QuoteStatus.WITHDRAWN });
     await this.eventLog.record('quote.withdrawn', 'Quote', id, { actorUserId: user.id });
@@ -659,7 +860,7 @@ export class QuotesService {
       throw new ForbiddenException({ success: false, message: 'Only the quote author can edit it' });
     }
     if (quote.status !== QuoteStatus.PENDING) {
-      throw new BadRequestException({ success: false, message: 'Only PENDING quotes can be edited' });
+      throw new ConflictException({ success: false, message: 'Only pending quotes can be edited', code: 'QUOTE_NOT_PENDING' });
     }
 
     const materialsCost = dto.materialsCost != null ? new Prisma.Decimal(dto.materialsCost) : quote.materialsCost;
@@ -668,9 +869,12 @@ export class QuotesService {
     assertStorableTotal(totalPrice);
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Editing the offer prices the design as it is now (it may have changed since the quote).
+      const priced = await tx.design.findUniqueOrThrow({ where: { id: quote.designId }, select: { parameters: true } });
       const changed = await tx.quote.updateMany({
         where: { id, status: QuoteStatus.PENDING },
         data: {
+          designHash: designFingerprint(priced.parameters),
           materialsCost,
           laborCost,
           totalPrice,

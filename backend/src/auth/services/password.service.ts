@@ -3,6 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { AppConfigService } from '../../cms/app-config.service';
 
+/** A letter of any alphabet (Hebrew included). */
+const ANY_LETTER = /\p{L}/u;
+
 type PasswordPolicy = {
   minLength: number;
   requireLetter: boolean;
@@ -79,7 +82,8 @@ export class PasswordService {
     if (Buffer.byteLength(password, 'utf8') > MAX_PASSWORD_BYTES) {
       return `Password must be at most ${MAX_PASSWORD_BYTES} bytes`;
     }
-    if (policy.requireLetter && !/[A-Za-z]/.test(password)) {
+    // Any alphabet counts (a Hebrew-only password has letters too), as the app checks it.
+    if (policy.requireLetter && !ANY_LETTER.test(password)) {
       return 'Password must include at least one letter';
     }
     if (policy.requireNumber && !/\d/.test(password)) {

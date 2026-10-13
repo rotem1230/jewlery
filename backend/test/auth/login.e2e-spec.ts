@@ -88,6 +88,29 @@ describe('login hardening', () => {
       expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
       expect(statuses.slice(5)).toEqual([429, 429]);
     });
+
+    it('signing in successfully does not use up the budget (a user signing in daily is never throttled)', async () => {
+      const email = await verifiedWithoutLogin(t);
+      const statuses: number[] = [];
+      for (let i = 0; i < 7; i += 1) {
+        statuses.push((await t.http.post(`${API}/auth/login`).send({ email, password: DEFAULT_PASSWORD })).status);
+      }
+      expect(statuses).toEqual([201, 201, 201, 201, 201, 201, 201]);
+    });
+
+    it('a correct password does not refill the budget for the guesses before it', async () => {
+      const email = await verifiedWithoutLogin(t);
+      for (let i = 0; i < 4; i += 1) {
+        await t.http.post(`${API}/auth/login`).send({ email, password: `Wrong-pass${i}` }).expect(401);
+      }
+      await t.http.post(`${API}/auth/login`).send({ email, password: DEFAULT_PASSWORD }).expect(201);
+      // The guesses before the sign-in still count; the sign-in itself does not.
+      const statuses: number[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        statuses.push((await t.http.post(`${API}/auth/login`).send({ email, password: `Wrong-again${i}` })).status);
+      }
+      expect(statuses).toEqual([401, 429, 429]);
+    });
   });
 
   describe('lockout', () => {

@@ -171,3 +171,26 @@ Environment (round 4):
 - [x] R4 remember-me off was reset by an unexpected sign-out -> the choice is kept; every sign-in screen states its own (authStore.test, red -> green)
 - [x] R5 claimed older deadlock (owner deletes account while accepting on own design): NOT REAL — quote_events.actorUserId has no FK and accept's messages are SYSTEM (senderId null), so accept never references the owner row. Deterministic interleaving test added (test/privacy), green before any change; kept as regression guard
 - [x] note: refresh timeout makes the open grace-window decision more likely to matter -> documented (§8 of production-readiness)
+## Round 5 (2026-10-13): PRD conformance — full gap list (docs/prd-gap-audit.md), TDD, then one review
+Audit: 5 independent reviewers, every PRD section vs code; tracker with statuses + implementation decisions D1–D8 in docs/prd-gap-audit.md.
+Backend (tests: test/prd/prd-gaps, test/prd/prd-journey, test/marketplace/order-board, test/migrations/{seed,data-migrations}):
+- [x] per-jeweler order status (DesignRequestTarget.status + migration with backfill + data-migration test); board tabs/counters/tabCounts; jeweler decline under the account lock (race test)
+- [x] quote priced on changed design -> 409 DESIGN_CHANGED_SINCE_QUOTE (designHash fingerprint); listing expiry enforced (409 DESIGN_EXPIRED); quote expiry sweep (EXPIRED + event + order back to NEW) + index
+- [x] GET /designs/:id/quotes; GET /quotes/:id with item type + parameters + business name; live QUOTE_CARD carries the quote; GET /atelier/designs/:id; jeweler sees own feed quotes on the request
+- [x] Hebrew PRD system messages; seed replaces only the legacy English text (seed test); handoff event-log record without the phone
+- [x] PRD ring chart IL 52–64 / US 6.00–10.75 (old sizes retired; seed test); measuring guide table kept compatible
+- [x] POST /auth/roles; message.new notifications coalesced per conversation, read with the conversation; GET /conversations/:id; name search
+- [x] banners without budget + sponsored; completedBy = business name; E.164 phone; parameter validation on create/publish; hd_export for PNG_HD; Unicode letters in password rule
+- [x] account deletion purges unreferenced own uploads; DELETE /uploads/:id; listed design's inspiration/custom-element pictures readable; admin unlock of locked fields (audited)
+- [x] login budget refunded on success (refund, not reset); dead `lockout` app-config removed; viz purge also at start-up; edit of non-pending quote -> 409 QUOTE_NOT_PENDING
+- [ ] Sentry: needs DSN + approval to add the SDK (blocked); push: Firebase/APNs (blocked); ETL/data-driven item types: partial, not done this round
+App (3 parallel work streams, each TDD; app jest 33 suites / 214 tests):
+- [x] jeweler board/order details/decline/withdraw/notes/design by id/expiry/409 messages/business hours & area/sponsored tag/no fake +12/nearby gating
+- [x] designer home (no fake updates, Hebrew labels, relative times, cache, trial reminder), My Designs paging, previous quotes, completed read-only, region at publish, IL/US size pairing, necklace PRD lengths, band-width check, pricing from API, try-on gating + photo deleted on refusal, HD paywall
+- [x] role expansion, jeweler pricing entry, forgot-password title, Hebrew password letters, inbox server search/paging, read ticks, failed send keeps draft, socket rejoin/reload, WhatsApp button, error-code messages
+- [x] own business profile without demo fallbacks; "לפני דקה"; unused i18n keys removed
+## Single final code review (round 5, after all development) — handled once, no further review loop
+- [x] V1 (app) useAsyncData: an older, slower response overwrote a newer one (filter switch / refresh) -> superseded request aborted and ignored (useAsyncData.test, red 2/2 -> green)
+- [x] V2 (backend) soft-deleted designs kept their pictures "in use": account deletion never purged them -> isReferencedElsewhere ignores deleted designs (prd-gaps test, red -> green)
+- [x] V3 (app) titleless design showed the sample "טבעת אירוסין יהלום" (and the edit field was labelled with it) -> item-type name / "עיצוב ללא שם" (designActions.test, red -> green)
+- [x] dismissed: chat media fallback to /uploads/:id/content is not a leak — the server serves private media only with a valid signature or a participant's token (404 otherwise)

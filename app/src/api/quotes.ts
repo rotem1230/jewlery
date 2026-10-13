@@ -38,9 +38,16 @@ export function updateQuote(
     laborCost?: number
     laborHours?: number
     etaBusinessDays?: number
+    /** An empty string clears the notes; leaving it out keeps them. */
+    notes?: string
   },
 ): Promise<QuoteSummary> {
   return apiPatch<QuoteSummary>(`/quotes/${id}`, payload)
+}
+
+/** The author takes back a pending quote; 409 QUOTE_NOT_PENDING once it was decided. */
+export function withdrawQuote(id: string): Promise<QuoteSummary> {
+  return apiPost<QuoteSummary>(`/quotes/${id}/withdraw`, {})
 }
 
 export function declineQuote(id: string, note?: string): Promise<QuoteSummary> {

@@ -12,6 +12,7 @@ import {
   measurementGuideTable,
   measurementGuideTips,
 } from '@/src/api/masterData'
+import { necklaceGuideLines } from '@/src/lib/necklaceLengths'
 import type { HomeStackParamList } from '@/src/navigation/types'
 import ringImage from '../../../assets/images/categories/ring.png'
 import necklaceImage from '../../../assets/images/categories/necklace.png'
@@ -46,12 +47,6 @@ const BADGE_IMAGE_BY_CATEGORY: Record<GuideCategory, ImageSourcePropType> = {
   necklace: necklaceImage,
   bracelet: braceletImage,
 }
-
-const NECKLACE_LENGTHS = [
-  { key: 'guideNecklaceLength1' as TranslationKey },
-  { key: 'guideNecklaceLength2' as TranslationKey },
-  { key: 'guideNecklaceLength3' as TranslationKey },
-]
 
 /**
  * Figma "*-measurement-guide" — how-to-measure reference per category.
@@ -117,8 +112,9 @@ export function MeasurementGuideScreen() {
               <View style={styles.bulletList}>
                 {liveTable.map((row) => (
                   <Text key={`${row.standard ?? ''}-${row.sizeCode}`} style={styles.bullet}>
-                    {row.standard ? `${row.standard} ` : ''}
+                    {row.standard && row.standard !== 'IL' ? `${row.standard} ` : ''}
                     {row.sizeCode}
+                    {row.us ? ` · US ${row.us}` : ''}
                     {row.diameterMm ? ` · ${row.diameterMm} ${t('sizeMm')}` : ''}
                   </Text>
                 ))}
@@ -128,9 +124,9 @@ export function MeasurementGuideScreen() {
             {category === 'necklace' ? (
               <>
                 <View style={styles.bulletList}>
-                  {NECKLACE_LENGTHS.map(({ key }) => (
-                    <Text key={key} style={styles.bullet}>
-                      {t(key)}
+                  {necklaceGuideLines(locale).map((line) => (
+                    <Text key={line} style={styles.bullet}>
+                      {line}
                     </Text>
                   ))}
                 </View>

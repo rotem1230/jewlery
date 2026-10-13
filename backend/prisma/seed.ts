@@ -481,37 +481,61 @@ async function seedStonesAndElements() {
   console.log(`Seed complete: ${stones.length} stones, ${elements.length} elements`);
 }
 
+/**
+ * The ring chart of the PRD (5.4): Israeli/European sizes 52–64 with their US sizes and inner
+ * diameters. The PRD gives the diameter ranges of the two ends (US 6.00: 16.55–16.95 mm, US 10.75:
+ * 20.40–20.44 mm); the sizes between them carry the diameter shown in the design (Figma).
+ */
+const RING_SIZES: { il: string; us: string; minMm: number; maxMm: number }[] = [
+  { il: '52', us: '6.00', minMm: 16.55, maxMm: 16.95 },
+  { il: '54', us: '7.00', minMm: 17.19, maxMm: 17.19 },
+  { il: '56', us: '7.75', minMm: 17.83, maxMm: 17.83 },
+  { il: '58', us: '8.50', minMm: 18.47, maxMm: 18.47 },
+  { il: '60', us: '9.25', minMm: 19.1, maxMm: 19.1 },
+  { il: '62', us: '10.00', minMm: 19.76, maxMm: 19.76 },
+  { il: '64', us: '10.75', minMm: 20.4, maxMm: 20.44 },
+];
+
+/** The measuring guide's table as first seeded; a re-seed replaces only this, never an edited guide. */
+const LEGACY_RING_GUIDE_TABLE = [
+  { standard: 'US', sizeCode: '5.00', diameterMm: 15.7 },
+  { standard: 'US', sizeCode: '6.00', diameterMm: 16.5 },
+  { standard: 'US', sizeCode: '7.00', diameterMm: 17.3 },
+  { standard: 'US', sizeCode: '8.00', diameterMm: 18.1 },
+  { standard: 'US', sizeCode: '9.00', diameterMm: 18.9 },
+];
+
 async function seedSizeCharts(itemTypeIds: Record<string, string>) {
   const ringId = itemTypeIds.RING;
   if (!ringId) {
     return;
   }
 
-  const usRingSizes: { sizeCode: string; diameterMm: number }[] = [
-    { sizeCode: '5.00', diameterMm: 15.7 },
-    { sizeCode: '6.00', diameterMm: 16.5 },
-    { sizeCode: '7.00', diameterMm: 17.3 },
-    { sizeCode: '8.00', diameterMm: 18.1 },
-    { sizeCode: '9.00', diameterMm: 18.9 },
-  ];
-
-  for (let i = 0; i < usRingSizes.length; i += 1) {
-    const size = usRingSizes[i];
+  const rows = RING_SIZES.flatMap((size, i) => [
+    { standard: 'IL', sizeCode: size.il, diameterMinMm: size.minMm, diameterMaxMm: size.maxMm, sortOrder: i },
+    { standard: 'US', sizeCode: size.us, diameterMinMm: size.minMm, diameterMaxMm: size.maxMm, sortOrder: i },
+  ]);
+  for (const row of rows) {
     await prisma.sizeChart.upsert({
-      where: { itemTypeId_standard_sizeCode: { itemTypeId: ringId, standard: 'US', sizeCode: size.sizeCode } },
-      update: { diameterMinMm: size.diameterMm, diameterMaxMm: size.diameterMm, sortOrder: i },
-      create: {
+      where: { itemTypeId_standard_sizeCode: { itemTypeId: ringId, standard: row.standard, sizeCode: row.sizeCode } },
+      update: { diameterMinMm: row.diameterMinMm, diameterMaxMm: row.diameterMaxMm, sortOrder: row.sortOrder, isActive: true },
+      create: { itemTypeId: ringId, ...row },
+    });
+  }
+  // Sizes an earlier chart offered (US 5.00 / 8.00 / 9.00) are retired, not deleted: designs keep them.
+  for (const standard of ['IL', 'US']) {
+    await prisma.sizeChart.updateMany({
+      where: {
         itemTypeId: ringId,
-        standard: 'US',
-        sizeCode: size.sizeCode,
-        diameterMinMm: size.diameterMm,
-        diameterMaxMm: size.diameterMm,
-        sortOrder: i,
+        standard,
+        isActive: true,
+        sizeCode: { notIn: rows.filter((row) => row.standard === standard).map((row) => row.sizeCode) },
       },
+      data: { isActive: false },
     });
   }
 
-  console.log(`Seed complete: ${usRingSizes.length} RING US size chart rows`);
+  console.log(`Seed complete: ${rows.length} RING size chart rows (IL and US)`);
 }
 
 async function seedMeasurementGuides(itemTypeIds: Record<string, string>) {
@@ -520,28 +544,30 @@ async function seedMeasurementGuides(itemTypeIds: Record<string, string>) {
     return;
   }
 
-  await prisma.measurementGuide.upsert({
+  const tips = [
+    'מדדו את האצבע בסוף היום כשהיא בגודלה המקסימלי.',
+    'השתמשו בטבעת קיימת שמתאימה כדי להשוות קוטר.',
+  ];
+  // Same row shape as before (the app reads standard / sizeCode / diameterMm), plus the US size.
+  const table = RING_SIZES.map((size) => ({
+    standard: 'IL',
+    sizeCode: size.il,
+    us: size.us,
+    diameterMm: size.minMm === size.maxMm ? size.minMm.toFixed(2) : `${size.minMm.toFixed(2)}–${size.maxMm.toFixed(2)}`,
+  }));
+  const existing = await prisma.measurementGuide.findUnique({
     where: { itemTypeId_locale: { itemTypeId: ringId, locale: 'he' } },
-    update: {},
-    create: {
-      itemTypeId: ringId,
-      locale: 'he',
-      title: 'איך למדוד מידת טבעת',
-      body: {
-        tips: [
-          'מדדו את האצבע בסוף היום כשהיא בגודלה המקסימלי.',
-          'השתמשו בטבעת קיימת שמתאימה כדי להשוות קוטר.',
-        ],
-        table: [
-          { standard: 'US', sizeCode: '5.00', diameterMm: 15.7 },
-          { standard: 'US', sizeCode: '6.00', diameterMm: 16.5 },
-          { standard: 'US', sizeCode: '7.00', diameterMm: 17.3 },
-          { standard: 'US', sizeCode: '8.00', diameterMm: 18.1 },
-          { standard: 'US', sizeCode: '9.00', diameterMm: 18.9 },
-        ],
-      },
-    },
   });
+  if (!existing) {
+    await prisma.measurementGuide.create({
+      data: { itemTypeId: ringId, locale: 'he', title: 'איך למדוד מידת טבעת', body: { tips, table } },
+    });
+  } else if (JSON.stringify((existing.body as { table?: unknown } | null)?.table) === JSON.stringify(LEGACY_RING_GUIDE_TABLE)) {
+    await prisma.measurementGuide.update({
+      where: { id: existing.id },
+      data: { body: { ...(existing.body as Record<string, unknown>), table } },
+    });
+  }
 
   console.log('Seed complete: RING measurement guide (he)');
 }
@@ -863,21 +889,35 @@ async function seedJewelerProfileShowcase() {
   console.log('Seed complete: jeweler showcase profile (תכשיטי גורלי, 2 works, 2 reviews)');
 }
 
+/**
+ * The chat messages posted when a quote is accepted (PRD 5.6). An operator may reword them: a
+ * re-seed only replaces the original English text, never an edited one.
+ */
 async function seedSystemMessageTemplates() {
-  const templates: { eventKey: string; locale: string; body: string }[] = [
-    { eventKey: 'quote.accepted', locale: 'he', body: 'The quote from {{jewelerName}} was accepted.' },
+  const templates: { eventKey: string; locale: string; body: string; legacyBody: string }[] = [
+    {
+      eventKey: 'quote.accepted',
+      locale: 'he',
+      body: 'ההצעה אושרה בהצלחה! כדי להשלים את התהליך אפשר עכשיו לתאם ישירות עם {{jewelerName}}.',
+      legacyBody: 'The quote from {{jewelerName}} was accepted.',
+    },
     {
       eventKey: 'handoff.created',
       locale: 'he',
-      body: 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}',
+      body: 'הנה קישור להמשך התקשרות ישירה עם {{jewelerName}}: {{whatsappUrl}}',
+      legacyBody: 'Continue the handoff with {{jewelerName}} on WhatsApp: {{whatsappUrl}}',
     },
   ];
 
-  for (const template of templates) {
+  for (const { legacyBody, ...template } of templates) {
     await prisma.systemMessageTemplate.upsert({
       where: { eventKey_locale: { eventKey: template.eventKey, locale: template.locale } },
-      update: { body: template.body },
+      update: {},
       create: template,
+    });
+    await prisma.systemMessageTemplate.updateMany({
+      where: { eventKey: template.eventKey, locale: template.locale, body: legacyBody },
+      data: { body: template.body },
     });
   }
 

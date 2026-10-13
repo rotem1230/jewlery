@@ -1,4 +1,5 @@
-import type { Metal } from '@/src/types/api'
+import type { Metal, SettingItem } from '@/src/types/api'
+import { NECKLACE_STYLES, necklaceStyleForLength } from '@/src/lib/necklaceLengths'
 
 /** Maps live design.parameters onto the local catalog-GLB preview. */
 
@@ -13,10 +14,12 @@ const METAL_HEX: Record<string, string> = {
 export const DEFAULT_BAND_WIDTH_MM = 3
 export const BAND_WIDTH_MIN_MM = 0.5
 export const BAND_WIDTH_MAX_MM = 15
-export const NECKLACE_LENGTHS_CM = [42, 45, 50] as const
+/** One length per PRD necklace style (Choker / Princess / Matinee / Opera). */
+export const NECKLACE_LENGTHS_CM: readonly number[] = NECKLACE_STYLES.map((style) => style.lengthCm)
 
-export function isNecklaceLength(value: number | undefined): value is (typeof NECKLACE_LENGTHS_CM)[number] {
-  return value != null && (NECKLACE_LENGTHS_CM as readonly number[]).includes(value)
+/** Any length inside a PRD style range (an older saved 42 cm is a Princess). */
+export function isNecklaceLength(value: number | undefined): value is number {
+  return necklaceStyleForLength(value) !== null
 }
 
 export const WRIST_MIN_CM = 10
@@ -45,6 +48,40 @@ function finiteNumber(value: unknown): number | undefined {
     if (Number.isFinite(n)) return n
   }
   return undefined
+}
+
+export type BandWidthConflict = {
+  settingCode: string
+  settingLabel: string
+  minBandWidthMm: number
+  message: string
+}
+
+function formatMm(value: number): string {
+  return String(Math.round(value * 100) / 100)
+}
+
+/**
+ * A ring band narrower than the chosen setting allows (`minBandWidthMm` in the settings master
+ * data). The server refuses such a design; the studio warns and blocks continuing instead.
+ */
+export function bandWidthConflict(
+  itemType: 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS',
+  bandWidthMm: number,
+  settingCode: string | null | undefined,
+  settings: SettingItem[],
+  locale = 'he',
+): BandWidthConflict | null {
+  if (itemType !== 'RING' || !settingCode) return null
+  const setting = settings.find((item) => item.code === settingCode)
+  const min = finiteNumber(setting?.minBandWidthMm)
+  if (!setting || min == null || bandWidthMm >= min) return null
+  const settingLabel = locale === 'en' && setting.labelEn ? setting.labelEn : setting.labelHe
+  const message =
+    locale === 'en'
+      ? `The band (${formatMm(bandWidthMm)} mm) is narrower than the ${settingLabel} setting needs (${formatMm(min)} mm). Widen the band or pick another setting.`
+      : `רוחב הטבעת (${formatMm(bandWidthMm)} מ״מ) צר מהמינימום לשיבוץ ${settingLabel} (${formatMm(min)} מ״מ). הרחיבו את הטבעת או בחרו שיבוץ אחר.`
+  return { settingCode, settingLabel, minBandWidthMm: min, message }
 }
 
 export function clampBandWidthMm(value: number): number {

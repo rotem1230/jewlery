@@ -11,6 +11,12 @@ export function getMySubscription(signal?: AbortSignal): Promise<SubscriptionMe 
   return apiGet<SubscriptionMe | null>('/subscriptions/me', { signal })
 }
 
+/** The entitlement keys of my live subscription (hd_export, personal_visualization...). */
+export async function getMyEntitlements(signal?: AbortSignal): Promise<string[]> {
+  const result = await apiGet<{ keys?: unknown }>('/subscriptions/entitlements/me', { signal })
+  return Array.isArray(result?.keys) ? result.keys.filter((key): key is string => typeof key === 'string') : []
+}
+
 export function subscribeToPlan(planCode: string): Promise<unknown> {
   return apiPost('/subscriptions/subscribe', { planCode })
 }

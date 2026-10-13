@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react'
 import {
+  ActivityIndicator,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
@@ -25,9 +29,19 @@ import { colors, radii, spacing } from '@/src/theme/tokens'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
 import type { ChatsStackParamList } from '@/src/navigation/types'
 
-type ChatFilter = 'all' | 'design' | 'jeweler' | 'date'
+type ChatFilter = 'all' | 'design' | 'peer' | 'date'
 type SheetFilter = Exclude<ChatFilter, 'all'>
 type StackNav = NativeStackNavigationProp<ChatsStackParamList>
+
+/** One filter at a time (one chip is highlighted); the search combines with it on the server. */
+type ActiveFilter =
+  | { kind: 'design'; designId: string }
+  | { kind: 'peer'; peerUserId: string }
+  | { kind: 'date'; from: string }
+  | null
+
+/** How close to the end of the list the next page starts loading. */
+const LOAD_MORE_EDGE = 240
 
 function startOfDay(daysAgo: number): string {
   const d = new Date()
@@ -40,41 +54,39 @@ export function ChatsScreen() {
   const { t } = useTranslation()
   const navigation = useNavigation<StackNav>()
   const isJeweler = useAppSelector((s) => s.auth.user?.activeRole === 'JEWELER')
-  const [filter, setFilter] = useState<ChatFilter>('all')
   const [sheetFilter, setSheetFilter] = useState<SheetFilter | null>(null)
-  const [designId, setDesignId] = useState<string | undefined>()
-  const [peerUserId, setPeerUserId] = useState<string | undefined>()
-  const [from, setFrom] = useState<string | undefined>()
-  const { rows, loading, refreshing, error, refresh, retry, query, setQuery } = useConversations()
+  const [active, setActive] = useState<ActiveFilter>(null)
+  const {
+    rows,
+    loading,
+    refreshing,
+    loadingMore,
+    error,
+    hasMore,
+    refresh,
+    retry,
+    loadMore,
+    query,
+    setQuery,
+    filterOptions,
+  } = useConversations({
+    designId: active?.kind === 'design' ? active.designId : undefined,
+    peerUserId: active?.kind === 'peer' ? active.peerUserId : undefined,
+    from: active?.kind === 'date' ? active.from : undefined,
+  })
+  const selectedChip: ChatFilter = active?.kind ?? 'all'
 
   const filters: Array<{ id: ChatFilter; labelKey: TranslationKey }> = [
     { id: 'all', labelKey: 'chatFilterAll' },
     { id: 'design', labelKey: 'chatFilterByDesign' },
-    { id: 'jeweler', labelKey: 'chatFilterByJeweler' },
+    // The other side of a jeweler's conversations is a customer.
+    { id: 'peer', labelKey: isJeweler ? 'shChatFilterByCustomer' : 'chatFilterByJeweler' },
     { id: 'date', labelKey: 'chatFilterByDate' },
   ]
 
   const sheetOptions = useMemo<FilterOption[]>(() => {
-    if (sheetFilter === 'design') {
-      const seen = new Set<string>()
-      return rows
-        .filter((row) => {
-          if (seen.has(row.designId) || !row.design) return false
-          seen.add(row.designId)
-          return true
-        })
-        .map((row) => ({ id: row.designId, label: row.design }))
-    }
-    if (sheetFilter === 'jeweler') {
-      const seen = new Set<string>()
-      return rows
-        .filter((row) => {
-          if (!row.peerUserId || seen.has(row.peerUserId)) return false
-          seen.add(row.peerUserId)
-          return true
-        })
-        .map((row) => ({ id: row.peerUserId as string, label: row.name }))
-    }
+    if (sheetFilter === 'design') return filterOptions.designs
+    if (sheetFilter === 'peer') return filterOptions.peers
     if (sheetFilter === 'date') {
       return [
         { id: 'today', label: t('chatFilterDate1') },
@@ -83,43 +95,35 @@ export function ChatsScreen() {
       ]
     }
     return []
-  }, [sheetFilter, rows, t])
-
-  const visibleRows = useMemo(() => {
-    return rows.filter((row) => {
-      if (designId && row.designId !== designId) return false
-      if (peerUserId && row.peerUserId !== peerUserId) return false
-      if (from && new Date(row.createdAt) < new Date(from)) return false
-      return true
-    })
-  }, [rows, designId, peerUserId, from])
+  }, [sheetFilter, filterOptions, t])
 
   const onChipPress = (id: ChatFilter) => {
     if (id === 'all') {
-      setFilter('all')
       setSheetFilter(null)
-      setDesignId(undefined)
-      setPeerUserId(undefined)
-      setFrom(undefined)
+      setActive(null)
       return
     }
-    setFilter(id)
     setSheetFilter(id)
   }
 
   const onSelectOption = (option: FilterOption) => {
-    if (sheetFilter === 'design') setDesignId(option.id)
-    if (sheetFilter === 'jeweler') setPeerUserId(option.id)
+    if (sheetFilter === 'design') setActive({ kind: 'design', designId: option.id })
+    if (sheetFilter === 'peer') setActive({ kind: 'peer', peerUserId: option.id })
     if (sheetFilter === 'date') {
-      if (option.id === 'today') setFrom(startOfDay(0))
-      else if (option.id === 'week') setFrom(startOfDay(7))
-      else setFrom(startOfDay(30))
+      const daysAgo = option.id === 'today' ? 0 : option.id === 'week' ? 7 : 30
+      setActive({ kind: 'date', from: startOfDay(daysAgo) })
     }
     setSheetFilter(null)
   }
 
+  const onScroll = ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = nativeEvent
+    if (layoutMeasurement.height + contentOffset.y >= contentSize.height - LOAD_MORE_EDGE) loadMore()
+  }
+
   const showSkeleton = loading && rows.length === 0
   const showError = !loading && rows.length === 0 && error
+  const narrowed = query.trim().length > 0 || active !== null
 
   return (
     <View style={styles.root}>
@@ -138,7 +142,7 @@ export function ChatsScreen() {
             <TextInput
               value={query}
               onChangeText={setQuery}
-              placeholder={t('chatSearchPlaceholder')}
+              placeholder={t('shChatSearchPlaceholder')}
               placeholderTextColor={colors.textSecondary}
               style={styles.searchInput}
               textAlign="right"
@@ -157,7 +161,7 @@ export function ChatsScreen() {
             <FilterChip
               key={item.id}
               label={t(item.labelKey)}
-              selected={filter === item.id}
+              selected={selectedChip === item.id}
               onPress={() => onChipPress(item.id)}
             />
           ))}
@@ -170,6 +174,8 @@ export function ChatsScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
+        onScroll={hasMore ? onScroll : undefined}
+        scrollEventThrottle={200}
       >
         {showSkeleton ? (
           <ChatListSkeleton />
@@ -182,24 +188,44 @@ export function ChatsScreen() {
               onRetry={retry}
             />
           </View>
-        ) : visibleRows.length === 0 ? (
-          <Text style={styles.empty}>{t('chatsEmpty')}</Text>
+        ) : rows.length === 0 ? (
+          <Text style={styles.empty}>{t(narrowed ? 'shChatFilteredEmpty' : 'chatsEmpty')}</Text>
         ) : (
-          visibleRows.map((item, index) => (
-            <ChatRow
-              key={item.id}
-              name={item.name}
-              design={item.design}
-              preview={item.preview}
-              time={item.time}
-              unread={item.unread}
-              avatar={item.avatar}
-              showDivider={index < visibleRows.length - 1}
-              onPress={() =>
-                navigation.navigate('ChatThread', { chatId: item.id, title: item.name })
-              }
-            />
-          ))
+          <>
+            {rows.map((item, index) => (
+              <ChatRow
+                key={item.id}
+                name={item.name}
+                design={item.design}
+                preview={item.preview}
+                time={item.time}
+                unread={item.unread}
+                avatar={item.avatar}
+                showDivider={index < rows.length - 1}
+                onPress={() =>
+                  navigation.navigate('ChatThread', {
+                    chatId: item.id,
+                    title: item.name,
+                    peerLastReadAt: item.peerLastReadAt,
+                  })
+                }
+              />
+            ))}
+            {hasMore ? (
+              <Pressable
+                onPress={loadMore}
+                disabled={loadingMore}
+                style={styles.loadMore}
+                accessibilityRole="button"
+              >
+                {loadingMore ? (
+                  <ActivityIndicator size="small" color={colors.brand} />
+                ) : (
+                  <Text style={styles.loadMoreLabel}>{t('shChatLoadMore')}</Text>
+                )}
+              </Pressable>
+            ) : null}
+          </>
         )}
       </ScrollView>
 
@@ -275,6 +301,19 @@ const styles = StyleSheet.create({
   errorWrap: {
     paddingHorizontal: spacing.page,
     paddingTop: spacing.lg,
+  },
+  loadMore: {
+    alignSelf: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  loadMoreLabel: {
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.brand,
+    textAlign: 'center',
+    writingDirection: 'rtl',
   },
   empty: {
     paddingTop: spacing.xl,

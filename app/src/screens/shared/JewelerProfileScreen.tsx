@@ -7,11 +7,13 @@ import { GalleryWorkCard } from '@/src/components/atelier/GalleryWorkCard'
 import { ReviewCard } from '@/src/components/atelier/ReviewCard'
 import { QuoteItemSheet, type QuoteItemOption } from '@/src/components/atelier/QuoteItemSheet'
 import { QuoteRequestSuccessModal } from '@/src/components/atelier/QuoteRequestSuccessModal'
+import { BusinessInfoCard } from '@/src/components/jeweler/BusinessInfoCard'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { getPublicJewelerProfile } from '@/src/api/jewelerProfiles'
 import { listDesigns } from '@/src/api/designs'
 import { createAtelierRequest } from '@/src/api/atelier'
 import { parseApiError } from '@/src/lib/api'
+import { DAY_LABEL_KEYS, hoursRows } from '@/src/lib/businessHours'
 import { imageFromUpload } from '@/src/lib/format'
 import { formatHeTimeAgo } from '@/src/hooks/useMyBusinessProfile'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
@@ -102,6 +104,16 @@ export function JewelerProfileScreen() {
                 <View style={styles.aboutAccent} />
                 <Text style={styles.aboutText}>{profile.bio ?? ''}</Text>
               </View>
+
+              <BusinessInfoCard
+                hoursTitle={t('jwHoursLabel')}
+                hours={hoursRows(profile.businessHours).map((row) => ({
+                  label: t(DAY_LABEL_KEYS[row.day]),
+                  text: row.text,
+                }))}
+                areaTitle={t('jwServiceAreaLabel')}
+                area={profile.serviceAreaText}
+              />
 
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>{t('jewelerGalleryTitle')}</Text>

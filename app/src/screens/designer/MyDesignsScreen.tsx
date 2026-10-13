@@ -1,5 +1,16 @@
-import { useCallback, useState } from 'react'
-import { Platform, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
@@ -10,6 +21,14 @@ import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { listDesigns } from '@/src/api/designs'
 import { imageFromMedia } from '@/src/lib/format'
+import { completedByLabel, designDisplayTitle } from '@/src/lib/designActions'
+import {
+  appendDesignPage,
+  canLoadMoreDesigns,
+  firstDesignPage,
+  isNearListEnd,
+  type DesignPages,
+} from '@/src/lib/designPages'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, spacing } from '@/src/theme/tokens'
@@ -55,23 +74,61 @@ function uiStatus(status: string): DesignStatus {
 }
 
 export function MyDesignsScreen() {
-  const { t } = useTranslation()
+  const { t, locale } = useTranslation()
   const navigation = useNavigation<Nav>()
   const tabNavigation = navigation.getParent<TabNav>()
   const accessToken = useAppSelector((s) => s.auth.accessToken)
   const [filter, setFilter] = useState<FilterId>('all')
+  const [pages, setPages] = useState<DesignPages | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [loadMoreFailed, setLoadMoreFailed] = useState(false)
+  const loadingMoreRef = useRef(false)
 
+  const statusFor = (id: FilterId) => (id === 'all' ? undefined : FILTER_TO_API[id])
+
+  // The first page of the tab; each answer carries the tab it belongs to, so a late answer of the
+  // previous tab is never shown under the new one.
   const load = useCallback(
-    (signal: AbortSignal) =>
-      listDesigns(filter === 'all' ? undefined : { status: FILTER_TO_API[filter] }, signal),
+    async (signal: AbortSignal) => {
+      const status = filter === 'all' ? undefined : FILTER_TO_API[filter]
+      return { filter, response: await listDesigns({ status, page: 1 }, signal) }
+    },
     [filter],
   )
   const { data, loading, refreshing, error, refresh, retry } = useAsyncData(load, {
     deps: [accessToken, filter],
   })
 
-  const counts = data?.tabCounts ?? { all: 0, drafts: 0, published: 0, completed: 0, archive: 0 }
-  const items = data?.items ?? []
+  useEffect(() => {
+    if (!data) return
+    setPages(firstDesignPage(data.filter, data.response))
+    setLoadMoreFailed(false)
+  }, [data])
+
+  const visible = pages && pages.key === filter ? pages : null
+  const counts = pages?.tabCounts ?? { all: 0, drafts: 0, published: 0, completed: 0, archive: 0 }
+  const items = visible?.items ?? []
+
+  const loadMore = async () => {
+    if (!visible || !canLoadMoreDesigns(visible) || loadingMoreRef.current) return
+    loadingMoreRef.current = true
+    setLoadingMore(true)
+    setLoadMoreFailed(false)
+    try {
+      const key = visible.key as FilterId
+      const response = await listDesigns({ status: statusFor(key), page: visible.page + 1 })
+      setPages((current) => (current ? appendDesignPage(current, key, response) : current))
+    } catch {
+      setLoadMoreFailed(true)
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMore(false)
+    }
+  }
+
+  const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!loadMoreFailed && isNearListEnd(event.nativeEvent)) loadMore()
+  }
 
   const filters: Array<{ id: FilterId; labelKey: TranslationKey; count?: number }> = [
     { id: 'all', labelKey: 'filterAll', count: counts.all },
@@ -90,6 +147,8 @@ export function MyDesignsScreen() {
           style={styles.flex}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          onScroll={onScroll}
+          scrollEventThrottle={200}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
         >
           <View style={styles.column}>
@@ -114,14 +173,16 @@ export function MyDesignsScreen() {
               ))}
             </ScrollView>
 
-            {error && items.length === 0 && !loading ? (
+            {error && !visible && !loading ? (
               <ErrorState
                 title={t('commonLoadingErrorTitle')}
                 message={t('commonLoadingErrorMessage')}
                 retryLabel={t('commonRetry')}
                 onRetry={retry}
               />
-            ) : items.length === 0 && !loading ? (
+            ) : !visible ? (
+              <ActivityIndicator style={styles.loading} color={colors.brand} />
+            ) : items.length === 0 ? (
               <Text style={styles.empty}>{t('designsEmpty')}</Text>
             ) : (
               <View style={styles.list}>
@@ -130,13 +191,9 @@ export function MyDesignsScreen() {
                   return (
                     <DesignListCard
                       key={item.id}
-                      title={item.title || t('designRingTitle')}
+                      title={designDisplayTitle(item, locale)}
                       subtitle={item.itemType?.labelHe ?? ''}
-                      detail={
-                        item.completedBy
-                          ? t('doneBy').replace('{{name}}', item.completedBy.name)
-                          : undefined
-                      }
+                      detail={completedByLabel(item, locale) ?? undefined}
                       statusLabel={t(STATUS_LABEL[status])}
                       statusTone={STATUS_TONE[status]}
                       accentLabel={
@@ -149,6 +206,13 @@ export function MyDesignsScreen() {
                     />
                   )
                 })}
+                {loadingMore ? <ActivityIndicator style={styles.loading} color={colors.brand} /> : null}
+                {loadMoreFailed ? (
+                  <Pressable accessibilityRole="button" onPress={loadMore} style={styles.loadMoreRetry}>
+                    <Text style={styles.empty}>{t('dzLoadMoreFailed')}</Text>
+                    <Text style={styles.retryLabel}>{t('commonRetry')}</Text>
+                  </Pressable>
+                ) : null}
               </View>
             )}
           </View>
@@ -240,6 +304,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     writingDirection: 'rtl',
     paddingVertical: 24,
+  },
+  loading: {
+    paddingVertical: 24,
+  },
+  loadMoreRetry: {
+    width: '100%',
+    alignItems: 'center',
+    paddingBottom: 16,
+  },
+  retryLabel: {
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.brand,
+    textAlign: 'center',
+    textDecorationLine: 'underline',
   },
   footer: {
     width: '100%',

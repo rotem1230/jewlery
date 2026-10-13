@@ -2,10 +2,14 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { DesignStatus, Prisma, ProfilePublishStatus, User, UserRole } from '@prisma/client';
+import { DesignStatus, Prisma, ProfilePublishStatus, User, UserRole, RequestTargetStatus } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { moveOrders } from '../atelier/order-status';
+import { NotificationsService } from '../notifications/notifications.service';
+import { QUOTE_DESIGN_SELECT } from '../quotes/quote-view';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { ChatGateway } from './chat.gateway';
 import { CreateConversationDto, CreateMessageDto, QueryConversationsDto, QueryMessagesDto } from './dto/chat.dto';
@@ -24,15 +28,19 @@ const MESSAGE_INCLUDE = {
   sender: { select: PARTICIPANT_USER_SELECT },
   // Storage location is internal; clients get a short-lived signed contentUrl instead.
   imageUpload: { select: { id: true, mimeType: true } },
-  quote: true,
+  // A quote card shows the real figures and the design they price (PRD 5.6).
+  quote: { include: { design: { select: QUOTE_DESIGN_SELECT } } },
 } satisfies Prisma.MessageInclude;
 
 @Injectable()
 export class ConversationsService {
+  private readonly logger = new Logger(ConversationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly gateway: ChatGateway,
     private readonly access: UploadAccessService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Attaches a signed, short-lived URL to message media for the participants who receive it. */
@@ -79,6 +87,12 @@ export class ConversationsService {
     return { ...rest, lastMessage: messages[0] ? this.withMedia(messages[0]) : null, unreadCount };
   }
 
+  /** One conversation as the inbox shows it, with each participant's last read time (read ticks). */
+  async findOne(conversationId: string, userId: string) {
+    await this.assertParticipant(conversationId, userId);
+    return this.detail(conversationId, userId);
+  }
+
   async findMany(userId: string, query: QueryConversationsDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
 
@@ -102,6 +116,21 @@ export class ConversationsService {
         OR: [
           { design: { title: { contains: query.q, mode: 'insensitive' } } },
           { messages: { some: { body: { contains: query.q, mode: 'insensitive' } } } },
+          // The other side by name: a person's name or a jeweler's business name.
+          {
+            participants: {
+              some: {
+                userId: { not: userId },
+                user: {
+                  OR: [
+                    { firstName: { contains: query.q, mode: 'insensitive' } },
+                    { lastName: { contains: query.q, mode: 'insensitive' } },
+                    { jewelerProfile: { businessName: { contains: query.q, mode: 'insensitive' } } },
+                  ],
+                },
+              },
+            },
+          },
         ],
       });
     }
@@ -278,26 +307,87 @@ export class ConversationsService {
       }
     }
 
-    const created = await this.prisma.message.create({
-      data: {
-        conversationId,
-        senderId: userId,
-        type: dto.type,
-        body: dto.body ?? null,
-        imageUploadId: dto.imageUploadId ?? null,
+    const conversation = await this.prisma.conversation.findUniqueOrThrow({
+      where: { id: conversationId },
+      select: {
+        designId: true,
+        design: { select: { ownerUserId: true, title: true } },
+        participants: { where: { leftAt: null }, select: { userId: true } },
       },
-      include: MESSAGE_INCLUDE,
+    });
+    const created = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.message.create({
+        data: {
+          conversationId,
+          senderId: userId,
+          type: dto.type,
+          body: dto.body ?? null,
+          imageUploadId: dto.imageUploadId ?? null,
+        },
+        include: MESSAGE_INCLUDE,
+      });
+      await tx.conversation.update({
+        where: { id: conversationId },
+        data: { lastMessageAt: row.createdAt },
+      });
+      // The designer answering a submitted quote: that jeweler's order is now under negotiation.
+      if (conversation.design.ownerUserId === userId) {
+        const jewelers = conversation.participants.map((p) => p.userId).filter((id) => id !== userId);
+        if (jewelers.length > 0) {
+          await moveOrders(
+            tx,
+            { designId: conversation.designId, jewelerUserIds: jewelers, openRequestsOnly: true },
+            [RequestTargetStatus.QUOTE_SUBMITTED],
+            RequestTargetStatus.NEGOTIATING,
+          );
+        }
+      }
+      return row;
     });
     const message = this.withMedia(created);
 
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
-      data: { lastMessageAt: message.createdAt },
-    });
-
     this.gateway.emitToConversation(conversationId, 'message:new', message);
 
+    await this.notifyParticipants(conversationId, userId, conversation);
+
     return message;
+  }
+
+  /**
+   * The other participants get a "new message" update on their home screen (PRD 5.2). The message
+   * is already sent: a failure here is logged and does not fail the request (a retry would send
+   * the message twice).
+   */
+  private async notifyParticipants(
+    conversationId: string,
+    senderId: string,
+    conversation: { designId: string; design: { title: string | null }; participants: { userId: string }[] },
+  ): Promise<void> {
+    const others = conversation.participants.map((p) => p.userId).filter((id) => id !== senderId);
+    if (others.length === 0) {
+      return;
+    }
+    try {
+      const [sender, recipients] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: senderId },
+          select: { firstName: true, jewelerProfile: { select: { businessName: true } } },
+        }),
+        // A deleted account is not notified.
+        this.prisma.user.findMany({ where: { id: { in: others }, deletedAt: null }, select: { id: true } }),
+      ]);
+      const senderName = sender?.jewelerProfile?.businessName || sender?.firstName || null;
+      for (const recipient of recipients) {
+        await this.notifications.conversationActivity(recipient.id, {
+          conversationId,
+          designId: conversation.designId,
+          designTitle: conversation.design.title,
+          senderName,
+        });
+      }
+    } catch (err) {
+      this.logger.error(`Could not notify participants of conversation ${conversationId}: ${(err as Error).message}`);
+    }
   }
 
   async markRead(conversationId: string, userId: string) {
@@ -309,6 +399,7 @@ export class ConversationsService {
     });
 
     this.gateway.emitToConversation(conversationId, 'message:read', { conversationId, userId, lastReadAt });
+    await this.notifications.conversationRead(userId, conversationId, lastReadAt);
 
     return { ok: true, lastReadAt };
   }

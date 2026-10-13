@@ -44,6 +44,9 @@ export type JewelerReview = {
   createdAt: string
 }
 
+/** One opening range of a jeweler's business: day 0 (Sunday) .. 6, times as 'HH:MM'. */
+export type BusinessHour = { day: number; open: string; close: string }
+
 export type JewelerProfile = {
   id: string
   userId: string
@@ -51,6 +54,9 @@ export type JewelerProfile = {
   bio: string | null
   phone: string
   email: string | null
+  specialties?: string[]
+  businessHours?: BusinessHour[] | null
+  serviceAreaText?: string | null
   regionId: string
   region?: Region | null
   logoUploadId?: string | null
@@ -118,8 +124,15 @@ export type QuoteSummary = {
   status: string
   validUntil?: string | null
   createdAt: string
-  author?: { id: string; firstName: string | null; lastName: string | null } | null
-  design?: { id: string; title: string | null; thumbnailUploadId: string | null; status: string } | null
+  author?: { id: string; firstName: string | null; lastName: string | null; businessName?: string | null } | null
+  design?: {
+    id: string
+    title: string | null
+    thumbnailUploadId: string | null
+    status: string
+    itemType?: { code: string; labelHe?: string | null; labelEn?: string | null } | null
+    parameters?: Record<string, unknown> | null
+  } | null
   disclaimerPage?: { id: string; title: string; body: unknown } | null
 }
 
@@ -239,12 +252,26 @@ export type HomeSummary = {
   inProgress?: number
   recentDesigns?: DesignListItem[]
   recentNotifications?: AppNotification[]
+  /** Jeweler role: the latest deliveries, with this jeweler's own status. */
+  recentRequests?: Array<{
+    requestId: string
+    status: DesignRequestStatus
+    myStatus: RequestTargetStatus
+    deliveredAt: string
+    design: { id: string; title: string | null; thumbnailUploadId: string | null } | null
+  }>
 }
 
+/** A paid placement: always shown as sponsored (`sponsored` is always true); never carries a budget. */
 export type AtelierBanner = {
   id: string
   placement: string
+  entityType?: 'DESIGN' | 'JEWELER' | 'BANNER'
+  entityId?: string
   meta?: { headline?: string; cta?: string; imageUploadId?: string } | null
+  startAt?: string
+  endAt?: string
+  sponsored?: boolean
 }
 
 export type DesignStatus = 'DRAFT' | 'PUBLISHED' | 'COMPLETED' | 'ARCHIVED'
@@ -264,6 +291,8 @@ export type DesignListItem = {
   itemType?: ItemType | null
   quoteCount: number
   completedBy?: { id: string; name: string } | null
+  /** End of a published listing (PRD 5.5). */
+  expiresAt?: string | null
 }
 
 export type DesignTabCounts = {
@@ -321,16 +350,23 @@ export type ElementItem = {
   labelEn: string | null
 }
 
-export type DesignRequestStatus = 'OPEN' | 'QUOTE_SUBMITTED' | 'NEGOTIATING' | 'COMPLETED' | 'CANCELLED'
+export type DesignRequestStatus = 'OPEN' | 'QUOTE_SUBMITTED' | 'NEGOTIATING' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED'
+
+/** One jeweler's own order status on a request (PRD 5.11); a request reaches several jewelers. */
+export type RequestTargetStatus = 'NEW' | 'QUOTE_SUBMITTED' | 'NEGOTIATING' | 'COMPLETED' | 'DECLINED' | 'CLOSED'
 
 export type DesignRequest = {
   id: string
   designId: string
   requesterId: string
   mode: string
+  /** Request-wide status; a jeweler's board and badges use `myStatus`. */
   status: DesignRequestStatus
   message: string | null
   createdAt: string
+  /** Orders board (`/jeweler-profiles/me/orders`) only: this jeweler's own status. */
+  myStatus?: RequestTargetStatus
+  myStatusChangedAt?: string | null
   design?: {
     id: string
     title: string | null
@@ -339,11 +375,16 @@ export type DesignRequest = {
     itemType?: ItemType | null
     parameters?: Record<string, unknown>
     description?: string | null
+    jewelerNotes?: string | null
+    status?: DesignStatus
+    publishedAt?: string | null
+    expiresAt?: string | null
   } | null
   requester?: { id: string; firstName: string | null; lastName: string | null } | null
   quotes?: QuoteSummary[]
   targets?: Array<{
     jewelerProfileId: string
+    status?: RequestTargetStatus
     jewelerProfile?: { id: string; businessName: string; userId: string }
   }>
 }
@@ -355,6 +396,10 @@ export type AtelierDesign = {
   ownerUserId: string
   thumbnailUploadId: string | null
   publishedAt: string | null
+  /** End of the listing period; null = no end date. */
+  expiresAt?: string | null
+  status?: DesignStatus
+  createdAt?: string
   preferredRegionId: string | null
   parameters: Record<string, unknown>
   itemType?: ItemType | null
@@ -380,6 +425,8 @@ export type PlanCatalog = {
   trialDays: number
   inclusions: unknown
   sortOrder: number
+  /** What the plan unlocks (no_watermark, hd_export, personal_visualization, warm_leads...). */
+  entitlements?: Array<{ entitlement?: { key: string } | null; limitValue?: number | null }>
 }
 
 export type SubscriptionMe = {
@@ -387,6 +434,7 @@ export type SubscriptionMe = {
   status: string
   plan?: PlanCatalog | null
   currentPeriodEnd?: string | null
+  trialEndsAt?: string | null
 } | null
 
 export type ContentPage = {
@@ -397,16 +445,24 @@ export type ContentPage = {
   body: unknown
 }
 
+/** `PUT /jeweler-profiles/draft` payload; the server replaces the whole draft with it. */
+export type JewelerDraftPayload = {
+  businessName?: string
+  bio?: string
+  /** E.164, e.g. +972501234567. */
+  phone?: string
+  email?: string
+  specialties?: string[]
+  businessHours?: BusinessHour[]
+  serviceAreaText?: string
+  latitude?: number
+  longitude?: number
+}
+
 export type JewelerDraft = {
   id: string
   userId: string
   regionId?: string | null
   logoUploadId?: string | null
-  payload: {
-    businessName?: string
-    bio?: string
-    phone?: string
-    email?: string
-    specialties?: string[]
-  } | null
+  payload: JewelerDraftPayload | null
 }

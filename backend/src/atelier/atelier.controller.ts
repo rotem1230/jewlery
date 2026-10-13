@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
@@ -17,6 +17,12 @@ export class AtelierController {
   @Get('designs')
   designs(@Query() query: QueryAtelierDesignsDto) {
     return this.atelier.designs(query);
+  }
+
+  @Public()
+  @Get('designs/:id')
+  design(@Param('id', new ParseUUIDPipe({ errorHttpStatusCode: 404 })) id: string) {
+    return this.atelier.design(id);
   }
 
   @Public()

@@ -116,9 +116,13 @@ export function measurementGuideTips(body: unknown): string[] {
   return tips.filter((tip): tip is string => typeof tip === 'string' && tip.trim().length > 0)
 }
 
+/**
+ * Guide table rows `{standard, sizeCode, us?, diameterMm}`; `us` is the paired US size of an IL
+ * row and `diameterMm` may be a range ("16.55–16.95").
+ */
 export function measurementGuideTable(
   body: unknown,
-): Array<{ standard?: string; sizeCode: string; diameterMm: string }> {
+): Array<{ standard?: string; sizeCode: string; us?: string; diameterMm: string }> {
   if (!body || typeof body !== 'object') return []
   const table = (body as { table?: unknown }).table
   if (!Array.isArray(table)) return []
@@ -131,6 +135,7 @@ export function measurementGuideTable(
       {
         standard: typeof record.standard === 'string' ? record.standard : undefined,
         sizeCode,
+        us: typeof record.us === 'string' && record.us.trim() ? record.us : undefined,
         diameterMm: String(record.diameterMm ?? ''),
       },
     ]

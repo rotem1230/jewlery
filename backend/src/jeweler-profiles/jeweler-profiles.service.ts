@@ -1,4 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import {
   DesignRequestStatus,
   JewelerOnboardingDraft,
@@ -7,13 +13,16 @@ import {
   ProfilePublishStatus,
   User,
   UserRole,
+  QuoteStatus,
+  RequestTargetStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
 import { AppConfigService } from '../cms/app-config.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
-import { lockJewelerProfile } from '../database/row-locks';
+import { lockJewelerProfile, lockUser } from '../database/row-locks';
+import { effectiveOrderStatus } from '../atelier/order-status';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
@@ -273,44 +282,112 @@ export class JewelerProfilesService {
     const page = query.page && query.page > 0 ? query.page : 1;
     const tab: OrdersTab = query.tab ?? 'all';
 
-    let statusFilter: DesignRequestStatus[] | undefined;
+    // The tabs follow this jeweler's own order status (PRD 5.11), not the request's: a request
+    // reaches several jewelers, and one quoting must not move the others' boards.
+    let mine: Prisma.EnumRequestTargetStatusFilter;
     switch (tab) {
       case 'quote_submitted':
-        statusFilter = [DesignRequestStatus.QUOTE_SUBMITTED];
+        mine = { in: [RequestTargetStatus.QUOTE_SUBMITTED] };
         break;
       case 'negotiating':
-        statusFilter = [DesignRequestStatus.NEGOTIATING];
+        mine = { in: [RequestTargetStatus.NEGOTIATING] };
         break;
       case 'completed':
-        statusFilter = [DesignRequestStatus.COMPLETED];
+        mine = { in: [RequestTargetStatus.COMPLETED] };
         break;
       default:
-        statusFilter = undefined;
+        // A declined request leaves the board.
+        mine = { notIn: [RequestTargetStatus.DECLINED] };
     }
 
     const where: Prisma.DesignRequestWhereInput = {
-      targets: { some: { jewelerProfileId: profile.id } },
-      ...(statusFilter ? { status: { in: statusFilter } } : {}),
+      targets: { some: { jewelerProfileId: profile.id, status: mine } },
     };
 
-    const [items, total] = await Promise.all([
+    const [items, total, byStatus] = await Promise.all([
       this.prisma.designRequest.findMany({
         where,
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * PAGE_SIZE,
         take: PAGE_SIZE,
         include: {
-          design: { select: { id: true, title: true, thumbnailUploadId: true, itemType: true } },
+          design: {
+            select: { id: true, title: true, thumbnailUploadId: true, itemType: true, status: true, expiresAt: true, deletedAt: true },
+          },
           requester: { select: { id: true, firstName: true, lastName: true } },
+          targets: { where: { jewelerProfileId: profile.id }, select: { status: true, statusChangedAt: true } },
         },
       }),
       this.prisma.designRequest.count({ where }),
+      this.prisma.designRequestTarget.groupBy({
+        by: ['status'],
+        where: { jewelerProfileId: profile.id },
+        _count: { _all: true },
+      }),
     ]);
+    const countOf = (status: RequestTargetStatus) => byStatus.find((row) => row.status === status)?._count._all ?? 0;
+    // Every tab's count, from the same per-jeweler statuses the tabs filter on.
+    const tabCounts: Record<OrdersTab, number> = {
+      all: byStatus.filter((row) => row.status !== RequestTargetStatus.DECLINED).reduce((sum, row) => sum + row._count._all, 0),
+      quote_submitted: countOf(RequestTargetStatus.QUOTE_SUBMITTED),
+      negotiating: countOf(RequestTargetStatus.NEGOTIATING),
+      completed: countOf(RequestTargetStatus.COMPLETED),
+    };
 
     return {
-      items,
+      tabCounts,
+      items: items.map(({ targets, design, ...request }) => {
+        const { deletedAt: _deletedAt, ...shownDesign } = design;
+        return {
+          ...request,
+          design: shownDesign,
+          myStatus: effectiveOrderStatus(targets[0]?.status ?? RequestTargetStatus.NEW, request.status, design),
+          myStatusChangedAt: targets[0]?.statusChangedAt ?? null,
+        };
+      }),
       pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
     };
+  }
+
+  /**
+   * The jeweler is not taking this request (PRD 8: accept/decline work requests). A request with
+   * the jeweler's quote still pending is declined by withdrawing the quote first.
+   */
+  async declineOrder(userId: string, requestId: string): Promise<{ ok: true }> {
+    const profile = await this.getOwnProfile(userId);
+    const target = await this.prisma.designRequestTarget.findUnique({
+      where: { requestId_jewelerProfileId: { requestId, jewelerProfileId: profile.id } },
+      include: { request: { select: { designId: true } } },
+    });
+    if (!target) {
+      throw new NotFoundException({ success: false, message: 'Order not found' });
+    }
+    if (target.status === RequestTargetStatus.COMPLETED) {
+      throw new ConflictException({ success: false, message: 'This order is completed', code: 'ORDER_COMPLETED' });
+    }
+    // Under the account lock a quote of theirs being created (it holds the lock shared) has either
+    // committed and is seen here, or waits until the request is declined.
+    await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      const pending = await tx.quote.count({
+        where: { designId: target.request.designId, authorUserId: userId, status: QuoteStatus.PENDING },
+      });
+      if (pending > 0) {
+        throw new ConflictException({
+          success: false,
+          message: 'Withdraw your quote before declining the request',
+          code: 'QUOTE_PENDING',
+        });
+      }
+      const declined = await tx.designRequestTarget.updateMany({
+        where: { requestId, jewelerProfileId: profile.id, status: { not: RequestTargetStatus.COMPLETED } },
+        data: { status: RequestTargetStatus.DECLINED, statusChangedAt: new Date() },
+      });
+      if (declined.count !== 1) {
+        throw new ConflictException({ success: false, message: 'This order is completed', code: 'ORDER_COMPLETED' });
+      }
+    });
+    return { ok: true };
   }
 
   async listPortfolio(userId: string) {

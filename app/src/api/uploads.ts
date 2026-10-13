@@ -1,5 +1,5 @@
 /** Uploads endpoints. */
-import { API_BASE_URL, request } from '@/src/lib/api'
+import { API_BASE_URL, apiDelete, request } from '@/src/lib/api'
 import type { UploadRef } from '@/src/types/api'
 
 /**
@@ -29,4 +29,9 @@ export async function uploadChatFile(file: LocalFile, signal?: AbortSignal): Pro
     name: file.fileName,
   } as unknown as Blob)
   return request<UploadRef>('/uploads', { method: 'POST', body: form, signal })
+}
+
+/** DELETE /uploads/:id — removes a file of mine that nothing uses (409 UPLOAD_IN_USE otherwise). */
+export function deleteUpload(uploadId: string): Promise<{ ok: true }> {
+  return apiDelete<{ ok: true }>(`/uploads/${uploadId}`)
 }

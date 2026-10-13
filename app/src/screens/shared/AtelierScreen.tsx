@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
@@ -11,6 +11,7 @@ import { HomeHeader } from '@/src/components/home/HomeHeader'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { listAtelierBanners, listAtelierDesigns, listAtelierGeoSearch, listAtelierJewelers } from '@/src/api/atelier'
 import { listRegions } from '@/src/api/masterData'
+import { bannerViews, isFeatureDisabled, listingExpiry, type BannerView } from '@/src/lib/atelierView'
 import { imageFromUpload } from '@/src/lib/format'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
@@ -25,6 +26,7 @@ type AtelierTab = 'jewelers' | 'designs'
 
 /** Search centre for "near me" until the device location is used. */
 const TEL_AVIV = { lat: 32.0853, lng: 34.7818 }
+const NEARBY_SEARCH = { lat: TEL_AVIV.lat, lng: TEL_AVIV.lng, radiusKm: 25, page: 1 }
 
 export function AtelierScreen() {
   const { t, locale } = useTranslation()
@@ -37,6 +39,19 @@ export function AtelierScreen() {
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [regionId, setRegionId] = useState<string | undefined>(undefined)
   const [nearby, setNearby] = useState(false)
+  // There is no client-side flag source: "near me" is offered only once the server answers the
+  // search (403 FEATURE_DISABLED while the phase3_postgis flag is off) — never shown as an error.
+  const [nearbyAvailable, setNearbyAvailable] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    listAtelierGeoSearch(NEARBY_SEARCH, controller.signal)
+      .then(() => {
+        if (!controller.signal.aborted) setNearbyAvailable(true)
+      })
+      .catch(() => undefined)
+    return () => controller.abort()
+  }, [])
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query.trim()), 350)
@@ -47,13 +62,19 @@ export function AtelierScreen() {
   const regions = regionsQuery.data ?? []
 
   const jewelersLoad = useCallback(
-    (signal: AbortSignal) =>
-      nearby
-        ? listAtelierGeoSearch({ lat: TEL_AVIV.lat, lng: TEL_AVIV.lng, radiusKm: 25, page: 1 }, signal)
-        : listAtelierJewelers(
-            { q: debouncedQuery || undefined, regionId, page: 1 },
-            signal,
-          ),
+    async (signal: AbortSignal) => {
+      const listParams = { q: debouncedQuery || undefined, regionId, page: 1 }
+      if (!nearby) return listAtelierJewelers(listParams, signal)
+      try {
+        return await listAtelierGeoSearch(NEARBY_SEARCH, signal)
+      } catch (err) {
+        if (!isFeatureDisabled(err)) throw err
+        // Switched off meanwhile: the control goes away and the full list shows, without an error.
+        setNearbyAvailable(false)
+        setNearby(false)
+        return listAtelierJewelers(listParams, signal)
+      }
+    },
     [debouncedQuery, regionId, nearby],
   )
   const designsLoad = useCallback(
@@ -70,11 +91,13 @@ export function AtelierScreen() {
   const activeQuery = isDesigns ? designsQuery : jewelersQuery
   const jewelers = jewelersQuery.data?.items ?? []
   const designs = designsQuery.data?.items ?? []
-  const bannerHeadline = (() => {
-    const banner = bannersQuery.data?.[0]
-    const headline = banner?.meta?.headline
-    return typeof headline === 'string' && headline.trim() ? headline.trim() : null
-  })()
+  // The top paid banner, always tagged as sponsored.
+  const banner = bannerViews(bannersQuery.data)[0] ?? null
+
+  const openBanner = (view: BannerView) => {
+    if (view.target?.kind === 'design') navigation.navigate('DesignPreview', { designId: view.target.id })
+    if (view.target?.kind === 'jeweler') navigation.navigate('JewelerProfile', { jewelerId: view.target.id })
+  }
 
   return (
     <View style={styles.root}>
@@ -140,10 +163,26 @@ export function AtelierScreen() {
           </View>
 
           <View style={styles.discovery}>
-            {bannerHeadline ? (
-              <View style={styles.banner}>
-                <Text style={styles.bannerText}>{bannerHeadline}</Text>
-              </View>
+            {banner ? (
+              <Pressable
+                onPress={() => openBanner(banner)}
+                disabled={!banner.target}
+                style={({ pressed }) => [styles.bannerPressable, pressed && styles.pressed]}
+                accessibilityRole={banner.target ? 'button' : undefined}
+              >
+                <View style={styles.banner}>
+                  <Text style={styles.bannerTag}>{t('atelierSponsored')}</Text>
+                  {banner.imageUploadId ? (
+                    <Image
+                      source={imageFromUpload(banner.imageUploadId, heroRing)}
+                      style={styles.bannerImage}
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                  {banner.headline ? <Text style={styles.bannerText}>{banner.headline}</Text> : null}
+                  {banner.cta ? <Text style={styles.bannerCta}>{banner.cta}</Text> : null}
+                </View>
+              </Pressable>
             ) : null}
             <View style={styles.headingBlock}>
               <Text style={[styles.title, isDesigns && styles.titleItalic]}>{t('atelierTitle')}</Text>
@@ -184,14 +223,16 @@ export function AtelierScreen() {
                     setRegionId(undefined)
                   }}
                 />
-                <FilterChip
-                  label={t('atelierFilterNearby')}
-                  selected={nearby}
-                  onPress={() => {
-                    setNearby(true)
-                    setRegionId(undefined)
-                  }}
-                />
+                {nearbyAvailable ? (
+                  <FilterChip
+                    label={t('atelierFilterNearby')}
+                    selected={nearby}
+                    onPress={() => {
+                      setNearby(true)
+                      setRegionId(undefined)
+                    }}
+                  />
+                ) : null}
                 {regions.map((region) => (
                   <FilterChip
                     key={region.id}
@@ -219,25 +260,33 @@ export function AtelierScreen() {
               {designs.length === 0 && !designsQuery.loading ? (
                 <Text style={styles.empty}>{t('atelierEmpty')}</Text>
               ) : (
-                designs.map((item) => (
-                  <AtelierDesignCard
-                    key={item.id}
-                    title={item.title || t('atelierDesign1Title')}
-                    metal={item.itemType?.labelHe ?? ''}
-                    publishedLabel={`${t('atelierPublishedOn')} ${
-                      item.publishedAt
-                        ? new Date(item.publishedAt).toLocaleDateString(
-                            locale === 'he' ? 'he-IL' : 'en-GB',
-                          )
-                        : ''
-                    }`}
-                    ctaLabel={t('atelierViewDesignDetails')}
-                    image={imageFromUpload(item.thumbnailUploadId, heroRing)}
-                    sponsored={item.sponsored === true}
-                    sponsoredLabel={t('atelierSponsored')}
-                    onPress={() => navigation.navigate('DesignPreview', { designId: item.id })}
-                  />
-                ))
+                designs.map((item) => {
+                  const expiry = listingExpiry(item.expiresAt, locale)
+                  return (
+                    <AtelierDesignCard
+                      key={item.id}
+                      title={item.title || item.itemType?.labelHe || t('jwUntitledDesign')}
+                      metal={item.itemType?.labelHe ?? ''}
+                      publishedLabel={`${t('atelierPublishedOn')} ${
+                        item.publishedAt
+                          ? new Date(item.publishedAt).toLocaleDateString(
+                              locale === 'he' ? 'he-IL' : 'en-GB',
+                            )
+                          : ''
+                      }`}
+                      expiryLabel={
+                        expiry
+                          ? t(expiry.expired ? 'jwExpiredOn' : 'jwValidUntil').replace('{{date}}', expiry.date)
+                          : undefined
+                      }
+                      ctaLabel={t('atelierViewDesignDetails')}
+                      image={imageFromUpload(item.thumbnailUploadId, heroRing)}
+                      sponsored={item.sponsored === true}
+                      sponsoredLabel={t('atelierSponsored')}
+                      onPress={() => navigation.navigate('DesignPreview', { designId: item.id })}
+                    />
+                  )
+                })
               )}
             </View>
           ) : (
@@ -261,8 +310,8 @@ export function AtelierScreen() {
                       worksTitle={t('atelierSelectedWorks')}
                       bio={item.bio ?? ''}
                       avatar={imageFromUpload(item.logoUpload?.id, jewelerAvatar)}
+                      // The listing carries at most four works and no total, so no "+N" is shown.
                       works={works}
-                      moreCount={item.portfolio.length > 4 ? `+${item.portfolio.length - 4}` : undefined}
                       matchScore={item.matchScore}
                       matchLabel={t('atelierMatchScore')}
                       editLabel={own ? t('atelierEditMyProfile') : undefined}
@@ -342,12 +391,41 @@ const styles = StyleSheet.create({
   segmentLabelOff: { color: '#454654' },
   discovery: { width: '100%', maxWidth: 327, alignItems: 'center', gap: 24 },
   headingBlock: { width: '100%', gap: 8, alignItems: 'center' },
+  bannerPressable: { width: '100%' },
   banner: {
     width: '100%',
     backgroundColor: colors.surface,
     borderRadius: radii.md,
     paddingVertical: 12,
     paddingHorizontal: 16,
+    gap: 8,
+  },
+  bannerTag: {
+    alignSelf: 'flex-end',
+    fontFamily: 'Heebo',
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+    color: '#0203A4',
+    backgroundColor: '#EFECF8',
+    borderRadius: 9999,
+    paddingHorizontal: 8,
+    overflow: 'hidden',
+    writingDirection: 'rtl',
+  },
+  bannerImage: {
+    width: '100%',
+    height: 120,
+    borderRadius: radii.md,
+  },
+  bannerCta: {
+    width: '100%',
+    fontFamily: 'Heebo',
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.brand,
+    textAlign: 'right',
+    writingDirection: 'rtl',
   },
   bannerText: {
     width: '100%',

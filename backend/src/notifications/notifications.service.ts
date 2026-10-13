@@ -5,6 +5,11 @@ import { MailService } from '../mail/mail.service';
 import { QueryNotificationsDto } from './dto/notification.dto';
 
 const PAGE_SIZE = 20;
+const MESSAGE_EVENT = 'message.new';
+
+function toNotificationPayload(info: Record<string, string | null>): Prisma.InputJsonObject {
+  return Object.fromEntries(Object.entries(info).filter(([, value]) => value !== null)) as Prisma.InputJsonObject;
+}
 
 @Injectable()
 export class NotificationsService {
@@ -39,6 +44,39 @@ export class NotificationsService {
     );
 
     return notification;
+  }
+
+  /**
+   * A conversation's "new message" update (PRD 5.2): one unread update per conversation, refreshed
+   * by each further message instead of piling up; only the first is also sent by e-mail / push.
+   */
+  async conversationActivity(
+    userId: string,
+    info: { conversationId: string; designId: string; designTitle: string | null; senderName: string | null },
+  ) {
+    const title = info.senderName ? `New message from ${info.senderName}` : 'New message';
+    const body = info.designTitle ? `About "${info.designTitle}"` : 'You have a new message';
+    const payload = toNotificationPayload(info);
+    const refreshed = await this.prisma.notification.updateMany({
+      where: {
+        userId,
+        eventKey: MESSAGE_EVENT,
+        readAt: null,
+        payload: { path: ['conversationId'], equals: info.conversationId },
+      },
+      data: { title, body, payload, createdAt: new Date() },
+    });
+    if (refreshed.count === 0) {
+      await this.createInApp(userId, MESSAGE_EVENT, title, body, payload);
+    }
+  }
+
+  /** Reading a conversation also reads its "new message" update. */
+  async conversationRead(userId: string, conversationId: string, readAt: Date) {
+    await this.prisma.notification.updateMany({
+      where: { userId, eventKey: MESSAGE_EVENT, readAt: null, payload: { path: ['conversationId'], equals: conversationId } },
+      data: { readAt },
+    });
   }
 
   private async dispatchAuxiliaryChannels(userId: string, title: string, body: string): Promise<void> {

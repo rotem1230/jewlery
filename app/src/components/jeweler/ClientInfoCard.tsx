@@ -7,8 +7,12 @@ type ClientInfoCardProps = {
   title: string
   nameLabel: string
   name: string
-  phoneLabel: string
-  phone: string
+  /**
+   * Product decision D1: the customer's phone is not shown before a quote is accepted (the contact
+   * then goes through the WhatsApp link in the chat), so the phone row is optional.
+   */
+  phoneLabel?: string
+  phone?: string
   dateLabel: string
   date: string
 }
@@ -28,12 +32,14 @@ export function ClientInfoCard({
       <Text style={styles.title}>{title}</Text>
       <View style={styles.rows}>
         <InfoRow label={nameLabel} value={name} />
-        <InfoRow
-          label={phoneLabel}
-          value={phone}
-          icon={<Phone size={14} color={colors.brand} strokeWidth={2} />}
-        />
-        <InfoRow label={dateLabel} value={date} />
+        {phoneLabel && phone ? (
+          <InfoRow
+            label={phoneLabel}
+            value={phone}
+            icon={<Phone size={14} color={colors.brand} strokeWidth={2} />}
+          />
+        ) : null}
+        {date ? <InfoRow label={dateLabel} value={date} /> : null}
       </View>
     </View>
   )

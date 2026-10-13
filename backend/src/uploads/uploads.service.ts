@@ -3,6 +3,7 @@ import { join, normalize, sep } from 'path';
 import { randomUUID } from 'crypto';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -15,6 +16,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma, Upload, UploadStatus } from '@prisma/client';
 import { AppConfigService } from '../cms/app-config.service';
 import { PrismaService } from '../database/prisma.service';
+import { designPictureReferences } from './design-pictures';
 import { contentMatchesMimeType } from './file-signature';
 import { UploadAccessService } from './upload-access.service';
 import { DEFAULT_UPLOAD_LIMITS, UploadLimits } from './uploads.constants';
@@ -333,7 +335,9 @@ export class UploadsService {
   async isReferencedElsewhere(uploadId: string, ignoreVisualizationJobIds: string[] = []): Promise<boolean> {
     const counts = await Promise.all([
       this.prisma.user.count({ where: { avatarUploadId: uploadId } }),
-      this.prisma.design.count({ where: { thumbnailUploadId: uploadId } }),
+      // A deleted design no longer uses its pictures (nobody can open them through it).
+      this.prisma.design.count({ where: { thumbnailUploadId: uploadId, deletedAt: null } }),
+      this.prisma.design.count({ where: { deletedAt: null, OR: designPictureReferences(uploadId) } }),
       this.prisma.jewelerProfile.count({ where: { logoUploadId: uploadId } }),
       this.prisma.jewelerOnboardingDraft.count({ where: { logoUploadId: uploadId } }),
       this.prisma.portfolioItem.count({ where: { uploadId } }),
@@ -350,6 +354,25 @@ export class UploadsService {
       }),
     ]);
     return counts.some((count) => count > 0);
+  }
+
+  /**
+   * The owner removes a file of theirs that nothing uses (e.g. a try-on selfie whose job was
+   * refused, PRD 7.2). A file a message, design, profile or job still uses stays (409).
+   */
+  async removeOwn(uploadId: string, userId: string): Promise<{ ok: true }> {
+    const upload = await this.prisma.upload.findFirst({
+      where: { id: uploadId, ownerUserId: userId, deletedAt: null },
+      select: { id: true, bucket: true, objectKey: true },
+    });
+    if (!upload) {
+      throw new NotFoundException({ success: false, message: 'Upload not found' });
+    }
+    if (await this.isReferencedElsewhere(upload.id)) {
+      throw new ConflictException({ success: false, message: 'This file is still in use', code: 'UPLOAD_IN_USE' });
+    }
+    await this.discard(upload);
+    return { ok: true };
   }
 
   /** Withdraws an upload nobody references (e.g. a result that arrived too late): row and bytes. */

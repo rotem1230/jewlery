@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ImageSourcePropType } from 'react-native'
 import {
   getConversationMessages,
+  listConversations,
   markConversationRead,
   sendAudioMessage,
   sendConversationMessage,
@@ -9,6 +10,14 @@ import {
 } from '@/src/api/chat'
 import { uploadChatFile, uploadContentUrl, type LocalFile } from '@/src/api/uploads'
 import { mediaUrl, nextLinkRefreshDelay } from '@/src/lib/media'
+import { contactLinkFromPayload } from '@/src/lib/chatLinks'
+import {
+  applyReadEvent,
+  latestReadAt,
+  messageDelivery,
+  peerLastReadAt,
+  type Delivery,
+} from '@/src/lib/chatThread'
 import { connectConversationSocket, type ConversationSocket } from '@/src/lib/socket'
 import { formatClock, formatDayLabel, groupMessagesByDay } from '@/src/lib/chatTime'
 import { useAppSelector } from '@/src/store/hooks'
@@ -24,6 +33,10 @@ export type ThreadBubble = {
   text: string
   /** Remote attachment URL for image/audio bubbles. */
   mediaUri?: string
+  /** Direct-contact link of a handoff system message (opened by a button, PRD 5.6). */
+  contactUrl?: string
+  /** My messages only: `read` once the other side's last read reached it. */
+  delivery?: Delivery
   time: string
   avatar?: ImageSourcePropType
   avatarLabel?: string
@@ -41,10 +54,13 @@ const LINK_REFRESH_RETRY_MS = 30_000
 
 /**
  * Single conversation: chronological messages with day separators, cursor
- * pagination backwards, send, mark-read on open, and realtime `message:new`
- * over the `/ws` socket (deduplicated by id).
+ * pagination backwards, send, mark-read on open, realtime `message:new`
+ * over the `/ws` socket (deduplicated by id), and read ticks from the other
+ * side's `lastReadAt` kept current by `message:read`.
+ *
+ * `initialPeerReadAt`: the other side's last read as the inbox listed it (if opened from there).
  */
-export function useConversationThread(conversationId: string) {
+export function useConversationThread(conversationId: string, initialPeerReadAt?: string | null) {
   const { locale } = useTranslation()
   const myUserId = useAppSelector((s) => s.auth.user?.id)
   const myFirstName = useAppSelector((s) => s.auth.user?.firstName)
@@ -57,8 +73,11 @@ export function useConversationThread(conversationId: string) {
   const [sending, setSending] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
+  const [peerReadAt, setPeerReadAt] = useState<string | null>(initialPeerReadAt ?? null)
   const socketRef = useRef<ConversationSocket | null>(null)
   const mountedRef = useRef(true)
+  const conversationRef = useRef(conversationId)
+  conversationRef.current = conversationId
   const playback = useVoicePlayback()
 
   useEffect(() => {
@@ -175,25 +194,64 @@ export function useConversationThread(conversationId: string) {
     void markRead()
   }, [markRead])
 
+  // The messages endpoint carries no participants: the other side's last read comes from the
+  // inbox (newest conversations). Not listed there: ticks start from the inbox value, if any.
+  const refreshPeerRead = useCallback(() => {
+    listConversations()
+      .then((page) => {
+        const conversation = page.items.find((item) => item.id === conversationId)
+        if (!conversation || !mountedRef.current || conversationRef.current !== conversationId) return
+        const fresh = peerLastReadAt(conversation.participants, myUserId)
+        setPeerReadAt((prev) => latestReadAt(prev, fresh))
+      })
+      .catch(() => {
+        // Ticks stay as they are; `message:read` still moves them.
+      })
+  }, [conversationId, myUserId])
+
+  useEffect(() => {
+    setPeerReadAt(initialPeerReadAt ?? null)
+    refreshPeerRead()
+  }, [refreshPeerRead, initialPeerReadAt])
+
   // Realtime: join the room, append peer messages, mark read while open.
   useEffect(() => {
     if (!accessToken) return
     const conn = connectConversationSocket(accessToken)
     socketRef.current = conn
-    conn.join(conversationId)
+    // Every (re)connection joins the room again: rooms do not survive a reconnect.
+    const onConnect = () => conn.join(conversationId)
+    if (conn.socket.connected) onConnect()
+    conn.socket.on('connect', onConnect)
+    // The server ends the socket when its token expires; an API call refreshes the session, and
+    // the new token reconnects this effect. Messages missed meanwhile are loaded again.
+    const onDisconnect = (reason: string) => {
+      if (reason !== 'io server disconnect') return
+      void markRead()
+      void loadInitial()
+      refreshPeerRead()
+    }
+    conn.socket.on('disconnect', onDisconnect)
     const onNew = (msg: ChatMessage) => {
       if (!msg || msg.conversationId !== conversationId) return
       appendUnique([msg])
       if (msg.senderId !== myUserId) void markRead()
     }
     conn.socket.on('message:new', onNew)
+    const onRead = (event: unknown) => {
+      setPeerReadAt((prev) => applyReadEvent(prev, event, conversationId, myUserId))
+    }
+    conn.socket.on('message:read', onRead)
     return () => {
+      conn.socket.off('connect', onConnect)
+      conn.socket.off('disconnect', onDisconnect)
       conn.socket.off('message:new', onNew)
+      conn.socket.off('message:read', onRead)
       conn.leave(conversationId)
       conn.disconnect()
       socketRef.current = null
     }
-  }, [conversationId, accessToken, appendUnique, markRead, myUserId])
+  }, [conversationId, accessToken, appendUnique, markRead, loadInitial, refreshPeerRead, myUserId])
 
   const send = useCallback(
     async (body: string) => {
@@ -256,11 +314,11 @@ export function useConversationThread(conversationId: string) {
               text: msg.body ?? '',
               time: formatClock(msg.createdAt),
               ...(outgoing
-                ? { avatarLabel: (myFirstName ?? 'מ').charAt(0) }
+                ? { avatarLabel: (myFirstName ?? 'מ').charAt(0), delivery: messageDelivery(msg.createdAt, peerReadAt) }
                 : { avatar: jewelerAvatar }),
             }
             if (msg.type === 'SYSTEM') {
-              return { ...base, kind: 'system', text: msg.body || msg.type }
+              return { ...base, kind: 'system', text: msg.body || msg.type, contactUrl: contactLinkFromPayload(msg.payload) }
             }
             if (msg.type === 'IMAGE' && msg.imageUploadId) {
               return { ...base, kind: 'image', mediaUri: mediaUrl(msg.imageUpload?.contentUrl) ?? uploadContentUrl(msg.imageUploadId) }
@@ -272,7 +330,7 @@ export function useConversationThread(conversationId: string) {
           }),
       }))
       .filter((group) => group.items.length > 0)
-  }, [messages, myUserId, myFirstName, locale])
+  }, [messages, myUserId, myFirstName, locale, peerReadAt])
 
   const latestQuote = useMemo(() => {
     const withQuote = [...messages]

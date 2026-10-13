@@ -17,6 +17,7 @@ type JewelerCardProps = {
   bio: string
   avatar: ImageSourcePropType
   works: ImageSourcePropType[]
+  /** "+N" over the last picture — only with a real count of the further works; nothing otherwise. */
   moreCount?: string
   onPressCta?: () => void
   /** Used only when ctaVariant is 'ownProfile' — the outline "edit" button. */
@@ -41,7 +42,7 @@ export function JewelerCard({
   bio,
   avatar,
   works,
-  moreCount = '+12',
+  moreCount,
   onPressCta,
   editLabel,
   onPressEdit,
@@ -120,7 +121,7 @@ export function JewelerCard({
             return (
               <View key={`${name}-work-${index}`} style={styles.workSlot}>
                 <Image source={src} style={styles.workImage} resizeMode="cover" />
-                {isLast ? (
+                {isLast && moreCount ? (
                   <View style={styles.workOverlay}>
                     <Text style={styles.moreCount}>{moreCount}</Text>
                   </View>

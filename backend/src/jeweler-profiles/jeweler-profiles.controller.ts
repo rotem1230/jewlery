@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Put, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
@@ -42,6 +42,12 @@ export class JewelerProfilesController {
   @Post('publish')
   publish(@Req() req: AuthedRequest) {
     return this.jewelerProfiles.publish(req.user);
+  }
+
+  @ApiBearerAuth()
+  @Post('me/orders/:requestId/decline')
+  declineOrder(@Param('requestId', new ParseUUIDPipe({ errorHttpStatusCode: 404 })) requestId: string, @Req() req: AuthedRequest) {
+    return this.jewelerProfiles.declineOrder(req.user.id, requestId);
   }
 
   @ApiBearerAuth()
