@@ -1,7 +1,7 @@
 -- Before ownership checks existed, the id of someone else's upload could be attached as an avatar,
 -- design thumbnail, jeweler logo, portfolio image or chat image, which published it or showed it
 -- to strangers. Such cross-owner references are removed; a record's own uploads stay attached.
-SET lock_timeout = '10s';
+SET LOCAL lock_timeout = '10s';
 
 UPDATE "users" AS u
 SET "avatarUploadId" = NULL

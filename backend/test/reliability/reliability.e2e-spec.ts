@@ -192,6 +192,22 @@ describe('design editing integrity', () => {
     expect(stored.version).toBe(2);
   });
 
+  it('a locked field cannot be changed by editing the design either', async () => {
+    const owner = await registerVerified(t);
+    const design = await createDraftDesign(t, owner);
+    await t.http.post(`${API}/designs/${design.id}/lock`).set(owner.auth).send({ fields: ['metal'], confirm: true }).expect(201);
+    const locked = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
+    const whiteGold = { ...VALID_RING_PARAMETERS, metal: { metalCode: 'WHITE_GOLD', purityCode: '14K' } };
+    const res = await t.http
+      .patch(`${API}/designs/${design.id}`)
+      .set(owner.auth)
+      .send({ version: locked.version, parameters: whiteGold })
+      .expect(403);
+    expect(res.body.code).toBe('FIELD_LOCKED');
+    const stored = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
+    expect((stored.parameters as { metal: { metalCode: string } }).metal.metalCode).not.toBe('WHITE_GOLD');
+  });
+
   it('restoring an old version cannot change a locked field', async () => {
     const owner = await registerVerified(t);
     const design = await createDraftDesign(t, owner);

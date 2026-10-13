@@ -2,6 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createTransport, type Transporter } from 'nodemailer';
 
+/** "d***@example.com": enough to tell deliveries apart in the logs without recording the address. */
+function maskAddress(address: string): string {
+  const at = address.lastIndexOf('@');
+  return at > 0 ? `${address[0]}***${address.slice(at)}` : '***';
+}
+
 export interface MailMessage {
   to: string;
   subject: string;
@@ -25,7 +31,7 @@ export class MailService {
 
     if (this.transporter) {
       await this.transporter.sendMail({ from, to, subject, text: body });
-      this.logger.log(`Mail sent to=${to} subject="${subject}"`);
+      this.logger.log(`Mail sent to=${maskAddress(to)} subject="${subject}"`);
       return;
     }
 

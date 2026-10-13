@@ -22,7 +22,7 @@ export function configureApp(app: INestApplication): void {
   // Payment webhooks get the exact bytes, whatever their content type: the signature is computed
   // over the raw body and checked before anything is parsed (a signed body that is not valid JSON
   // is still recorded for review). Registered first, so the JSON parser leaves these requests alone.
-  app.use(`/${apiPrefix}/webhooks/payments`, raw({ type: () => true, limit: bodyLimit }));
+  app.use(`/${apiPrefix.replace(/^\/+|\/+$/g, '')}/webhooks/payments`, raw({ type: () => true, limit: bodyLimit }));
   app.use(json({ limit: bodyLimit }));
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
 

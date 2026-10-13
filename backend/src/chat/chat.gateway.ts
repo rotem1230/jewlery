@@ -12,6 +12,7 @@ import {
 import { UserStatus } from '@prisma/client';
 import { Server, Socket } from 'socket.io';
 import { JwtPayload } from '../auth/interfaces/auth-user.interface';
+import { isCurrentSession } from '../auth/session-validity';
 import { SessionEvents } from '../common/session-events/session-events.service';
 import { PrismaService } from '../database/prisma.service';
 import { isAllowedSocketOrigin } from './socket-cors';
@@ -29,7 +30,13 @@ function userRoom(userId: string): string {
   return `user:${userId}`;
 }
 
-type AuthedSocketData = { userId?: string; authPromise?: Promise<string>; expiryTimer?: NodeJS.Timeout };
+type AuthedSocketData = {
+  userId?: string;
+  /** Session version of the token the socket was opened with. */
+  sessionVersion?: number;
+  authPromise?: Promise<string>;
+  expiryTimer?: NodeJS.Timeout;
+};
 
 /**
  * Real-time chat transport. HTTP endpoints on ConversationsController remain the
@@ -106,7 +113,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw new Error('Invalid or inactive user');
     }
+    if (!isCurrentSession(payload, user)) {
+      throw new Error('Session ended');
+    }
     const data = client.data as AuthedSocketData;
+    data.sessionVersion = user.sessionVersion;
     if (typeof payload.exp === 'number') {
       this.armExpiry(client, payload.exp * 1000);
     }
@@ -163,9 +174,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect, On
     if (!userId || typeof conversationId !== 'string' || !UUID.test(conversationId)) {
       return;
     }
-    // The account may have been suspended or deleted since the socket was opened.
+    // The account may have been suspended or deleted, or its sessions ended (possibly through
+    // another API instance, whose disconnect event never reaches this one), since the socket opened.
     const active = await this.prisma.user.count({
-      where: { id: userId, deletedAt: null, status: UserStatus.ACTIVE },
+      where: {
+        id: userId,
+        deletedAt: null,
+        status: UserStatus.ACTIVE,
+        sessionVersion: (client.data as AuthedSocketData).sessionVersion ?? 0,
+      },
     });
     if (active === 0) {
       client.emit('error', { message: 'Unauthorized' });

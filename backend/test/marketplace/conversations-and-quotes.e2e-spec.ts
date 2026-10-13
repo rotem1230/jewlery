@@ -244,6 +244,41 @@ describe('design requests', () => {
     expect(res.body.code).toBe('DESIGN_NOT_PUBLISHED');
   });
 
+  it('a targeted jeweler does not learn which competitors received the same request', async () => {
+    const designer = await registerVerified(t);
+    const design = await createPublishedDesign(t, designer);
+    const a = await createPublishedJeweler(t);
+    const b = await createPublishedJeweler(t);
+    const request = await t.http
+      .post(`${API}/atelier/requests`)
+      .set(designer.auth)
+      .send({ designId: design.id, mode: 'TARGETED', targetJewelerProfileIds: [a.profileId, b.profileId] })
+      .expect(201);
+    const seen = await t.http.get(`${API}/atelier/requests/${request.body.data.id}`).set(a.auth).expect(200);
+    expect((seen.body.data.targets as Array<{ jewelerProfileId: string }>).map((x) => x.jewelerProfileId)).toEqual([a.profileId]);
+    const owner = await t.http.get(`${API}/atelier/requests/${request.body.data.id}`).set(designer.auth).expect(200);
+    expect(owner.body.data.targets).toHaveLength(2);
+  });
+
+  it('someone who left a conversation can no longer read its quotes; the owner and the author always can', async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    // A third participant, as conversations from before the two-person rule may still have.
+    const other = await registerVerified(t);
+    await t.prisma.conversationParticipant.create({ data: { conversationId: s.conversation.id, userId: other.id } });
+    await t.http.get(`${API}/quotes/${quote.id}`).set(other.auth).expect(200);
+    await t.prisma.conversationParticipant.update({
+      where: { conversationId_userId: { conversationId: s.conversation.id, userId: other.id } },
+      data: { leftAt: new Date() },
+    });
+    await t.http.get(`${API}/quotes/${quote.id}`).set(other.auth).expect(403);
+
+    // Leaving the chat does not take the deal away from the two people it is between.
+    await t.prisma.conversationParticipant.updateMany({ where: { conversationId: s.conversation.id }, data: { leftAt: new Date() } });
+    await t.http.get(`${API}/quotes/${quote.id}`).set(s.designer.auth).expect(200);
+    await t.http.get(`${API}/quotes/${quote.id}`).set(s.jeweler.auth).expect(200);
+  });
+
   it("a targeted jeweler sees their own quote on a request, not the competitors' prices", async () => {
     const designer = await registerVerified(t);
     const design = await createPublishedDesign(t, designer);

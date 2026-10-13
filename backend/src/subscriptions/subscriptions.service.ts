@@ -244,7 +244,7 @@ export class SubscriptionsService {
   /**
    * Account deletion: live subscriptions end now and unpaid checkouts are cancelled, so a payment
    * that still arrives for them is held for review instead of activating a plan for a deleted
-   * account. The provider is told through the outbox (subscription.cancelled).
+   * account. A subscription.cancelled outbox event asks for the provider-side cancellation.
    */
   async endForDeletedAccount(tx: Tx, userId: string): Promise<void> {
     const live = await tx.subscription.findMany({
@@ -264,6 +264,11 @@ export class SubscriptionsService {
       where: { userId, status: CheckoutStatus.OPEN },
       data: { status: CheckoutStatus.CANCELLED },
     });
+  }
+
+  /** Whether the user has a subscription that entitles them to anything right now. */
+  async hasEntitledSubscription(tx: Tx, userId: string): Promise<boolean> {
+    return (await tx.subscription.count({ where: entitledSubscriptionWhere(userId) })) > 0;
   }
 
   /** Records metered usage for pay-per-item billing (design_model|hd_export|ai_generation|render). */

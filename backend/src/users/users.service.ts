@@ -10,7 +10,10 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { AuthService } from '../auth/auth.service';
 import { AUTH_ERROR } from '../auth/constants';
+import { ChatGateway } from '../chat/chat.gateway';
+import { OutboxService } from '../common/outbox/outbox.service';
 import { SafeUser } from '../auth/interfaces/auth-user.interface';
 import { PasswordService } from '../auth/services/password.service';
 import { TokenService } from '../auth/services/token.service';
@@ -41,6 +44,9 @@ export class UsersService {
     private readonly uploads: UploadsService,
     private readonly sessionEvents: SessionEvents,
     private readonly subscriptions: SubscriptionsService,
+    private readonly auth: AuthService,
+    private readonly gateway: ChatGateway,
+    private readonly outbox: OutboxService,
   ) {}
 
   private sanitize(user: User): SafeUser {
@@ -87,7 +93,8 @@ export class UsersService {
       });
     }
 
-    const ok = await this.password.compare(dto.currentPassword, user.passwordHash);
+    // Counted like a sign-in attempt: a stolen session cannot be used to guess the password.
+    const ok = await this.auth.verifyCurrentPassword(user.id, user.passwordHash, dto.currentPassword);
     if (!ok) {
       throw new UnauthorizedException({
         success: false,
@@ -106,10 +113,14 @@ export class UsersService {
     }
 
     const passwordHash = await this.password.hash(dto.newPassword);
-    await this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
-
-    // Changing the password invalidates every other session as a security precaution.
-    await this.tokens.revokeAllForUser(userId);
+    // Every session ends with the old password, this one included: the app signs in again with
+    // the new password, other devices are signed out at once.
+    await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      await tx.user.update({ where: { id: userId }, data: { passwordHash } });
+      await this.tokens.endAllSessions(tx, userId);
+    });
+    this.tokens.announceSessionsEnded(userId);
 
     await this.audit.log({
       actorUserId: userId,
@@ -131,14 +142,55 @@ export class UsersService {
 
   /**
    * Deletes the account: personal data is anonymized (the e-mail is freed for a new account), the
-   * jeweler listing is unpublished, the user's designs leave the marketplace, open requests are
-   * cancelled, and every session and push device is revoked.
+   * jeweler listing is unpublished, open quotes are withdrawn (their designers are told), the
+   * user's designs leave the marketplace, open requests are cancelled, billing ends, and every
+   * session and push device is revoked.
    */
   async softDelete(userId: string): Promise<{ ok: true }> {
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      // Serialized with payments and checkouts for this account (they take the same lock).
+    const withdrawn = await this.prisma.$transaction(async (tx) => {
+      // Serialized with payments and checkouts for this account (they take the same lock); its
+      // sessions end first, so nothing signed in keeps acting while the account is taken apart.
       await lockUser(tx, userId);
+      await this.tokens.endAllSessions(tx, userId);
+      // Open quotes are locked and withdrawn before the account row's identifying columns change
+      // (that takes a stronger lock): an owner accepting one of them right now either finishes
+      // first (and the quote stays accepted) or finds it withdrawn — the two never wait on each
+      // other in a cycle.
+      const openQuotes = await tx.$queryRaw<Array<{ id: string; conversationId: string; ownerUserId: string }>>`
+        SELECT q."id", q."conversationId", d."ownerUserId"
+          FROM "quotes" q JOIN "designs" d ON d."id" = q."designId"
+         WHERE q."authorUserId" = ${userId}::uuid AND q."status" = 'PENDING'
+         ORDER BY q."id"
+           FOR UPDATE OF q`;
+      if (openQuotes.length > 0) {
+        await tx.quote.updateMany({
+          where: { id: { in: openQuotes.map((q) => q.id) } },
+          data: { status: QuoteStatus.WITHDRAWN },
+        });
+        await tx.quoteEvent.createMany({
+          data: openQuotes.map((q) => ({
+            quoteId: q.id,
+            fromStatus: QuoteStatus.PENDING,
+            toStatus: QuoteStatus.WITHDRAWN,
+            actorUserId: userId,
+            note: 'Withdrawn: the jeweler deleted their account',
+          })),
+        });
+        for (const quote of openQuotes) {
+          await this.outbox.enqueue(
+            'notification.push',
+            {
+              userId: quote.ownerUserId,
+              eventKey: 'quote.withdrawn',
+              title: 'Quote withdrawn',
+              body: 'A jeweler closed their account; their quote on your design was withdrawn.',
+              quoteId: quote.id,
+            },
+            tx,
+          );
+        }
+      }
       const current = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true } });
       // Before the address is erased: a new account for it must not get the same trials again.
       await this.subscriptions.recordTrialsBeforeDeletion(tx, userId, current.email);
@@ -178,25 +230,6 @@ export class UsersService {
         },
       });
       await tx.jewelerOnboardingDraft.deleteMany({ where: { userId } });
-      const openQuotes = await tx.quote.findMany({
-        where: { authorUserId: userId, status: QuoteStatus.PENDING },
-        select: { id: true },
-      });
-      if (openQuotes.length > 0) {
-        await tx.quote.updateMany({
-          where: { id: { in: openQuotes.map((q) => q.id) }, status: QuoteStatus.PENDING },
-          data: { status: QuoteStatus.WITHDRAWN },
-        });
-        await tx.quoteEvent.createMany({
-          data: openQuotes.map((q) => ({
-            quoteId: q.id,
-            fromStatus: QuoteStatus.PENDING,
-            toStatus: QuoteStatus.WITHDRAWN,
-            actorUserId: userId,
-            note: 'Withdrawn: the jeweler deleted their account',
-          })),
-        });
-      }
       await tx.design.updateMany({ where: { ownerUserId: userId, deletedAt: null }, data: { deletedAt: now } });
       await tx.designRequest.updateMany({
         where: {
@@ -208,9 +241,15 @@ export class UsersService {
         data: { status: DesignRequestStatus.CANCELLED },
       });
       await tx.deviceToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
-      await tx.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
+      return openQuotes;
     });
     this.sessionEvents.sessionsRevoked(userId);
+    for (const quote of withdrawn) {
+      this.gateway.emitToConversation(quote.conversationId, 'quote:updated', {
+        quoteId: quote.id,
+        status: QuoteStatus.WITHDRAWN,
+      });
+    }
 
     await this.audit.log({
       actorUserId: userId,

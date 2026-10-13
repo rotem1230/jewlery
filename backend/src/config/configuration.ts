@@ -47,6 +47,12 @@ export const configuration = () => {
     },
     tripo: {
       apiKey: process.env.TRIPO_API_KEY,
+      /** Largest model accepted from the provider (the file is held in memory while stored). */
+      maxModelBytes: int(process.env.TRIPO_MAX_MODEL_BYTES, 50 * 1024 * 1024),
+    },
+    visualization: {
+      /** Try-on jobs one user may start per 24 hours (each one stores a generated image). */
+      jobsPerDay: int(process.env.VISUALIZATION_JOBS_PER_DAY, 20),
     },
     render: {
       engineUrl: process.env.RENDER_ENGINE_URL,

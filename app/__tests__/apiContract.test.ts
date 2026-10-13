@@ -2,10 +2,11 @@ import { waitForAiJob } from '../src/api/ai'
 import { isEmailNotVerified, register, resendVerification } from '../src/api/auth'
 import { createJewelryPaymentIntent } from '../src/api/jewelryPayments'
 import { acceptQuote } from '../src/api/quotes'
+import { listMyReviews } from '../src/api/reviews'
 import { API_BASE_URL, ApiError, apiErrorCode, setAuthSessionBridge } from '../src/lib/api'
 import { mediaUrl } from '../src/lib/media'
 
-type Call = { url: string; body: unknown }
+type Call = { url: string; body: unknown; authorization: string | null }
 
 function respond(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) } as Response
@@ -15,7 +16,11 @@ const calls: Call[] = []
 
 function serve(handler: (url: string) => Response) {
   globalThis.fetch = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    calls.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      authorization: new Headers(init?.headers).get('Authorization'),
+    })
     return handler(String(input))
   }) as unknown as typeof fetch
 }
@@ -49,6 +54,13 @@ describe('backend contract', () => {
     const result = await register({ email: 'a@b.c', password: 'Strong-pass1', roles: ['DESIGNER'] })
     expect(result.requiresEmailVerification).toBe(true)
     expect((result as unknown as { tokens?: unknown }).tokens).toBeUndefined()
+  })
+
+  it("a jeweler's own reviews come from the signed-in endpoint (listed even while the profile is offline)", async () => {
+    serve(() => respond(200, { success: true, data: { items: [], pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 } } }))
+    await listMyReviews()
+    expect(calls[0].url).toBe(`${API_BASE_URL}/reviews/mine`)
+    expect(calls[0].authorization).toBe('Bearer access')
   })
 
   it('a verification link can be requested again', async () => {

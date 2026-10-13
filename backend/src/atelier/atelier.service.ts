@@ -428,6 +428,10 @@ export class AtelierService {
       const delivered: string[] = [];
       for (const recipient of fresh) {
         if (deliveredBefore.has(recipient.id)) {
+          // No second lead, but with enforcement on, still only to a jeweler who can receive requests.
+          if (enforceQuota && !(await this.subscriptions.hasEntitledSubscription(tx, recipient.userId))) {
+            continue;
+          }
           delivered.push(recipient.id);
           continue;
         }
@@ -497,9 +501,14 @@ export class AtelierService {
       throw new ForbiddenException({ success: false, message: 'Not authorized to view this request' });
     }
 
-    // Competing jewelers never see each other's prices; the requester sees every quote.
+    // Competing jewelers see neither each other's prices nor who else received the request; the
+    // requester sees every delivery and every quote.
     if (!isRequester && !isAdmin) {
-      return { ...request, quotes: request.quotes.filter((quote) => quote.authorUserId === user.id) };
+      return {
+        ...request,
+        targets: request.targets.filter((target) => target.jewelerProfile.userId === user.id),
+        quotes: request.quotes.filter((quote) => quote.authorUserId === user.id),
+      };
     }
     return request;
   }

@@ -50,6 +50,34 @@ describe('design request delivery', () => {
     expect(await leadsConsumed(jeweler)).toBe(1);
   });
 
+  it('with quota enforcement on, re-delivering a design still needs an active subscription (only the lead is waived)', async () => {
+    const jeweler = await createPublishedJeweler(t);
+    const sub = (
+      await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_BASIC' }).expect(201)
+    ).body.data as { id: string };
+    const designer = await registerVerified(t);
+    const design = await createPublishedDesign(t, designer);
+    const targeted = { mode: 'TARGETED', targetJewelerProfileIds: [jeweler.profileId] };
+    const first = await request(designer, design.id, targeted).expect(201);
+    await t.prisma.designRequest.update({ where: { id: first.body.data.id }, data: { status: 'EXPIRED' } });
+    await t.prisma.subscription.update({ where: { id: sub.id }, data: { status: 'EXPIRED', currentPeriodEnd: new Date(Date.now() - 60_000) } });
+
+    await t.prisma.appConfig.upsert({
+      where: { key: 'lead_definition' },
+      update: { value: { mode: 'design_request_delivery', enforceQuota: true }, version: { increment: 1 } },
+      create: { key: 'lead_definition', value: { mode: 'design_request_delivery', enforceQuota: true } },
+    });
+    try {
+      const again = await request(designer, design.id, targeted).expect(409);
+      expect(again.body.code).toBe('NO_ELIGIBLE_JEWELERS');
+    } finally {
+      await t.prisma.appConfig.update({
+        where: { key: 'lead_definition' },
+        data: { value: { mode: 'design_request_delivery', enforceQuota: false }, version: { increment: 1 } },
+      });
+    }
+  });
+
   it('a repeated broadcast reaches the jewelers the earlier one did not, instead of failing', async () => {
     const regionId = await isolatedRegion();
     const first = await createPublishedJeweler(t, {}, { regionId });

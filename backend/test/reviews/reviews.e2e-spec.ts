@@ -99,6 +99,25 @@ describe('reviews', () => {
     expect(await t.prisma.review.count({ where: { jewelerProfileId: jeweler.profileId } })).toBe(1);
   });
 
+  it("the jeweler manages their profile's reviews even while it is not published", async () => {
+    const jeweler = await createPublishedJeweler(t);
+    const review = await t.prisma.review.create({
+      data: { jewelerProfileId: jeweler.profileId, reviewerName: 'Dana', rating: 5, comment: 'Lovely' },
+    });
+    await t.prisma.jewelerProfile.update({ where: { id: jeweler.profileId }, data: { publishStatus: 'UNPUBLISHED' } });
+
+    const mine = await t.http.get(`${API}/reviews/mine`).set(jeweler.auth).expect(200);
+    expect((mine.body.data.items as Array<{ id: string }>).map((r) => r.id)).toEqual([review.id]);
+    const shown = await t.http.get(`${API}/reviews`).query({ jewelerProfileId: jeweler.profileId }).expect(200);
+    expect(shown.body.data.items).toEqual([]);
+  });
+
+  it('an account without a jeweler profile has no reviews to manage', async () => {
+    const designer = await registerVerified(t);
+    const mine = await t.http.get(`${API}/reviews/mine`).set(designer.auth).expect(200);
+    expect(mine.body.data.items).toEqual([]);
+  });
+
   it('limits the length of reviewer names and comments', async () => {
     const { designer, jeweler } = await completedDeal();
     await t.http

@@ -19,3 +19,11 @@ export async function lockUser(tx: Tx, userId: string): Promise<void> {
 export async function lockSubscription(tx: Tx, subscriptionId: string): Promise<void> {
   await tx.$queryRaw`SELECT id FROM "subscriptions" WHERE id = ${subscriptionId}::uuid FOR NO KEY UPDATE`;
 }
+
+/**
+ * A shared hold on the account, for work that must not interleave with a lockUser writer but may
+ * run alongside other such readers (refresh rotation vs. ending all sessions).
+ */
+export async function shareLockUser(tx: Tx, userId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "users" WHERE id = ${userId}::uuid FOR SHARE`;
+}

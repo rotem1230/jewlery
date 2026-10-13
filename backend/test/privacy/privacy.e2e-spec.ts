@@ -1,3 +1,4 @@
+import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import {
   acceptQuote,
@@ -198,6 +199,34 @@ describe('account deletion', () => {
     expect(stored.status).toBe('WITHDRAWN');
     // Accepting would have posted the deleted jeweler's phone into the chat.
     await acceptQuote(t, s.designer, quote).expect(409);
+  });
+
+  it("the owner is told when a deleted jeweler's open quote is withdrawn", async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    await t.http.delete(`${API}/users/me`).set(s.jeweler.auth).expect(200);
+    const queued = await t.prisma.outboxEvent.findMany({ where: { type: 'notification.push' } });
+    expect(queued.map((event) => event.payload)).toContainEqual(
+      expect.objectContaining({ userId: s.designer.id, eventKey: 'quote.withdrawn', quoteId: quote.id }),
+    );
+  });
+
+  it('a jeweler deleting their account while the owner accepts their quote: one wins cleanly, nothing deadlocks', async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    // Stops the deletion after it has taken what it takes first, so the accept arrives mid-way.
+    const profile = await lockRow(t, 'jeweler_profiles', s.jeweler.profileId);
+    const deleting = t.http.delete(`${API}/users/me`).set(s.jeweler.auth).then((res) => res);
+    await waitForLockWaiters(t, 1);
+    const accepting = acceptQuote(t, s.designer, quote).then((res) => res);
+    await waitForLockWaiters(t, 2);
+    await profile.release();
+
+    const [deleted, accepted] = await Promise.all([deleting, accepting]);
+    expect(deleted.status).toBe(200);
+    expect(accepted.status).toBe(409);
+    expect(accepted.body.code).toBe('QUOTE_NOT_PENDING');
+    expect((await t.prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe('WITHDRAWN');
   });
 
   it('reviews of a jeweler that is no longer listed are not served publicly', async () => {

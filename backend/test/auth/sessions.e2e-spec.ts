@@ -1,6 +1,7 @@
 import { createHmac } from 'crypto';
+import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
-import { bearer, registerVerified } from '../utils/factories';
+import { bearer, login, registerVerified } from '../utils/factories';
 
 function base64url(input: string | Buffer): string {
   return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -74,6 +75,83 @@ describe('refresh token rotation', () => {
     const user = await registerVerified(t);
     await t.prisma.user.update({ where: { id: user.id }, data: { status: 'SUSPENDED' } });
     expect((await refresh(user.refreshToken)).status).toBe(401);
+  });
+});
+
+/**
+ * Regression: ending sessions (sign out everywhere, password change or reset) only revoked refresh
+ * tokens; every access token already handed out kept working until it expired, and a refresh that
+ * raced the revocation could leave a fresh session behind.
+ */
+describe('ending sessions', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  function me(accessToken: string) {
+    return t.http.get(`${API}/users/me`).set(bearer(accessToken));
+  }
+
+  it('signing out everywhere ends the access tokens already handed out', async () => {
+    const user = await registerVerified(t);
+    await me(user.accessToken).expect(200);
+    await t.http.post(`${API}/auth/revoke-all`).set(user.auth).send({}).expect(200);
+    await me(user.accessToken).expect(401);
+  });
+
+  it('a session started after signing out everywhere works', async () => {
+    const user = await registerVerified(t);
+    await t.http.post(`${API}/auth/revoke-all`).set(user.auth).send({}).expect(200);
+    const again = await login(t, user.email, user.password);
+    await me(again.accessToken).expect(200);
+    await t.http.post(`${API}/auth/refresh`).send({ refreshToken: again.refreshToken }).expect(201);
+  });
+
+  it('changing the password ends every session at once, on other devices too', async () => {
+    const user = await registerVerified(t);
+    const otherDevice = await login(t, user.email, user.password);
+    await t.http
+      .patch(`${API}/users/me/password`)
+      .set(user.auth)
+      .send({ currentPassword: user.password, newPassword: 'N3w-Strong-Pass' })
+      .expect(200);
+    await me(otherDevice.accessToken).expect(401);
+    await t.http.post(`${API}/auth/refresh`).send({ refreshToken: otherDevice.refreshToken }).expect(401);
+    const fresh = await login(t, user.email, 'N3w-Strong-Pass');
+    await me(fresh.accessToken).expect(200);
+  });
+
+  it('a password reset ends the access tokens already handed out', async () => {
+    const user = await registerVerified(t);
+    await t.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
+    const token = await t.mailbox.tokenFor(user.email, 'reset');
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: 'N3w-Strong-Pass' }).expect(200);
+    await me(user.accessToken).expect(401);
+  });
+
+  it('a refresh racing sign-out-everywhere cannot leave a working session behind', async () => {
+    const user = await registerVerified(t);
+    const held = await lockRow(t, 'users', user.id);
+    const refreshing = t.http.post(`${API}/auth/refresh`).send({ refreshToken: user.refreshToken }).then((res) => res);
+    await waitForLockWaiters(t, 1);
+    const revoking = t.http.post(`${API}/auth/revoke-all`).set(user.auth).send({}).then((res) => res);
+    await waitForLockWaiters(t, 2);
+    await held.release();
+
+    const refreshed = await refreshing;
+    expect((await revoking).status).toBe(200);
+    expect([201, 401]).toContain(refreshed.status);
+    if (refreshed.status === 201) {
+      const tokens = refreshed.body.data.tokens as { accessToken: string; refreshToken: string };
+      await me(tokens.accessToken).expect(401);
+      await t.http.post(`${API}/auth/refresh`).send({ refreshToken: tokens.refreshToken }).expect(401);
+    }
   });
 });
 

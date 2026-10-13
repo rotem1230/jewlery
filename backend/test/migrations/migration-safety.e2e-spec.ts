@@ -16,6 +16,7 @@ describe('migration safety', () => {
     const statements = sql
       .split('\n')
       .filter((line) => line.trim() !== '' && !line.trim().startsWith('--'));
-    expect(statements[0]).toMatch(/^SET lock_timeout = '\d+s';$/);
+    // LOCAL: the migration runs as one transaction; the setting must not outlive it on a pooled session.
+    expect(statements[0]).toMatch(/^SET LOCAL lock_timeout = '\d+s';$/);
   });
 });

@@ -1,4 +1,5 @@
 import { UserRole } from '@prisma/client';
+import { AuthService } from '../../src/auth/auth.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { DEFAULT_PASSWORD, registerVerified, uniqueEmail } from '../utils/factories';
 
@@ -14,6 +15,12 @@ describe('password reset', () => {
   afterAll(async () => {
     await t.close();
   });
+
+  /** Every mail the requests so far will send has been sent (background jobs included). */
+  async function mailDone(): Promise<void> {
+    await t.app.get(AuthService).drainPendingMail();
+    await t.mailbox.settle();
+  }
 
   async function requestReset(email: string): Promise<string> {
     const before = t.mailbox.to(email).length;
@@ -90,9 +97,9 @@ describe('password reset', () => {
     await Promise.all(
       Array.from({ length: 12 }, () => t.http.post(`${API}/auth/forgot-password`).send({ email: user.email })),
     );
-    await t.mailbox.settle();
+    await mailDone();
     const resetMails = t.mailbox.to(user.email).filter((m) => m.body.includes('reset-password'));
-    expect(resetMails.length).toBeLessThanOrEqual(3);
+    expect(resetMails).toHaveLength(3);
   });
 
   it('answers without waiting for mail delivery (response time does not reveal the account)', async () => {
@@ -113,9 +120,30 @@ describe('password reset', () => {
     for (let i = 0; i < 6; i += 1) {
       await t.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
     }
-    await t.mailbox.settle();
+    await mailDone();
     const resetMails = t.mailbox.to(user.email).filter((m) => m.body.includes('reset-password'));
     expect(resetMails).toHaveLength(3);
+  });
+
+  it('shutting down waits for every pending mail, including mail queued while it waits', async () => {
+    const first = await registerVerified(t);
+    const second = await registerVerified(t);
+    await mailDone();
+    t.mailbox.delayMs = 400;
+    try {
+      await t.http.post(`${API}/auth/forgot-password`).send({ email: first.email }).expect(200);
+      while (t.mailbox.sending === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      // The first mail is on its way; the one queued next takes longer than it.
+      t.mailbox.delayMs = 1_500;
+      const draining = t.app.get(AuthService).onModuleDestroy();
+      await t.http.post(`${API}/auth/forgot-password`).send({ email: second.email }).expect(200);
+      await draining;
+      expect(t.mailbox.to(second.email).filter((m) => m.body.includes('reset-password'))).toHaveLength(1);
+    } finally {
+      t.mailbox.delayMs = 0;
+    }
   });
 
   it('caps verification re-sends per account', async () => {
@@ -127,7 +155,7 @@ describe('password reset', () => {
     for (let i = 0; i < 6; i += 1) {
       await t.http.post(`${API}/auth/resend-verify`).send({ email }).expect(200);
     }
-    await t.mailbox.settle();
+    await mailDone();
     const verifyMails = t.mailbox.to(email).filter((m) => m.body.includes('verify-email'));
     expect(verifyMails).toHaveLength(3);
   });
@@ -152,5 +180,30 @@ describe('auth mail endpoints are throttled per client', () => {
     }
     expect(statuses).toContain(429);
     expect(statuses.indexOf(429)).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Regression: issuing a mail token read its time-to-live through a second database connection while
+ * the transaction holding the account lock kept the first: on a small or busy pool, every mail
+ * request stalled until the pool timed out, then silently used the default lifetime.
+ */
+describe('mail tokens on a small connection pool', () => {
+  it('a reset mail is issued even when the pool has a single connection', async () => {
+    const t = await createTestApp();
+    const user = await registerVerified(t);
+    const url = new URL(process.env.DATABASE_URL as string);
+    url.searchParams.set('connection_limit', '1');
+    // Long enough that waiting for a second connection shows up as a missed deadline below.
+    url.searchParams.set('pool_timeout', '15');
+    const single = await createTestApp({ env: { DATABASE_URL: url.toString(), JOBS_ENABLED: 'false' } });
+    try {
+      await single.http.post(`${API}/auth/forgot-password`).send({ email: user.email }).expect(200);
+      // Promptly: not after the pool timeout, with the configured lifetime quietly ignored.
+      await single.mailbox.tokenFor(user.email, 'reset', 5_000);
+    } finally {
+      await single.close();
+      await t.close();
+    }
   });
 });

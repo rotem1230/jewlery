@@ -81,6 +81,91 @@ describe('upload content access', () => {
     await t.http.get(`${API}/uploads/${uploadId}/content`).set(outsider.auth).expect(404);
   });
 
+  it("a design's thumbnail becomes public only when the design is published", async () => {
+    const owner = await registerVerified(t);
+    const design = await createDraftDesign(t, owner);
+    const thumb = await uploadFile(t, owner, PNG_BYTES, 'image/png', 'thumb.png').expect(201);
+    const current = await t.prisma.design.findUniqueOrThrow({ where: { id: design.id } });
+    await t.http
+      .patch(`${API}/designs/${design.id}`)
+      .set(owner.auth)
+      .send({ version: current.version, thumbnailUploadId: thumb.body.data.id })
+      .expect(200);
+    await t.http.get(`${API}/uploads/${thumb.body.data.id}/content`).expect(404);
+
+    await t.http.post(`${API}/designs/${design.id}/transition`).set(owner.auth).send({ toStatus: 'PUBLISHED' }).expect(201);
+    await t.http.get(`${API}/uploads/${thumb.body.data.id}/content`).expect(200);
+  });
+
+  it("the jeweler's own profile returns working signed links while the profile is offline", async () => {
+    const jeweler = await registerVerified(t, { roles: ['JEWELER'] });
+    const logo = await uploadFile(t, jeweler, PNG_BYTES, 'image/png', 'logo.png').expect(201);
+    await t.http
+      .put(`${API}/jeweler-profiles/draft`)
+      .set(jeweler.auth)
+      .send({ regionId: await firstRegionId(t), logoUploadId: logo.body.data.id, payload: { businessName: 'Atelier', phone: '+972501234567' } })
+      .expect(200);
+    await t.http.post(`${API}/jeweler-profiles/publish`).set(jeweler.auth).send({}).expect(201);
+    const work = await uploadFile(t, jeweler, PNG_BYTES, 'image/png', 'work.png').expect(201);
+    await t.http.post(`${API}/jeweler-profiles/me/portfolio`).set(jeweler.auth).send({ uploadId: work.body.data.id }).expect(201);
+    await t.prisma.jewelerProfile.update({ where: { userId: jeweler.id }, data: { publishStatus: 'UNPUBLISHED' } });
+    // Offline: the files are private again, reachable only through the signed links.
+    await t.http.get(`${API}/uploads/${logo.body.data.id}/content`).expect(404);
+
+    const me = await t.http.get(`${API}/jeweler-profiles/me`).set(jeweler.auth).expect(200);
+    const logoUrl = me.body.data.logoUrl as string;
+    expect(logoUrl).toMatch(/sig=/);
+    await t.http.get(`${API}${logoUrl}`).expect(200);
+    const portfolio = await t.http.get(`${API}/jeweler-profiles/me/portfolio`).set(jeweler.auth).expect(200);
+    const item = (portfolio.body.data as Array<{ contentUrl: string }>)[0];
+    await t.http.get(`${API}${item.contentUrl}`).expect(200);
+  });
+
+  it('a signature made for one file does not open another', async () => {
+    const first = await chatImage();
+    const second = await chatImage();
+    const signedFirst = t.app.get(UploadAccessService).signedContentPath(first.uploadId);
+    await t.http.get(`${API}${signedFirst}`).expect(200);
+    await t.http.get(`${API}${signedFirst.replace(first.uploadId, second.uploadId)}`).expect(404);
+  });
+
+  it('a bearer token of a suspended account, or from sessions that were ended, opens no private media', async () => {
+    const { designer, uploadId } = await chatImage();
+    await t.http.get(`${API}/uploads/${uploadId}/content`).set(designer.auth).expect(200);
+    await t.http.post(`${API}/auth/revoke-all`).set(designer.auth).send({}).expect(200);
+    await t.http.get(`${API}/uploads/${uploadId}/content`).set(designer.auth).expect(404);
+
+    const other = await chatImage();
+    await t.prisma.user.update({ where: { id: other.designer.id }, data: { status: 'SUSPENDED' } });
+    await t.http.get(`${API}/uploads/${other.uploadId}/content`).set(other.designer.auth).expect(404);
+  });
+
+  it('only a finished upload is ever served', async () => {
+    const { designer, uploadId } = await chatImage();
+    await t.prisma.upload.update({ where: { id: uploadId }, data: { status: 'PENDING' } });
+    await t.http.get(`${API}/uploads/${uploadId}/content`).set(designer.auth).expect(404);
+    await t.http.get(`${API}${t.app.get(UploadAccessService).signedContentPath(uploadId)}`).expect(404);
+  });
+
+  it('a stored path that leads out of the storage directory is never served', async () => {
+    const owner = await registerVerified(t);
+    const upload = await uploadFile(t, owner, PNG_BYTES, 'image/png', 'me.png').expect(201);
+    await t.prisma.upload.update({ where: { id: upload.body.data.id }, data: { objectKey: 'local/../package.json' } });
+    const res = await t.http.get(`${API}/uploads/${upload.body.data.id}/content`).set(owner.auth);
+    expect(res.status).toBe(404);
+    expect(res.text).not.toContain('"dependencies"');
+  });
+
+  it('served files are never sniffed into another type, and private ones are not cached by intermediaries', async () => {
+    const { designer, uploadId } = await chatImage();
+    const res = await t.http.get(`${API}/uploads/${uploadId}/content`).set(designer.auth).expect(200);
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['content-disposition']).toBe('inline');
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    // A bearer-authorized response keeps the same-origin resource policy.
+    expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
+  });
+
   it("a legacy reference to someone else's upload neither publishes nor shares it", async () => {
     const victim = await registerVerified(t);
     const upload = await uploadFile(t, victim, PNG_BYTES, 'image/png', 'private.png').expect(201);
@@ -158,6 +243,39 @@ describe('upload validation', () => {
   it('accepts voice notes (audio/m4a) with the seeded upload limits', async () => {
     const user = await registerVerified(t);
     await uploadFile(t, user, M4A_BYTES, 'audio/m4a', 'voice-note.m4a').expect(201);
+  });
+
+  it('accepts one file per request', async () => {
+    const user = await registerVerified(t);
+    await t.http
+      .post(`${API}/uploads`)
+      .set(user.auth)
+      .attach('file', PNG_BYTES, { filename: 'a.png', contentType: 'image/png' })
+      .attach('file', PNG_BYTES, { filename: 'b.png', contentType: 'image/png' })
+      .expect(400);
+  });
+
+  it('an avatar or portfolio picture must be an image of your own', async () => {
+    const jeweler = await createPublishedJeweler(t);
+    const voice = await uploadFile(t, jeweler, M4A_BYTES, 'audio/m4a', 'note.m4a').expect(201);
+    await t.http.patch(`${API}/users/me`).set(jeweler.auth).send({ avatarUploadId: voice.body.data.id }).expect(400);
+    await t.http.post(`${API}/jeweler-profiles/me/portfolio`).set(jeweler.auth).send({ uploadId: voice.body.data.id }).expect(400);
+
+    const stranger = await registerVerified(t);
+    const theirs = await uploadFile(t, stranger, PNG_BYTES, 'image/png', 'theirs.png').expect(201);
+    await t.http.patch(`${API}/users/me`).set(jeweler.auth).send({ avatarUploadId: theirs.body.data.id }).expect(400);
+    await t.http.post(`${API}/jeweler-profiles/me/portfolio`).set(jeweler.auth).send({ uploadId: theirs.body.data.id }).expect(400);
+  });
+
+  it('a chat message cannot present a voice note as an image, or an image as a voice note', async () => {
+    const s = await marketplaceScenario(t);
+    const voice = await uploadFile(t, s.jeweler, M4A_BYTES, 'audio/m4a', 'note.m4a').expect(201);
+    const photo = await uploadFile(t, s.jeweler, PNG_BYTES, 'image/png', 'photo.png').expect(201);
+    const send = (body: Record<string, unknown>) =>
+      t.http.post(`${API}/conversations/${s.conversation.id}/messages`).set(s.jeweler.auth).send(body);
+    await send({ type: 'IMAGE', imageUploadId: voice.body.data.id }).expect(400);
+    await send({ type: 'AUDIO', imageUploadId: photo.body.data.id }).expect(400);
+    await send({ type: 'AUDIO', imageUploadId: voice.body.data.id }).expect(201);
   });
 
   it('answers a request without a file with 400, not 500', async () => {
@@ -423,5 +541,38 @@ describe('AI model of a saved design', () => {
     });
     const forged = await t.http.get(`${API}/designs/${design.id}`).set(owner.auth).expect(200);
     expect(forged.body.data.aiOutputUrl).toBeNull();
+  });
+});
+
+describe('try-on limits', () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await createTestApp({ env: { VISUALIZATION_JOBS_PER_DAY: '2' } });
+    await t.prisma.featureFlag.upsert({
+      where: { key: 'phase2_visualization' },
+      update: { enabled: true, rolloutPct: 100 },
+      create: { key: 'phase2_visualization', enabled: true, rolloutPct: 100 },
+    });
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it('caps try-on jobs per user per day, also under simultaneous requests', async () => {
+    const s = await marketplaceScenario(t);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    const selfie = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'selfie.png').expect(201);
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        t.http
+          .post(`${API}/visualization/jobs`)
+          .set(s.designer.auth)
+          .send({ designId: s.design.id, inputUploadId: selfie.body.data.id }),
+      ),
+    );
+    expect(results.map((r) => r.status).sort()).toEqual([201, 201, 429, 429]);
+    expect(results.find((r) => r.status === 429)?.body.code).toBe('VISUALIZATION_QUOTA_EXCEEDED');
   });
 });

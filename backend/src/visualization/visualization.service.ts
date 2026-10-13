@@ -3,15 +3,19 @@ import { join } from 'path';
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JobStatus, UploadStatus, User, UserRole, VisualizationJob } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
 import { AppConfigService } from '../cms/app-config.service';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { PrismaService } from '../database/prisma.service';
+import { lockUser } from '../database/row-locks';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
@@ -22,6 +26,7 @@ const PAGE_SIZE = 20;
 const DEFAULT_RETENTION_HOURS = 72;
 const VIZ_ENTITLEMENT_KEY = 'personal_visualization';
 const VIZ_FLAG = 'phase2_visualization';
+const DAY_MS = 24 * 60 * 60 * 1000;
 const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
@@ -38,6 +43,7 @@ export class VisualizationService {
     private readonly featureFlags: FeatureFlagsService,
     private readonly uploads: UploadsService,
     private readonly access: UploadAccessService,
+    private readonly config: ConfigService,
   ) {}
 
   private view(job: VisualizationJob) {
@@ -92,14 +98,29 @@ export class VisualizationService {
     }
 
     const hours = await this.retentionHours();
-    const job = await this.prisma.visualizationJob.create({
-      data: {
-        designId: design.id,
-        requestedById: user.id,
-        inputUploadId: upload.id,
-        status: JobStatus.QUEUED,
-        retentionExpiresAt: new Date(Date.now() + hours * 60 * 60 * 1000),
-      },
+    const jobsPerDay = this.config.get<number>('visualization.jobsPerDay', 20);
+    // Every job stores a generated image: a daily cap per user, serialized by the user's lock so
+    // simultaneous requests cannot all pass the count.
+    const job = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const startedToday = await tx.visualizationJob.count({
+        where: { requestedById: user.id, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
+      });
+      if (startedToday >= jobsPerDay) {
+        throw new HttpException(
+          { success: false, message: 'Daily try-on limit reached', code: 'VISUALIZATION_QUOTA_EXCEEDED' },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      return tx.visualizationJob.create({
+        data: {
+          designId: design.id,
+          requestedById: user.id,
+          inputUploadId: upload.id,
+          status: JobStatus.QUEUED,
+          retentionExpiresAt: new Date(Date.now() + hours * 60 * 60 * 1000),
+        },
+      });
     });
 
     await this.audit.log({

@@ -91,9 +91,10 @@ export class CheckoutService {
   /**
    * checkout.completed: under the buyer's row lock, a session paid with its exact amount becomes an
    * ACTIVE subscription (once). A payment that cannot be applied safely is kept for review, and its
-   * session is marked so (a new purchase gets a fresh session). A session paid after it expired is
-   * still honoured: the money was taken for this plan. When the event names the provider invoice of
-   * that first charge, it is recorded, so the same invoice's invoice.paid does not add a period.
+   * session is marked so (a new purchase gets a fresh session; nothing more is applied on that one).
+   * A session paid after it expired is still honoured: the money was taken for this plan. The event
+   * must name the provider invoice of that first charge: it is recorded, so the same invoice's
+   * invoice.paid does not add a period.
    */
   async completeFromWebhook(tx: Tx, dto: PaymentWebhookDto): Promise<AppliedEvent> {
     if (!dto.checkoutId) {
@@ -124,12 +125,22 @@ export class CheckoutService {
     if (session.status === CheckoutStatus.CANCELLED || session.user.deletedAt) {
       return { outcome: 'NEEDS_REVIEW', note: `Paid ${paid} for checkout ${session.id} after the buyer deleted their account` };
     }
+    // Money on a checkout under review is never applied behind that review: it may be the very
+    // payment the review is about, announced again.
+    if (session.status === CheckoutStatus.NEEDS_REVIEW) {
+      return { outcome: 'NEEDS_REVIEW', note: `Paid ${paid} for checkout ${session.id}, which is held for review` };
+    }
     const unapplied = async (note: string): Promise<AppliedEvent> => {
       await tx.checkoutSession.update({ where: { id: session.id }, data: { status: CheckoutStatus.NEEDS_REVIEW } });
       return { outcome: 'NEEDS_REVIEW', note };
     };
     if (!paidExactly) {
       return unapplied(`Paid ${paid} for checkout ${session.id} of ${price}`);
+    }
+    // The provider bills the plan by invoice: without the first invoice's id, its invoice.paid
+    // could not be told apart from a renewal and would add a second period for one payment.
+    if (!dto.invoiceId) {
+      return unapplied(`Paid ${paid} for checkout ${session.id} without the provider invoice of the first charge`);
     }
     if (await this.hasPaidLiveSubscription(tx, session.userId)) {
       return unapplied(`Paid ${paid} for checkout ${session.id}, but the buyer already pays for a plan (double payment)`);
@@ -155,18 +166,28 @@ export class CheckoutService {
         currentPeriodEnd: end,
       },
     });
-    if (dto.invoiceId) {
-      await tx.subscriptionInvoice.create({
-        data: {
-          subscriptionId: subscription.id,
-          providerInvoiceId: dto.invoiceId,
-          amount: session.amount,
-          currency: session.currency,
-          periodStart: now,
-          periodEnd: end,
-        },
-      });
-    }
+    await tx.subscriptionInvoice.create({
+      data: {
+        subscriptionId: subscription.id,
+        providerInvoiceId: dto.invoiceId,
+        amount: session.amount,
+        currency: session.currency,
+        periodStart: now,
+        periodEnd: end,
+      },
+    });
+    // That invoice's own payment notice may have come first, when no subscription existed yet:
+    // it is settled now, not left for someone to refund.
+    await tx.paymentEvent.updateMany({
+      where: {
+        type: 'invoice.paid',
+        outcome: 'NEEDS_REVIEW',
+        invoiceId: dto.invoiceId,
+        amount: session.amount,
+        currency: session.currency,
+      },
+      data: { outcome: 'IGNORED', note: `Settled by checkout ${session.id} (its first invoice)` },
+    });
     await this.subscriptions.allocateLeads(tx, subscription, session.plan, now, end);
     await tx.checkoutSession.update({
       where: { id: session.id },

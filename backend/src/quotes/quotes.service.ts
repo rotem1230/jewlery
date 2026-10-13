@@ -294,19 +294,29 @@ export class QuotesService {
       include: {
         disclaimerPage: true,
         author: { select: { id: true, firstName: true, lastName: true } },
-        design: { select: { id: true, title: true, thumbnailUploadId: true, status: true } },
+        design: { select: { id: true, title: true, thumbnailUploadId: true, status: true, ownerUserId: true } },
         conversation: { include: { participants: true } },
       },
     });
     if (!quote) {
       throw new NotFoundException({ success: false, message: 'Quote not found' });
     }
-    const isParticipant = quote.conversation.participants.some((p) => p.userId === user.id);
-    if (!isParticipant && !user.roles.includes(UserRole.ADMIN)) {
+    // The design owner and the author always see the quote (it is their deal); anyone else only
+    // while they are still in the conversation.
+    const {
+      conversation,
+      design: { ownerUserId, ...design },
+      ...rest
+    } = quote;
+    const allowed =
+      user.roles.includes(UserRole.ADMIN) ||
+      quote.authorUserId === user.id ||
+      ownerUserId === user.id ||
+      conversation.participants.some((p) => p.userId === user.id && !p.leftAt);
+    if (!allowed) {
       throw new ForbiddenException({ success: false, message: 'Not authorized to view this quote' });
     }
-    const { conversation, ...rest } = quote;
-    return rest;
+    return { ...rest, design };
   }
 
   private async loadForDecision(id: string) {
@@ -443,6 +453,20 @@ export class QuotesService {
               note: 'Auto-declined: another quote was accepted for this design',
             })),
           });
+          // Queued with the decision: a crash right after the commit cannot lose these.
+          for (const other of declined) {
+            await this.outbox.enqueue(
+              'notification.push',
+              {
+                userId: other.authorUserId,
+                eventKey: 'quote.declined',
+                title: 'Quote declined',
+                body: 'Another quote was accepted for this design; your quote was automatically declined.',
+                quoteId: other.id,
+              },
+              tx,
+            );
+          }
         }
 
         const jeweler = await tx.user.findUnique({
@@ -534,15 +558,6 @@ export class QuotesService {
       'The quote was accepted. Check the conversation for handoff details.',
       { quoteId: id },
     );
-    for (const other of result.declined) {
-      await this.notifications.createInApp(
-        other.authorUserId,
-        'quote.declined',
-        'Quote declined',
-        'Another quote was accepted for this design; your quote was automatically declined.',
-        { quoteId: other.id },
-      );
-    }
 
     return this.findOne(id, user);
   }

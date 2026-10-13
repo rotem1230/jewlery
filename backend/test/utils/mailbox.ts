@@ -21,6 +21,11 @@ export class TestMailbox {
     }
   }
 
+  /** Mails being sent right now (inside the simulated SMTP latency). */
+  get sending(): number {
+    return this.inFlight;
+  }
+
   to(email: string): CapturedMail[] {
     const target = email.toLowerCase();
     return this.messages.filter((m) => m.to.toLowerCase() === target);

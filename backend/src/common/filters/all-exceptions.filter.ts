@@ -58,6 +58,26 @@ export class HttpExceptionFilter implements ExceptionFilter {
   }
 }
 
+/**
+ * Errors raised before routing (the body parsers: body too large, malformed, unsupported
+ * encoding) carry their own 4xx status. Only 4xx is taken from an arbitrary error: a 5xx stays
+ * an opaque 500.
+ */
+function requestErrorStatus(exception: unknown): number | null {
+  if (typeof exception !== 'object' || exception === null) {
+    return null;
+  }
+  const { status, statusCode } = exception as { status?: unknown; statusCode?: unknown };
+  const value = typeof status === 'number' ? status : statusCode;
+  return typeof value === 'number' && value >= 400 && value < 500 ? value : null;
+}
+
+const REQUEST_ERROR_MESSAGES: Record<number, string> = {
+  400: 'Malformed request',
+  413: 'Request body too large',
+  415: 'Unsupported request encoding',
+};
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
@@ -69,11 +89,27 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const mapped = exception instanceof Prisma.PrismaClientKnownRequestError ? mapPrismaError(exception) : null;
     if (mapped) {
       const prismaError = exception as Prisma.PrismaClientKnownRequestError;
-      this.logger.warn(`Prisma ${prismaError.code} answered as ${mapped.status}`);
+      if (prismaError.code === 'P2025') {
+        // The client gets a 404, but a record vanishing under an update is usually a bug: keep
+        // its stack where someone will look.
+        this.logger.error(`Prisma P2025 answered as ${mapped.status}: ${prismaError.message}`, prismaError.stack);
+      } else {
+        this.logger.warn(`Prisma ${prismaError.code} answered as ${mapped.status}`);
+      }
       response.status(mapped.status).json({
         success: false,
         message: mapped.message,
         ...(mapped.code ? { code: mapped.code } : {}),
+      });
+      return;
+    }
+
+    const requestStatus = requestErrorStatus(exception);
+    if (requestStatus) {
+      this.logger.warn(`Request refused before routing with ${requestStatus}`);
+      response.status(requestStatus).json({
+        success: false,
+        message: REQUEST_ERROR_MESSAGES[requestStatus] ?? 'Bad request',
       });
       return;
     }

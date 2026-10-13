@@ -21,6 +21,11 @@ export function listReviews(
   )
 }
 
+/** The signed-in jeweler's own reviews, listed whether or not the profile is published. */
+export function listMyReviews(signal?: AbortSignal): Promise<Paginated<JewelerReview>> {
+  return apiGet<Paginated<JewelerReview>>('/reviews/mine', { signal })
+}
+
 export function featureReview(id: string, isFeatured: boolean): Promise<JewelerReview> {
   return apiPatch<JewelerReview>(`/reviews/${id}/feature`, { isFeatured })
 }

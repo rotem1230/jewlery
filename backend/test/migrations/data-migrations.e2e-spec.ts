@@ -230,6 +230,26 @@ describe('data migrations on existing data', () => {
     await expect(insertSubscription(freeOnly, free, 'ACTIVE', '2026-05-01 10:00:00')).rejects.toThrow();
   });
 
+  it('among paid duplicates, the one still in good standing (ACTIVE) is kept over a newer past-due one', async () => {
+    db = await scratchDatabase('mig_live_standing');
+    db.migrateTo('20261012120000_cross_owner_media_cleanup');
+    const paid = await insertPlan('MIG_PAID', 10);
+    const user = await insertUser(null, '2026-01-01 10:00:00');
+    const active = await insertSubscription(user, paid, 'ACTIVE', '2026-02-01 10:00:00');
+    const pastDue = await insertSubscription(user, paid, 'PAST_DUE', '2026-03-01 10:00:00');
+
+    db.migrateTo('20261012130000_billing_correctness');
+
+    const status = await subscriptionStatuses(user);
+    expect(status.get(active)).toBe('ACTIVE');
+    expect(status.get(pastDue)).toBe('CANCELLED');
+    const [log] = await db.sql.$queryRawUnsafe<Array<{ payload: { keptSubscriptionId: string } }>>(
+      `SELECT "payload" FROM "event_logs" WHERE "eventKey" = 'subscription.superseded_by_migration' AND "entityId" = $1`,
+      pastDue,
+    );
+    expect(log.payload.keptSubscriptionId).toBe(active);
+  });
+
   it('payment events recorded before outcomes existed are marked LEGACY, not claimed as applied', async () => {
     db = await scratchDatabase('mig_payment_outcome');
     db.migrateTo('20261012120000_cross_owner_media_cleanup');

@@ -26,7 +26,7 @@ import {
   removePortfolioItem,
   upsertJewelerDraft,
 } from '@/src/api/jewelerProfiles'
-import { featureReview, listReviews } from '@/src/api/reviews'
+import { featureReview, listMyReviews } from '@/src/api/reviews'
 import { listRegions } from '@/src/api/masterData'
 import { uploadChatFile } from '@/src/api/uploads'
 import { pickChatPhoto } from '@/src/lib/chatAttachments'
@@ -64,8 +64,9 @@ export function BusinessProfileFormScreen() {
   const isEdit = isEditRoute && Boolean(raw?.id)
   const profileId = raw?.id
 
+  // The owner's own reviews (also while the profile is offline), not the public listing.
   const reviewsQuery = useAsyncData(
-    (signal) => (profileId ? listReviews(profileId, signal) : Promise.resolve({ items: [] as JewelerReview[], pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 } })),
+    (signal) => (profileId ? listMyReviews(signal) : Promise.resolve({ items: [] as JewelerReview[], pagination: { page: 1, pageSize: 20, total: 0, totalPages: 1 } })),
     { deps: [profileId], immediate: Boolean(profileId) },
   )
 

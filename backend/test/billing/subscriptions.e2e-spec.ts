@@ -1,3 +1,4 @@
+import { OutboxProcessor } from '../../src/common/outbox/outbox.processor';
 import { SubscriptionLifecycleService } from '../../src/subscriptions/subscription-lifecycle.service';
 import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
@@ -119,6 +120,21 @@ describe('subscriptions', () => {
     expect(await entitlementKeys(designer)).not.toContain('personal_visualization');
     await t.prisma.subscription.update({ where: { id: sub.id }, data: { status: 'PAST_DUE' } });
     expect(await entitlementKeys(designer)).not.toContain('personal_visualization');
+  });
+
+  it('a cancellation that the payment provider must also apply is recorded for an operator, not silently dropped', async () => {
+    const designer = await registerVerified(t);
+    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    await t.http.post(`${API}/subscriptions/cancel`).set(designer.auth).send({}).expect(201);
+    // Earlier tests leave events behind (jobs are off in tests): deliver everything that is due.
+    const outbox = t.app.get(OutboxProcessor);
+    while ((await outbox.processPending()) > 0) {
+      // keep draining
+    }
+    const recorded = await t.prisma.eventLog.findMany({
+      where: { eventKey: 'subscription.provider_cancellation_required', entityId: sub.id },
+    });
+    expect(recorded).toHaveLength(1);
   });
 
   it('a trial is granted once per role, but the other role still has its own', async () => {

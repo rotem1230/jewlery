@@ -221,3 +221,42 @@ describe('OAuth sign-in without configured client ids', () => {
     expect(res.body.code).toBe('OAUTH_NOT_CONFIGURED');
   });
 });
+
+/**
+ * Google Sign-In on Android/iOS issues ID tokens whose audience is the WEB client id and whose
+ * authorized party (azp) is the native app's own client id: GOOGLE_CLIENT_ID must list all of them.
+ */
+describe('OAuth sign-in from the native apps', () => {
+  const WEB = 'web-client.apps.googleusercontent.com';
+  const ANDROID = 'android-client.apps.googleusercontent.com';
+  const idp = new TestIdentityProvider();
+
+  async function appWith(clientIds: string) {
+    const app = await createTestApp({
+      env: { GOOGLE_CLIENT_ID: clientIds },
+      configure: (b) => b.overrideProvider(JWKS_PROVIDER).useValue({ getKeys: async () => [idp.jwk] }),
+    });
+    await enableOauth(app);
+    return app;
+  }
+
+  it('accepts a token for the web client id issued to our Android app when both ids are configured', async () => {
+    const t = await appWith(`${WEB},${ANDROID}`);
+    try {
+      const token = idp.sign(googleClaims({ aud: WEB, azp: ANDROID }));
+      await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(201);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('refuses it when only the web client id is configured (the app id must be listed too)', async () => {
+    const t = await appWith(WEB);
+    try {
+      const token = idp.sign(googleClaims({ aud: WEB, azp: ANDROID }));
+      await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(401);
+    } finally {
+      await t.close();
+    }
+  });
+});

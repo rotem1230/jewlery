@@ -7,6 +7,7 @@ import { JWT_AUDIENCE, JWT_ISSUER } from '../../config/configuration';
 import { AUTH_ERROR } from '../constants';
 import { AuthService } from '../auth.service';
 import { JwtPayload } from '../interfaces/auth-user.interface';
+import { isCurrentSession } from '../session-validity';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -38,6 +39,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         success: false,
         message: 'Account is not active',
         code: AUTH_ERROR.ACCOUNT_SUSPENDED,
+      });
+    }
+    // Issued before the account's sessions were ended (sign out everywhere, password change...).
+    if (!isCurrentSession(payload, user)) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Session ended',
+        code: AUTH_ERROR.TOKEN_INVALID,
       });
     }
     // PENDING_VERIFICATION is refused by JwtAuthGuard unless the route is @AllowUnverified().

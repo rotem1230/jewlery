@@ -149,6 +149,32 @@ describe('chat WebSocket gateway', () => {
     expect(await closed).toBe(true);
   });
 
+  it('an access token issued before signing out everywhere cannot open a socket again', async () => {
+    const user = await registerVerified(t);
+    await t.http.post(`${API}/auth/revoke-all`).set(user.auth).send({}).expect(200);
+    expect(await outcome(connect({ token: user.accessToken }))).toBe('rejected');
+  });
+
+  it('a socket whose sessions were ended on another server cannot join conversations', async () => {
+    const s = await marketplaceScenario(t);
+    const socket = connect({ token: s.designer.accessToken });
+    expect(await outcome(socket, 150)).toBe('connected');
+    // Ended through another API instance: this one got no in-process event, only the database knows.
+    await t.prisma.user.update({ where: { id: s.designer.id }, data: { sessionVersion: { increment: 1 } } });
+
+    socket.emit('conversation:join', { conversationId: s.conversation.id });
+    await new Promise((r) => setTimeout(r, 300));
+    const received: unknown[] = [];
+    socket.on('message:new', (m: unknown) => received.push(m));
+    await t.http
+      .post(`${API}/conversations/${s.conversation.id}/messages`)
+      .set(s.jeweler.auth)
+      .send({ type: 'TEXT', body: 'still there?' })
+      .expect(201);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(received).toEqual([]);
+  });
+
   it('a suspended account cannot join a conversation and receives nothing', async () => {
     const s = await marketplaceScenario(t);
     const socket = connect({ token: s.designer.accessToken });
@@ -186,6 +212,42 @@ describe('chat WebSocket gateway', () => {
       expect.objectContaining({ quoteId: quote.id, status: 'PENDING', totalPrice: '1000', currency: 'ILS' }),
       expect.objectContaining({ quoteId: quote.id, status: 'WITHDRAWN' }),
     ]);
+  });
+});
+
+describe('chat WebSocket gateway: account deletion', () => {
+  let t: TestApp;
+  let baseUrl: string;
+  const sockets: Socket[] = [];
+
+  beforeAll(async () => {
+    t = await createTestApp();
+    const { port } = t.app.getHttpServer().address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${port}/ws`;
+  });
+
+  afterEach(() => {
+    sockets.splice(0).forEach((s) => s.disconnect());
+  });
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  it("tells the conversation when a jeweler's account deletion withdraws their quote", async () => {
+    const s = await marketplaceScenario(t);
+    const quote = await createQuote(t, s.jeweler, s.conversation.id, s.design.id);
+    const owner = io(baseUrl, { transports: ['websocket'], reconnection: false, auth: { token: s.designer.accessToken } });
+    sockets.push(owner);
+    await new Promise<void>((resolve) => owner.on('connect', () => resolve()));
+    owner.emit('conversation:join', { conversationId: s.conversation.id });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const updates: Array<Record<string, unknown>> = [];
+    owner.on('quote:updated', (update: Record<string, unknown>) => updates.push(update));
+    await t.http.delete(`${API}/users/me`).set(s.jeweler.auth).expect(200);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(updates).toEqual([expect.objectContaining({ quoteId: quote.id, status: 'WITHDRAWN' })]);
   });
 });
 

@@ -153,6 +153,9 @@ export class OutboxProcessor {
       case 'design_request.delivered':
         await this.notifyRequestTargets(payload);
         return;
+      case 'subscription.cancelled':
+        await this.requireProviderCancellation(payload);
+        return;
       case 'notification.push':
         await this.notify(
           asString(payload.userId),
@@ -167,6 +170,28 @@ export class OutboxProcessor {
           await this.notifyCompleted(type, payload);
         }
     }
+  }
+
+  /**
+   * No payment provider is integrated yet, so nothing stops its billing automatically: each
+   * cancellation is recorded for an operator (event_logs subscription.provider_cancellation_required)
+   * and logged as an error. A provider integration replaces this with the provider's cancel call.
+   */
+  private async requireProviderCancellation(payload: Record<string, unknown>): Promise<void> {
+    const subscriptionId = asString(payload.subscriptionId);
+    if (!subscriptionId) {
+      return;
+    }
+    const eventKey = 'subscription.provider_cancellation_required';
+    const recorded = await this.prisma.eventLog.count({ where: { eventKey, entityId: subscriptionId } });
+    if (recorded === 0) {
+      await this.prisma.eventLog.create({
+        data: { eventKey, entityType: 'Subscription', entityId: subscriptionId, payload: payload as Prisma.InputJsonValue },
+      });
+    }
+    this.logger.error(
+      `Subscription ${subscriptionId} was cancelled: stop its billing at the payment provider (no provider integration yet)`,
+    );
   }
 
   private async notifyRequestTargets(payload: Record<string, unknown>): Promise<void> {

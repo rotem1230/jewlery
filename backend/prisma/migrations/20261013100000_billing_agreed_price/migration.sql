@@ -6,7 +6,7 @@
 -- Deploy note: the new NOT NULL columns are filled here from each subscription's plan; old
 -- application instances, which do not set them, must be stopped before this migration runs.
 
-SET lock_timeout = '10s';
+SET LOCAL lock_timeout = '10s';
 
 -- AlterEnum (PostgreSQL 12+: new values may be added inside the migration's transaction)
 ALTER TYPE "CheckoutStatus" ADD VALUE 'NEEDS_REVIEW';

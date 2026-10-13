@@ -2,7 +2,7 @@
 -- unique per provider, one renewal per paid invoice, server-side checkout sessions for paid plans,
 -- trial grants that survive account deletion, and the design request behind an overage charge.
 
-SET lock_timeout = '10s';
+SET LOCAL lock_timeout = '10s';
 
 -- CreateEnum
 CREATE TYPE "CheckoutStatus" AS ENUM ('OPEN', 'COMPLETED');
@@ -90,12 +90,11 @@ ALTER TABLE "subscription_invoices" ADD CONSTRAINT "subscription_invoices_subscr
 -- At most one live subscription per user, enforced by the database as well as by the user-row
 -- lock every writer takes (Prisma cannot express a partial index; it is maintained here).
 -- Users who ended up with several live subscriptions (concurrent subscribe calls before the lock
--- existed) keep one: a paid plan they pay for over a trial or a free plan, otherwise the newest.
--- The others are closed as superseded (logged in event_logs, so a double charge can be refunded).
+-- existed) keep one: a paid plan in good standing (ACTIVE), else a paid one past due, else the
+-- newest (a trial or a free plan). The others are closed as superseded and logged in event_logs,
+-- so a double charge can be refunded.
 LOCK TABLE "subscriptions" IN SHARE ROW EXCLUSIVE MODE;
-CREATE TEMPORARY TABLE "superseded_subscriptions" ON COMMIT DROP AS
-SELECT ranked."id", ranked."userId", ranked."keptId"
-FROM (
+WITH ranked AS (
   SELECT s."id", s."userId",
          first_value(s."id") OVER live_first AS "keptId",
          row_number() OVER live_first AS "rank"
@@ -104,18 +103,21 @@ FROM (
   WHERE s."status" IN ('TRIALING', 'ACTIVE', 'PAST_DUE')
   WINDOW live_first AS (
     PARTITION BY s."userId"
-    ORDER BY (s."status" IN ('ACTIVE', 'PAST_DUE') AND p."price" > 0) DESC, s."createdAt" DESC, s."id" DESC
+    ORDER BY (s."status" = 'ACTIVE' AND p."price" > 0) DESC,
+             (s."status" = 'PAST_DUE' AND p."price" > 0) DESC,
+             s."createdAt" DESC, s."id" DESC
   )
-) AS ranked
-WHERE ranked."rank" > 1;
-UPDATE "subscriptions" AS s
-SET "status" = 'CANCELLED', "updatedAt" = timezone('UTC', now())
-FROM "superseded_subscriptions" AS superseded
-WHERE superseded."id" = s."id";
+), superseded AS (
+  UPDATE "subscriptions" AS s
+  SET "status" = 'CANCELLED', "updatedAt" = timezone('UTC', now())
+  FROM ranked
+  WHERE ranked."id" = s."id" AND ranked."rank" > 1
+  RETURNING s."id", s."userId", ranked."keptId"
+)
 INSERT INTO "event_logs" ("id", "eventKey", "entityType", "entityId", "payload", "createdAt")
 SELECT gen_random_uuid(), 'subscription.superseded_by_migration', 'Subscription', superseded."id"::text,
        jsonb_build_object('userId', superseded."userId", 'keptSubscriptionId', superseded."keptId"),
        timezone('UTC', now())
-FROM "superseded_subscriptions" AS superseded;
+FROM superseded;
 CREATE UNIQUE INDEX "subscriptions_one_live_per_user" ON "subscriptions"("userId")
   WHERE "status" IN ('TRIALING', 'ACTIVE', 'PAST_DUE');

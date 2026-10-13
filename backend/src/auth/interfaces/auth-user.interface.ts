@@ -24,4 +24,6 @@ export type JwtPayload = {
   email: string;
   roles: UserRole[];
   activeRole: UserRole;
+  /** The account's session version when the token was issued (absent in older tokens = 0). */
+  sv?: number;
 };

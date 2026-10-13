@@ -15,6 +15,7 @@ function signature(rawBody: string, secret = SECRET, timestamp = Math.floor(Date
 }
 
 type EventFields = {
+  payload?: Record<string, unknown>;
   type?: string;
   provider?: string;
   providerEventId?: string;
@@ -35,7 +36,7 @@ function event(fields: EventFields): string {
     checkoutId: fields.checkoutId,
     amount: fields.amount,
     currency: fields.currency,
-    payload: { ok: true },
+    payload: fields.payload ?? { ok: true },
   });
 }
 
@@ -141,6 +142,11 @@ describe('payment webhooks', () => {
     const odd = `{\n${fields.join(' ,\n')}\n}\n`;
     await deliver(odd).expect(201);
     expect((await stored(sub.id)).status).toBe('ACTIVE');
+  });
+
+  it('an oversized body is refused as too large (413), not as a server error', async () => {
+    const huge = JSON.stringify({ provider: 'test', providerEventId: `evt_${randomUUID()}`, type: 'invoice.paid', payload: { pad: 'x'.repeat(1_100_000) } });
+    await deliver(huge).expect(413);
   });
 
   it('an unsigned body is refused and nothing is recorded', async () => {
@@ -306,6 +312,40 @@ describe('payment webhooks', () => {
     const row = await stored(sub.id);
     expect(row.status).toBe('ACTIVE');
     expect(row.cancelAtPeriodEnd).toBe(true);
+  });
+
+  it('a late payment for a lapsed subscription of a deleted account is held for review, not applied', async () => {
+    const { designer, sub } = await trialingSubscription();
+    await t.prisma.subscription.update({
+      where: { id: sub.id },
+      data: { status: 'EXPIRED', currentPeriodEnd: new Date(Date.now() - 60_000), trialEndsAt: new Date(Date.now() - 60_000) },
+    });
+    await t.http.delete(`${API}/users/me`).set(designer.auth).expect(200);
+    const body = await invoiceFor(sub.id);
+    await deliver(body).expect(201);
+    expect(await outcomeOf(body)).toBe('NEEDS_REVIEW');
+    expect((await stored(sub.id)).status).not.toBe('ACTIVE');
+  });
+
+  it('a signed event whose payload holds characters the database cannot store is still recorded', async () => {
+    const { sub } = await trialingSubscription();
+    const withNul = event({ subscriptionId: sub.id, type: 'subscription.note', payload: { note: 'a\u0000b' } });
+    await deliver(withNul).expect(201);
+    expect(await outcomeOf(withNul)).toBe('IGNORED');
+    const loneSurrogate = event({ subscriptionId: sub.id, type: 'subscription.note', payload: { note: '\ud800' } });
+    await deliver(loneSurrogate).expect(201);
+    expect(await outcomeOf(loneSurrogate)).toBe('IGNORED');
+  });
+
+  it('a different kind of event for the same invoice and amount is its own review item (a refund is not a repeat)', async () => {
+    const { sub } = await trialingSubscription();
+    const invoiceId = `in_${randomUUID()}`;
+    const paid = await invoiceFor(sub.id, { invoiceId, amount: 1 });
+    await deliver(paid).expect(201);
+    const refunded = event({ subscriptionId: sub.id, type: 'charge.refunded', invoiceId, amount: 1, currency: 'ILS' });
+    await deliver(refunded).expect(201);
+    expect(await outcomeOf(paid)).toBe('NEEDS_REVIEW');
+    expect(await outcomeOf(refunded)).toBe('NEEDS_REVIEW');
   });
 
   it('a paid invoice for a cancelled subscription is held for review and changes nothing', async () => {

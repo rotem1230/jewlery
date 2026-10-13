@@ -3,7 +3,7 @@
 -- the identity, later duplicates keep all their data but are unlinked (their subject is renamed),
 -- so they can still sign in with a password or a reset link. The lock keeps instances that still
 -- run the old code from adding a duplicate before the index exists.
-SET lock_timeout = '10s';
+SET LOCAL lock_timeout = '10s';
 
 LOCK TABLE "users" IN SHARE ROW EXCLUSIVE MODE;
 

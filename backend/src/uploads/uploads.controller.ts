@@ -25,6 +25,7 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagg
 import { User, UserStatus } from '@prisma/client';
 import { Request, Response } from 'express';
 import { JwtPayload } from '../auth/interfaces/auth-user.interface';
+import { isCurrentSession } from '../auth/session-validity';
 import { Public } from '../authorization/decorators/public.decorator';
 import { RateLimiterService } from '../common/rate-limit/rate-limiter.service';
 import { PrismaService } from '../database/prisma.service';
@@ -143,9 +144,11 @@ export class UploadsController {
     const token = authorization.replace(/^Bearer\s+/i, '');
     try {
       const payload = await this.jwt.verifyAsync<JwtPayload>(token);
-      return await this.prisma.user.findFirst({
+      const user = await this.prisma.user.findFirst({
         where: { id: payload.sub, deletedAt: null, status: UserStatus.ACTIVE },
       });
+      // A token from sessions that were ended (sign out everywhere, password change...) opens nothing.
+      return user && isCurrentSession(payload, user) ? user : null;
     } catch {
       return null;
     }

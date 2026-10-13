@@ -21,7 +21,7 @@ type Tx = Prisma.TransactionClient;
 export type PaymentOutcome = 'APPLIED' | 'IGNORED' | 'NEEDS_REVIEW';
 export type AppliedEvent = { outcome: PaymentOutcome; note?: string; subscriptionId?: string | null };
 
-type LockedSubscription = Subscription & { plan: PlanCatalog };
+type LockedSubscription = Subscription & { plan: PlanCatalog; user: { deletedAt: Date | null } };
 type ParsedBody = { ok: true; dto: PaymentWebhookDto } | { ok: false; reason: string; body?: Record<string, unknown> };
 
 const LIVE_STATUSES: SubscriptionStatus[] = [
@@ -39,6 +39,30 @@ function isDuplicateEvent(err: unknown): boolean {
     err.code === 'P2002' &&
     JSON.stringify(target ?? '').includes('providerEventId')
   );
+}
+
+/** Lone UTF-16 surrogates (JSON allows them as escapes; PostgreSQL rejects them). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+function storableText(text: string): string {
+  return text.replace(/\u0000/g, '\uFFFD').replace(LONE_SURROGATE, '\uFFFD');
+}
+
+/**
+ * A copy of a provider payload that PostgreSQL can store: JSON may carry NUL characters and lone
+ * surrogates, which jsonb refuses — the event would then never be recorded, however often sent.
+ */
+function storableJson(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return storableText(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(storableJson);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [storableText(key), storableJson(item)]));
+  }
+  return value;
 }
 
 /** A string field of an unvalidated body, when it is usable as is. */
@@ -171,6 +195,13 @@ export class PaymentWebhookService {
       const fields = errors.map((error) => error.property).join(', ');
       return { ok: false, reason: `The body failed validation (${fields})`, body: body as Record<string, unknown> };
     }
+    // Stored and looked up exactly as PostgreSQL can hold them.
+    dto.provider = storableText(dto.provider);
+    dto.providerEventId = storableText(dto.providerEventId);
+    dto.type = storableText(dto.type);
+    if (dto.invoiceId !== undefined) {
+      dto.invoiceId = storableText(dto.invoiceId);
+    }
     return { ok: true, dto };
   }
 
@@ -179,19 +210,17 @@ export class PaymentWebhookService {
    * that, a hash of the body) makes the provider's retries of it a single item.
    */
   private async recordUnreadable(rawBody: Buffer, parsed: { reason: string; body?: Record<string, unknown> }) {
-    const provider = textField(parsed.body, 'provider', 50) ?? 'unreadable';
-    const providerEventId =
-      textField(parsed.body, 'providerEventId', 200) ?? `sha256:${createHash('sha256').update(rawBody).digest('hex')}`;
-    // PostgreSQL cannot store NUL characters in JSON.
-    const payload = parsed.body ?? {
-      raw: rawBody.toString('utf8').slice(0, MAX_STORED_RAW_BODY).replace(/\u0000/g, '�'),
-    };
+    const provider = storableText(textField(parsed.body, 'provider', 50) ?? 'unreadable');
+    const providerEventId = storableText(
+      textField(parsed.body, 'providerEventId', 200) ?? `sha256:${createHash('sha256').update(rawBody).digest('hex')}`,
+    );
+    const payload = storableJson(parsed.body ?? { raw: rawBody.toString('utf8').slice(0, MAX_STORED_RAW_BODY) });
     try {
       const event = await this.prisma.paymentEvent.create({
         data: {
           provider,
           providerEventId,
-          type: textField(parsed.body, 'type', 100) ?? 'unreadable',
+          type: storableText(textField(parsed.body, 'type', 100) ?? 'unreadable'),
           payload: payload as Prisma.InputJsonValue,
           outcome: 'NEEDS_REVIEW',
           note: parsed.reason,
@@ -241,7 +270,7 @@ export class PaymentWebhookService {
       provider: dto.provider,
       providerEventId: dto.providerEventId,
       type: dto.type,
-      payload: dto.payload as Prisma.InputJsonValue,
+      payload: storableJson(dto.payload) as Prisma.InputJsonValue,
       checkoutId: dto.checkoutId ?? null,
       invoiceId: dto.invoiceId ?? null,
       amount: dto.amount === undefined ? null : new Prisma.Decimal(dto.amount),
@@ -250,9 +279,10 @@ export class PaymentWebhookService {
   }
 
   /**
-   * One review item per unapplied payment: the same payment announced again (another event for
-   * the same invoice or checkout, for the same amount) is recorded as IGNORED, pointing at the
-   * first. Events for one invoice or checkout are serialized by the locks apply() takes.
+   * One review item per unapplied payment: the same payment announced again (another event of the
+   * same type, for the same invoice or checkout and amount) is recorded as IGNORED, pointing at the
+   * first. Repeats for a known subscription or checkout are serialized by the locks apply() takes;
+   * simultaneous repeats about an unknown one may still each become an item.
    */
   private async collapseRepeatedReview(
     tx: Tx,
@@ -275,6 +305,7 @@ export class PaymentWebhookService {
       where: {
         ...samePayment,
         id: { not: eventId },
+        type: dto.type,
         outcome: 'NEEDS_REVIEW',
         amount: new Prisma.Decimal(dto.amount),
         currency: dto.currency.toUpperCase(),
@@ -327,7 +358,10 @@ export class PaymentWebhookService {
     }
     await lockUser(tx, owner.userId);
     await lockSubscription(tx, subscriptionId);
-    return tx.subscription.findUnique({ where: { id: subscriptionId }, include: { plan: true } });
+    return tx.subscription.findUnique({
+      where: { id: subscriptionId },
+      include: { plan: true, user: { select: { deletedAt: true } } },
+    });
   }
 
   /**
@@ -343,6 +377,9 @@ export class PaymentWebhookService {
       return { outcome: 'NEEDS_REVIEW', note: 'Paid invoice for an unknown subscription' };
     }
     const subscriptionId = sub.id;
+    if (sub.user.deletedAt) {
+      return { outcome: 'NEEDS_REVIEW', note: 'Payment for a subscription of a deleted account', subscriptionId };
+    }
     if (!dto.invoiceId) {
       return { outcome: 'NEEDS_REVIEW', note: 'Paid invoice without an invoice id', subscriptionId };
     }

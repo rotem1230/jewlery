@@ -189,6 +189,9 @@ model User {
   emailVerifiedAt DateTime?
   loginAttempts   Int          @default(0)
   lockedUntil     DateTime?
+  /// Bumped whenever all sessions end (sign out everywhere, password change or reset, deletion):
+  /// access tokens carry the version they were issued under and stop working when it moves on.
+  sessionVersion  Int          @default(0)
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
   deletedAt       DateTime?

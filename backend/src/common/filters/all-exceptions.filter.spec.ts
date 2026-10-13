@@ -50,6 +50,29 @@ describe('AllExceptionsFilter', () => {
     expect(run(prismaError('P2010', { code: '22P02' })).status).toBe(404);
   });
 
+  it('logs a record that vanished under an update as an error with its stack (often a bug), while answering 404', () => {
+    const error = jest.spyOn(Logger.prototype, 'error');
+    error.mockClear();
+    const vanished = prismaError('P2025');
+    const sent = run(vanished);
+    expect(sent.status).toBe(404);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('P2025'), vanished.stack);
+  });
+
+  it('answers request errors raised before routing (body too large, malformed) with their own 4xx status', () => {
+    const tooLarge = Object.assign(new Error('request entity too large'), { status: 413, statusCode: 413, expose: true, type: 'entity.too.large' });
+    const sent = run(tooLarge);
+    expect(sent.status).toBe(413);
+    expect(sent.body?.success).toBe(false);
+    expect(JSON.stringify(sent.body)).not.toContain('entity');
+  });
+
+  it('never trusts a 5xx status carried by an arbitrary error', () => {
+    const sent = run(Object.assign(new Error('upstream exploded'), { status: 502 }));
+    expect(sent.status).toBe(500);
+    expect(sent.body).toEqual({ success: false, message: 'Internal server error' });
+  });
+
   it('keeps unknown failures as an opaque 500', () => {
     const sent = run(new Error('database password is hunter2'));
     expect(sent.status).toBe(500);

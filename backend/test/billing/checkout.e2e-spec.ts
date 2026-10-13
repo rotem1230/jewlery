@@ -34,7 +34,8 @@ describe('buying a paid plan', () => {
     return t.http.post(`${API}/subscriptions/checkout`).set(user.auth).send({ planCode });
   }
 
-  type Completion = { currency?: string; invoiceId?: string; providerEventId?: string };
+  /** invoiceId: the provider invoice of the first charge (a fresh one unless given; null = none). */
+  type Completion = { currency?: string; invoiceId?: string | null; providerEventId?: string };
 
   async function completeEvent(checkoutId: string, amount: number, opts: Completion = {}) {
     const providerEventId = opts.providerEventId ?? `evt_${randomUUID()}`;
@@ -43,7 +44,7 @@ describe('buying a paid plan', () => {
       providerEventId,
       type: 'checkout.completed',
       checkoutId,
-      invoiceId: opts.invoiceId,
+      invoiceId: opts.invoiceId === undefined ? `in_${randomUUID()}` : (opts.invoiceId ?? undefined),
       amount,
       currency: opts.currency ?? 'ILS',
       payload: {},
@@ -178,6 +179,41 @@ describe('buying a paid plan', () => {
     const after = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
     expect(after.currentPeriodEnd.getTime()).toBe(sub.currentPeriodEnd.getTime());
     expect(after.currentPeriodEnd.getTime()).toBeLessThan(Date.now() + 32 * DAY_MS);
+  });
+
+  it('a confirmation without the first invoice id is held for review (that invoice could renew it a second time)', async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    const row = await completeEvent(checkout.body.data.id, 49.9, { invoiceId: null });
+    expect(row.outcome).toBe('NEEDS_REVIEW');
+    // Refused for the missing invoice (not merely caught by the failure safety net) and marked so.
+    expect(row.note).toContain('first charge');
+    expect(await sessionStatus(checkout.body.data.id)).toBe('NEEDS_REVIEW');
+    expect(await live(user.id)).toHaveLength(0);
+  });
+
+  it("the first invoice's payment arriving before the checkout confirmation is settled by it", async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    const invoiceId = `in_${randomUUID()}`;
+    const earlyEventId = `evt_${randomUUID()}`;
+    const early = JSON.stringify({ provider: 'test', providerEventId: earlyEventId, type: 'invoice.paid', invoiceId, amount: 49.9, currency: 'ILS', payload: {} });
+    await t.http.post(`${API}/webhooks/payments`).set('Content-Type', 'application/json').set('x-webhook-signature', signed(early)).send(early).expect(201);
+    const before = await t.prisma.paymentEvent.findUniqueOrThrow({ where: { provider_providerEventId: { provider: 'test', providerEventId: earlyEventId } } });
+    expect(before.outcome).toBe('NEEDS_REVIEW');
+
+    expect(await complete(checkout.body.data.id, 49.9, { invoiceId })).toBe('APPLIED');
+    const settled = await t.prisma.paymentEvent.findUniqueOrThrow({ where: { id: before.id } });
+    expect(settled.outcome).toBe('IGNORED');
+    expect(settled.note).toContain(checkout.body.data.id);
+  });
+
+  it('once a checkout is held for review, a later payment on it is held too (never applied behind the review)', async () => {
+    const user = await registerVerified(t);
+    const checkout = await startCheckout(user).expect(201);
+    expect(await complete(checkout.body.data.id, 1)).toBe('NEEDS_REVIEW');
+    expect(await complete(checkout.body.data.id, 49.9)).toBe('NEEDS_REVIEW');
+    expect(await live(user.id)).toHaveLength(0);
   });
 
   it('a past-due paid plan blocks another purchase until it is cancelled', async () => {

@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
 import { Public } from '../authorization/decorators/public.decorator';
-import { CreateReviewDto, FeatureReviewDto, QueryReviewsDto } from './dto/review.dto';
+import { CreateReviewDto, FeatureReviewDto, QueryMyReviewsDto, QueryReviewsDto } from './dto/review.dto';
 import { ReviewsService } from './reviews.service';
 
 type AuthedRequest = Request & { user: User };
@@ -23,6 +23,13 @@ export class ReviewsController {
   @Get()
   findMany(@Query() query: QueryReviewsDto) {
     return this.reviews.findMany(query);
+  }
+
+  /** The signed-in jeweler's own reviews, whether or not the profile is published (to manage them). */
+  @ApiBearerAuth()
+  @Get('mine')
+  findMine(@Query() query: QueryMyReviewsDto, @Req() req: AuthedRequest) {
+    return this.reviews.findMine(req.user, query.page);
   }
 
   @ApiBearerAuth()

@@ -117,6 +117,8 @@ export class AuthService implements OnModuleDestroy {
    */
   private async issueMailToken(kind: 'verify' | 'reset', userId: string): Promise<string | null> {
     const cap = this.config.get<number>('auth.mailsPerAccountPerHour', 3);
+    // Before the transaction: nothing inside it may wait for a second database connection.
+    const ttls = await this.tokens.getTokenTtls();
     return this.prisma.$transaction(async (tx) => {
       await lockUser(tx, userId);
       const recent = await this.tokens.countRecentMailTokens(kind, userId, new Date(Date.now() - HOUR_MS), tx);
@@ -124,8 +126,8 @@ export class AuthService implements OnModuleDestroy {
         return null;
       }
       return kind === 'verify'
-        ? this.tokens.createEmailVerificationToken(userId, tx)
-        : this.tokens.createPasswordResetToken(userId, tx);
+        ? this.tokens.createEmailVerificationToken(userId, tx, ttls)
+        : this.tokens.createPasswordResetToken(userId, tx, ttls);
     });
   }
 
@@ -140,8 +142,18 @@ export class AuthService implements OnModuleDestroy {
     this.pendingMail.add(job);
   }
 
+  /**
+   * Waits until no mail is pending, including mail queued while waiting (a request that was
+   * still being handled when shutdown began).
+   */
+  async drainPendingMail(): Promise<void> {
+    while (this.pendingMail.size > 0) {
+      await Promise.allSettled([...this.pendingMail]);
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
-    await Promise.allSettled([...this.pendingMail]);
+    await this.drainPendingMail();
   }
 
   /** Sends a verification link unless the account reached its mail cap; true when mailed. */
@@ -319,15 +331,22 @@ export class AuthService implements OnModuleDestroy {
       throw invalidCredentials();
     }
 
+    // The password is proven: earlier failures no longer count, whatever the account's status
+    // (an unverified owner signing in correctly must not lock themselves out).
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { loginAttempts: 0, lockedUntil: null },
+    });
+
     // Status is only revealed to someone who proved knowledge of the password.
-    if (user.status === UserStatus.SUSPENDED || user.status === UserStatus.DEACTIVATED) {
+    if (updated.status === UserStatus.SUSPENDED || updated.status === UserStatus.DEACTIVATED) {
       throw new ForbiddenException({
         success: false,
         message: 'Account is not active',
         code: AUTH_ERROR.ACCOUNT_SUSPENDED,
       });
     }
-    if (user.status === UserStatus.PENDING_VERIFICATION) {
+    if (updated.status === UserStatus.PENDING_VERIFICATION) {
       throw new ForbiddenException({
         success: false,
         message: 'Please verify your email before logging in',
@@ -335,12 +354,30 @@ export class AuthService implements OnModuleDestroy {
       });
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id: user.id },
-      data: { loginAttempts: 0, lockedUntil: null },
-    });
     const safe = this.sanitize(updated);
     return { user: safe, tokens: await this.tokens.issueTokens(safe) };
+  }
+
+  /**
+   * Checks the account password for an action taken from a signed-in session (password change).
+   * A wrong guess counts toward the same lockout as a sign-in, so a stolen session cannot be used
+   * to guess the password; a right one clears the count. Throws ACCOUNT_LOCKED while locked.
+   */
+  async verifyCurrentPassword(userId: string, passwordHash: string, password: string): Promise<boolean> {
+    const maxAttempts = this.config.get<number>('auth.loginMaxAttempts', 10);
+    const lockMinutes = this.config.get<number>('auth.loginLockMinutes', 15);
+    const attempt = await this.reserveLoginAttempt(userId, maxAttempts, lockMinutes);
+    if (attempt === 'locked') {
+      throw accountLocked();
+    }
+    if (!(await this.password.compare(password, passwordHash))) {
+      if (attempt >= maxAttempts) {
+        await this.lockAccount(userId, lockMinutes);
+      }
+      return false;
+    }
+    await this.prisma.user.update({ where: { id: userId }, data: { loginAttempts: 0, lockedUntil: null } });
+    return true;
   }
 
   /**
@@ -426,12 +463,18 @@ export class AuthService implements OnModuleDestroy {
     return { ok: true };
   }
 
+  /**
+   * Following the mailed link proves control of the mailbox; a lockout from sign-in attempts made
+   * before it (typically the owner mistyping while unverified) is lifted with it.
+   */
   private async markEmailVerified(user: User): Promise<void> {
     await this.prisma.user.update({
       where: { id: user.id },
       data: {
         emailVerifiedAt: user.emailVerifiedAt ?? new Date(),
         status: user.status === UserStatus.PENDING_VERIFICATION ? UserStatus.ACTIVE : user.status,
+        loginAttempts: 0,
+        lockedUntil: null,
       },
     });
   }
@@ -476,8 +519,9 @@ export class AuthService implements OnModuleDestroy {
     }
     const passwordHash = await this.password.hash(dto.newPassword);
 
-    // Under the user's row lock: the token is redeemed (with every other reset link of the
-    // account) and the password replaced in one step, so two links cannot both succeed.
+    // Under the account lock: the token is redeemed (with every other reset link of the account),
+    // the password replaced and every session ended in one step, so two links cannot both succeed
+    // and no session from before the reset survives it.
     const user = await this.prisma.$transaction(async (tx) => {
       await lockUser(tx, token.userId);
       if (!(await this.tokens.redeemPasswordResetToken(tx, token.id, token.userId))) {
@@ -487,7 +531,7 @@ export class AuthService implements OnModuleDestroy {
       if (!current || current.deletedAt || current.status === UserStatus.DEACTIVATED) {
         return null;
       }
-      return tx.user.update({
+      const updated = await tx.user.update({
         where: { id: current.id },
         data: {
           passwordHash,
@@ -498,13 +542,13 @@ export class AuthService implements OnModuleDestroy {
           status: current.status === UserStatus.PENDING_VERIFICATION ? UserStatus.ACTIVE : current.status,
         },
       });
+      await this.tokens.endAllSessions(tx, current.id);
+      return updated;
     });
     if (!user) {
       throw invalidResetToken();
     }
-
-    // Reset invalidates every existing session as a security precaution.
-    await this.tokens.revokeAllForUser(user.id);
+    this.tokens.announceSessionsEnded(user.id);
 
     return { ok: true };
   }

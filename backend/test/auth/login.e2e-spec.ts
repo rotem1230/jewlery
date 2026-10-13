@@ -154,6 +154,45 @@ describe('login hardening', () => {
       expect(await sequence(uniqueEmail('ghost'))).toEqual(real);
     });
 
+    it('proving the password clears earlier failures, even before the e-mail is verified', async () => {
+      const email = uniqueEmail('pending');
+      await t.http.post(`${API}/auth/register`).send({ email, password: DEFAULT_PASSWORD, roles: ['DESIGNER'] }).expect(201);
+      for (let i = 0; i < 2; i += 1) {
+        await t.http.post(`${API}/auth/login`).send({ email, password: 'Wrong-pass1' }).expect(401);
+      }
+      const proven = await t.http.post(`${API}/auth/login`).send({ email, password: DEFAULT_PASSWORD }).expect(403);
+      expect(proven.body.code).toBe('EMAIL_NOT_VERIFIED');
+      expect((await t.prisma.user.findUniqueOrThrow({ where: { email } })).loginAttempts).toBe(0);
+    });
+
+    it('verifying the e-mail lifts a lockout caused by sign-in attempts before it', async () => {
+      const email = uniqueEmail('pending');
+      await t.http.post(`${API}/auth/register`).send({ email, password: DEFAULT_PASSWORD, roles: ['DESIGNER'] }).expect(201);
+      for (let i = 0; i < 3; i += 1) {
+        await t.http.post(`${API}/auth/login`).send({ email, password: 'Wrong-pass1' }).expect(401);
+      }
+      expect((await t.http.post(`${API}/auth/login`).send({ email, password: DEFAULT_PASSWORD }).expect(403)).body.code).toBe(
+        'ACCOUNT_LOCKED',
+      );
+      await t.mailbox.waitForMoreThan(email, 0);
+      const token = await t.mailbox.tokenFor(email, 'verify');
+      await t.http.post(`${API}/auth/verify-email`).send({ token }).expect(200);
+      await t.http.post(`${API}/auth/login`).send({ email, password: DEFAULT_PASSWORD }).expect(201);
+    });
+
+    it('guessing the current password on the change-password form counts toward the lockout', async () => {
+      const user = await registerVerified(t);
+      for (let i = 0; i < 3; i += 1) {
+        await t.http
+          .patch(`${API}/users/me/password`)
+          .set(user.auth)
+          .send({ currentPassword: 'Wrong-pass1', newPassword: 'N3w-Strong-Pass' })
+          .expect(401);
+      }
+      const res = await t.http.post(`${API}/auth/login`).send({ email: user.email, password: user.password }).expect(403);
+      expect(res.body.code).toBe('ACCOUNT_LOCKED');
+    });
+
     it('a successful login clears earlier failures', async () => {
       const user = await registerVerified(t);
       await t.http.post(`${API}/auth/login`).send({ email: user.email, password: 'Wrong-pass1' }).expect(401);

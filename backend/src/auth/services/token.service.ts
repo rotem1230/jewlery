@@ -6,11 +6,12 @@ import { randomUUID } from 'crypto';
 import { AppConfigService } from '../../cms/app-config.service';
 import { SessionEvents } from '../../common/session-events/session-events.service';
 import { PrismaService } from '../../database/prisma.service';
+import { lockUser, shareLockUser } from '../../database/row-locks';
 import { AuthTokens, JwtPayload, SafeUser } from '../interfaces/auth-user.interface';
 import { generateSecureToken, hashToken } from '../utils/crypto.util';
 import { parseDurationToMs } from '../utils/duration.util';
 
-type TokenTtls = {
+export type TokenTtls = {
   emailVerifyMinutes: number;
   passwordResetMinutes: number;
 };
@@ -18,6 +19,8 @@ type TokenTtls = {
 const REFRESHABLE_STATUSES: UserStatus[] = [UserStatus.ACTIVE];
 
 type Db = Prisma.TransactionClient;
+
+type RotationOutcome = { tokens: AuthTokens } | { error: string; revokeFamily: boolean };
 
 export class InvalidTokenError extends Error {
   constructor(reason: string) {
@@ -35,7 +38,10 @@ export class TokenService {
     private readonly sessionEvents: SessionEvents,
   ) {}
 
-  /** Issues an access token and a refresh token; `familyId` keeps a rotation chain together. */
+  /**
+   * Issues an access token and a refresh token; `familyId` keeps a rotation chain together. The
+   * access token carries the account's current session version, so ending all sessions ends it too.
+   */
   async issueTokens(user: SafeUser, familyId: string = randomUUID(), db: Db = this.prisma): Promise<AuthTokens> {
     const expiresIn = this.config.get<string>('jwt.expiresIn', '15m');
     const refreshExpiresIn = this.config.get<string>('jwt.refreshExpiresIn', '7d');
@@ -45,6 +51,7 @@ export class TokenService {
       email: user.email,
       roles: user.roles,
       activeRole: user.activeRole,
+      sv: user.sessionVersion,
     };
 
     const accessToken = await this.jwt.signAsync(payload, {
@@ -67,43 +74,51 @@ export class TokenService {
   /**
    * Rotates a refresh token. A token is redeemable once: presenting an already-rotated token
    * (replay, or losing a concurrent race) is treated as theft and revokes the whole family.
+   *
+   * Claim and successor are one transaction (a failure in between must not leave the user with a
+   * revoked token, whose next use would look like theft, and no replacement), holding the account
+   * in share mode: ending all sessions (which takes the account lock) either happens first, and
+   * this token is found revoked, or waits, and then also revokes the successor issued here.
    */
   async rotateRefreshToken(rawRefreshToken: string): Promise<{ userId: string; tokens: AuthTokens }> {
-    const existing = await this.prisma.refreshToken.findFirst({
+    const found = await this.prisma.refreshToken.findFirst({
       where: { tokenHash: hashToken(rawRefreshToken) },
-      include: { user: true },
+      select: { id: true, userId: true, familyId: true },
     });
-    if (!existing) {
+    if (!found) {
       throw new InvalidTokenError('unknown refresh token');
     }
-    if (existing.revokedAt) {
-      await this.revokeFamily(existing.familyId);
-      throw new InvalidTokenError('refresh token reuse');
-    }
-    if (existing.expiresAt <= new Date()) {
-      throw new InvalidTokenError('refresh token expired');
-    }
-    const { user } = existing;
-    if (user.deletedAt || !REFRESHABLE_STATUSES.includes(user.status)) {
-      await this.revokeFamily(existing.familyId);
-      throw new InvalidTokenError('account cannot refresh');
-    }
 
-    // Claim and successor in one transaction: a failure in between must not leave the user with
-    // a revoked token (whose next use would look like theft) and no replacement.
-    const { passwordHash: _ignored, ...safe } = user;
-    const tokens = await this.prisma.$transaction(async (tx) => {
+    const outcome = await this.prisma.$transaction(async (tx): Promise<RotationOutcome> => {
+      await shareLockUser(tx, found.userId);
+      const existing = await tx.refreshToken.findUniqueOrThrow({ where: { id: found.id }, include: { user: true } });
+      if (existing.revokedAt) {
+        return { error: 'refresh token reuse', revokeFamily: true };
+      }
+      if (existing.expiresAt <= new Date()) {
+        return { error: 'refresh token expired', revokeFamily: false };
+      }
+      const { user } = existing;
+      if (user.deletedAt || !REFRESHABLE_STATUSES.includes(user.status)) {
+        return { error: 'account cannot refresh', revokeFamily: true };
+      }
       const claimed = await tx.refreshToken.updateMany({
         where: { id: existing.id, revokedAt: null },
         data: { revokedAt: new Date() },
       });
-      return claimed.count === 1 ? this.issueTokens(safe, existing.familyId, tx) : null;
+      if (claimed.count !== 1) {
+        return { error: 'refresh token reuse', revokeFamily: true };
+      }
+      const { passwordHash: _ignored, ...safe } = user;
+      return { tokens: await this.issueTokens(safe, existing.familyId, tx) };
     });
-    if (!tokens) {
-      await this.revokeFamily(existing.familyId);
-      throw new InvalidTokenError('refresh token reuse');
+    if ('error' in outcome) {
+      if (outcome.revokeFamily) {
+        await this.revokeFamily(found.familyId);
+      }
+      throw new InvalidTokenError(outcome.error);
     }
-    return { userId: existing.userId, tokens };
+    return { userId: found.userId, tokens: outcome.tokens };
   }
 
   async revokeRefreshToken(rawRefreshToken: string): Promise<void> {
@@ -113,11 +128,29 @@ export class TokenService {
     });
   }
 
-  /** Revokes every active refresh token for a user (log out everywhere / force re-auth). */
-  async revokeAllForUser(userId: string): Promise<void> {
-    await this.prisma.refreshToken.updateMany({
+  /**
+   * Ends every session of the account inside the caller's transaction, which must hold the
+   * account lock (lockUser): access tokens already handed out stop working (session version) and
+   * refresh tokens are revoked. The caller announces it (SessionEvents) once committed.
+   */
+  async endAllSessions(tx: Db, userId: string): Promise<void> {
+    await tx.user.update({ where: { id: userId }, data: { sessionVersion: { increment: 1 } } });
+    await tx.refreshToken.updateMany({
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
+    });
+  }
+
+  /** Tells live connections (sockets) that the account's sessions ended; call after commit. */
+  announceSessionsEnded(userId: string): void {
+    this.sessionEvents.sessionsRevoked(userId);
+  }
+
+  /** Log out everywhere / force re-authentication: every session ends now, open sockets close. */
+  async revokeAllForUser(userId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, userId);
+      await this.endAllSessions(tx, userId);
     });
     this.sessionEvents.sessionsRevoked(userId);
   }
@@ -129,7 +162,11 @@ export class TokenService {
     });
   }
 
-  private async getTokenTtls(): Promise<TokenTtls> {
+  /**
+   * Lifetimes of mailed tokens (operator-configurable). Read it before opening a transaction that
+   * creates tokens: reading inside would need a second connection while the transaction holds one.
+   */
+  async getTokenTtls(): Promise<TokenTtls> {
     const fallback: TokenTtls = {
       emailVerifyMinutes: this.config.get<number>('auth.emailVerifyTtlMinutes', 60 * 24),
       passwordResetMinutes: this.config.get<number>('auth.passwordResetTtlMinutes', 30),
@@ -157,8 +194,8 @@ export class TokenService {
   }
 
   /** Creates a single-use email verification token and returns the raw (unhashed) value to email. */
-  async createEmailVerificationToken(userId: string, db: Db = this.prisma): Promise<string> {
-    const { emailVerifyMinutes } = await this.getTokenTtls();
+  async createEmailVerificationToken(userId: string, db: Db = this.prisma, ttls?: TokenTtls): Promise<string> {
+    const { emailVerifyMinutes } = ttls ?? (await this.getTokenTtls());
     const rawToken = generateSecureToken();
     await db.emailVerificationToken.create({
       data: {
@@ -205,8 +242,8 @@ export class TokenService {
   }
 
   /** Creates a single-use password reset token and returns the raw (unhashed) value to email. */
-  async createPasswordResetToken(userId: string, db: Db = this.prisma): Promise<string> {
-    const { passwordResetMinutes } = await this.getTokenTtls();
+  async createPasswordResetToken(userId: string, db: Db = this.prisma, ttls?: TokenTtls): Promise<string> {
+    const { passwordResetMinutes } = ttls ?? (await this.getTokenTtls());
     const rawToken = generateSecureToken();
     await db.passwordResetToken.create({
       data: {

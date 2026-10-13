@@ -123,6 +123,33 @@ export class ReviewsService {
     };
   }
 
+  /**
+   * Reviews of the caller's own jeweler profile, published or not: the owner chooses featured
+   * reviews while editing a profile that may be offline.
+   */
+  async findMine(user: User, requestedPage?: number) {
+    const page = requestedPage && requestedPage > 0 ? requestedPage : 1;
+    const profile = await this.prisma.jewelerProfile.findUnique({ where: { userId: user.id }, select: { id: true } });
+    if (!profile) {
+      return { items: [], pagination: { page, pageSize: PAGE_SIZE, total: 0, totalPages: 1 } };
+    }
+    const where: Prisma.ReviewWhereInput = { jewelerProfileId: profile.id };
+    const [items, total] = await Promise.all([
+      this.prisma.review.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * PAGE_SIZE,
+        take: PAGE_SIZE,
+        select: PUBLIC_REVIEW_SELECT,
+      }),
+      this.prisma.review.count({ where }),
+    ]);
+    return {
+      items,
+      pagination: { page, pageSize: PAGE_SIZE, total, totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)) },
+    };
+  }
+
   async feature(id: string, isFeatured: boolean, user: User) {
     const review = await this.prisma.review.findUnique({
       where: { id },

@@ -9,6 +9,7 @@ const MAX_WAIT_MS = 90_000;
 /** No single provider call may hang a worker (the job itself is bounded by MAX_WAIT_MS). */
 const REQUEST_TIMEOUT_MS = 15_000;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_MAX_MODEL_BYTES = 50 * 1024 * 1024;
 
 /**
  * Calls Tripo when TRIPO_API_KEY is set and downloads the GLB immediately
@@ -63,11 +64,12 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
         if (!url.startsWith('https://')) {
           throw new Error('Tripo returned a model URL that is not https');
         }
-        const glbRes = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+        // No redirects: an https link must not bounce the server to another (internal) address.
+        const glbRes = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
         if (!glbRes.ok) {
           throw new Error(`Failed to download Tripo GLB (${glbRes.status})`);
         }
-        const glb = Buffer.from(await glbRes.arrayBuffer());
+        const glb = await this.readCapped(glbRes, this.config.get<number>('tripo.maxModelBytes') ?? DEFAULT_MAX_MODEL_BYTES);
         if (glb.length < 100) {
           throw new Error('Tripo GLB was empty');
         }
@@ -78,6 +80,32 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
       }
     }
     throw new Error('Tripo task timed out');
+  }
+
+  /** The response body, refused as soon as it exceeds `maxBytes` (declared or actually sent). */
+  private async readCapped(res: Response, maxBytes: number): Promise<Buffer> {
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new Error(`Tripo GLB is ${declared} bytes, over the ${maxBytes}-byte limit`);
+    }
+    if (!res.body) {
+      return Buffer.alloc(0);
+    }
+    const reader = res.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        return Buffer.concat(chunks, total);
+      }
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`Tripo GLB exceeded the ${maxBytes}-byte limit`);
+      }
+      chunks.push(Buffer.from(value));
+    }
   }
 
   private async tripoFetch(apiKey: string, path: string, init?: RequestInit): Promise<unknown> {

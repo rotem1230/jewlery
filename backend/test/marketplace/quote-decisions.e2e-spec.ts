@@ -166,6 +166,20 @@ describe('quote decisions', () => {
     expect(systemMessages).toBe(2);
   });
 
+  it('the authors of auto-declined quotes are notified through the outbox, with the decision', async () => {
+    const { designer, jeweler, design, conversation } = await marketplaceScenario(t);
+    const accepted = await createQuote(t, jeweler, conversation.id, design.id);
+    const rival = await createPublishedJeweler(t);
+    const rivalConversation = await openConversation(t, rival, design.id, [designer.id]);
+    const declined = await createQuote(t, rival, rivalConversation.id, design.id);
+
+    await acceptQuote(t, designer, accepted).expect(201);
+    const queued = await t.prisma.outboxEvent.findMany({ where: { type: 'notification.push' } });
+    expect(queued.map((event) => event.payload)).toContainEqual(
+      expect.objectContaining({ userId: rival.id, eventKey: 'quote.declined', quoteId: declined.id }),
+    );
+  });
+
   it('two competing quotes accepted at the same time: exactly one wins', async () => {
     const { designer, jeweler, design, conversation } = await marketplaceScenario(t);
     const first = await createQuote(t, jeweler, conversation.id, design.id);

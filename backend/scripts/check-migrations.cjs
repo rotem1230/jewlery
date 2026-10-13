@@ -49,6 +49,9 @@ async function main() {
       port,
       persistent: false,
       initdbFlags: ['--encoding=UTF8', '--locale=C'],
+      // No I/O worker processes (PostgreSQL 18): on Windows they can outlive a stopped server
+      // and keep shared memory, so the next cluster fails to start.
+      postgresFlags: ['-c', 'io_method=sync'],
       onLog: () => undefined,
     });
     await pg.initialise();

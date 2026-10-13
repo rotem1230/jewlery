@@ -37,6 +37,14 @@ export class QueryReviewsDto {
   page?: number;
 }
 
+export class QueryMyReviewsDto {
+  @ApiPropertyOptional({ default: 1, minimum: 1 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  page?: number;
+}
+
 export class FeatureReviewDto {
   @ApiProperty()
   @IsBoolean()
