@@ -6,3 +6,11 @@ import type { TextStyle } from 'react-native'
  */
 export const textAlignRight: NonNullable<TextStyle['textAlign']> = 'right'
 export const textAlignLeft: NonNullable<TextStyle['textAlign']> = 'left'
+
+/**
+ * Direction of a row that follows reading order (e.g. the bottom navigation). Layout RTL is off,
+ * so in Hebrew such a row is reversed by hand: its first item sits on the right edge.
+ */
+export function navRowDirection(locale: string): 'row' | 'row-reverse' {
+  return locale === 'he' ? 'row-reverse' : 'row'
+}

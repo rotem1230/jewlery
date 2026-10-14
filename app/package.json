@@ -9,7 +9,8 @@
     "start": "react-native start",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "generate:screen": "node ./scripts/generate-screen.mjs"
+    "generate:screen": "node ./scripts/generate-screen.mjs",
+    "postinstall": "node ./scripts/patch-native-modules.cjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",

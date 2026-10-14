@@ -1,4 +1,9 @@
 {
   "name": "MalinvoskyApp",
-  "displayName": "Malinvosky"
+  "displayName": "Malinvosky",
+  "extra": {
+    "eas": {
+      "projectId": "b41aea9c-d809-42c6-ba73-f508d6169066"
+    }
+  }
 }

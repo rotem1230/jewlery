@@ -35,7 +35,13 @@ export function BrandButton({
       ]}
     >
       <View style={[styles.base, primary ? styles.primary : styles.outline]}>
-        <Text style={[styles.label, primary ? styles.labelPrimary : styles.labelOutline]} numberOfLines={1}>
+        {/* A long label is never cut off: it shrinks a little, then wraps to a second line. */}
+        <Text
+          style={[styles.label, primary ? styles.labelPrimary : styles.labelOutline]}
+          numberOfLines={2}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+        >
           {label}
         </Text>
       </View>

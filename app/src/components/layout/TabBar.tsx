@@ -1,10 +1,13 @@
 import { View, Pressable, Text, StyleSheet } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs'
+import { useTranslation } from '@/src/i18n'
+import { navRowDirection } from '@/src/lib/rtl'
 
-/** Figma buttom nav — 375×81, pt 13 / px 16, active #5957BF. */
+/** Figma buttom nav — 375×81, pt 13 / px 16, active #5957BF. In Hebrew the first tab (Home) is on the right. */
 export function TabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets()
+  const { locale } = useTranslation()
   const focusedOptions = descriptors[state.routes[state.index]?.key]?.options
   const flatStyle = StyleSheet.flatten(focusedOptions?.tabBarStyle)
   const hidden = flatStyle != null && 'display' in flatStyle && flatStyle.display === 'none'
@@ -13,7 +16,7 @@ export function TabBar({ state, descriptors, navigation }: BottomTabBarProps) {
 
   return (
     <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 0) }]}>
-      <View style={styles.row}>
+      <View style={[styles.row, { flexDirection: navRowDirection(locale) }]}>
         {state.routes.map((route, index) => {
           const { options } = descriptors[route.key]
           const label =
