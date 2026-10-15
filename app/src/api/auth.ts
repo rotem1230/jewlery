@@ -80,6 +80,15 @@ export function oauthGoogle(payload: {
   return apiPost<AuthResult>('/auth/oauth/google', payload, { anonymous: true })
 }
 
+/** POST /auth/oauth/apple — Sign in with Apple (iOS). The name is sent only on the first sign-in. */
+export function oauthApple(payload: {
+  idToken: string
+  firstName?: string
+  lastName?: string
+}): Promise<AuthResult> {
+  return apiPost<AuthResult>('/auth/oauth/apple', payload, { anonymous: true })
+}
+
 export function changePassword(payload: {
   currentPassword: string
   newPassword: string

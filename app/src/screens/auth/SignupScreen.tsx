@@ -2,18 +2,18 @@ import { useState } from 'react'
 import { Alert, Pressable, Text, View, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AuthScreenLayout } from '@/src/components/auth/AuthScreenLayout'
+import { AppleAuthButton } from '@/src/components/auth/AppleAuthButton'
 import { GoogleAuthButton } from '@/src/components/auth/GoogleAuthButton'
 import { PhoneField } from '@/src/components/auth/PhoneField'
 import { Button, Checkbox, Field } from '@/src/components/ui'
-import { oauthGoogle, register, resendVerification } from '@/src/api/auth'
+import { register, resendVerification } from '@/src/api/auth'
+import { GOOGLE_WEB_CLIENT_ID } from '@/src/config/env'
+import { useSocialSignIn } from '@/src/hooks/useSocialSignIn'
 import { parseApiError } from '@/src/lib/api'
-import { signInWithGoogleNative } from '@/src/lib/googleSignIn'
-import { sessionFromAuth } from '@/src/lib/session'
 import { splitFullName } from '@/src/lib/format'
+import { googleSignInConfigured } from '@/src/lib/socialSignIn'
 import { isValidEmail, passwordIssue, toE164Phone } from '@/src/lib/validation'
 import { useTranslation } from '@/src/i18n'
-import { useAppDispatch } from '@/src/store/hooks'
-import { setSession } from '@/src/store/store'
 import { colors } from '@/src/theme/tokens'
 import type { AuthStackParamList } from '@/src/navigation/types'
 
@@ -28,7 +28,6 @@ type FieldErrors = {
 
 export function SignupScreen({ navigation, route }: Props) {
   const { t } = useTranslation()
-  const dispatch = useAppDispatch()
   const role = route.params?.role ?? 'DESIGNER'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -86,25 +85,16 @@ export function SignupScreen({ navigation, route }: Props) {
     }
   }
 
-  const onGoogle = async () => {
-    setBusy(true)
-    try {
-      const profile = await signInWithGoogleNative()
-      const result = await oauthGoogle({
-        idToken: profile.idToken,
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-      })
-      dispatch(setSession({ ...sessionFromAuth(result), persist: true }))
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message.startsWith('google-signin')
-          ? t('authGoogleUnavailable')
-          : parseApiError(err)
-      Alert.alert(t('authErrorTitle'), message)
-    } finally {
-      setBusy(false)
+  const social = useSocialSignIn({ persist: true, signUpRole: role, setBusy })
+
+  /** Apple / Google create the account too: the terms must be accepted first, as for e-mail. */
+  const afterTerms = (go: () => Promise<void>) => () => {
+    if (!accepted) {
+      Alert.alert(t('authErrorTitle'), t('authNeedTerms'))
+      return
     }
+    // The handler reports its own errors; nothing is left to await here.
+    go().catch(() => undefined)
   }
 
   return (
@@ -173,7 +163,10 @@ export function SignupScreen({ navigation, route }: Props) {
           <Button fullWidth disabled={!accepted || busy} onPress={() => void onSignup()}>
             {t('signup')}
           </Button>
-          <GoogleAuthButton onPress={() => void onGoogle()} />
+          <AppleAuthButton onPress={afterTerms(social.withApple)} />
+          {googleSignInConfigured(GOOGLE_WEB_CLIENT_ID) ? (
+            <GoogleAuthButton onPress={afterTerms(social.withGoogle)} />
+          ) : null}
           <Pressable
             onPress={() => navigation.navigate('Login', { role })}
             style={styles.linkBtn}

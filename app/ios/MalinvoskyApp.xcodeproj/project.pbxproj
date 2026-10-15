@@ -294,6 +294,7 @@
 					"-ObjC",
 					"-lc++",
 				);
+				CODE_SIGN_ENTITLEMENTS = MalinvoskyApp/MalinvoskyApp.entitlements;
 				PRODUCT_BUNDLE_IDENTIFIER = com.malinvoskyapp;
 				PRODUCT_NAME = MalinvoskyApp;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -323,6 +324,7 @@
 					"-ObjC",
 					"-lc++",
 				);
+				CODE_SIGN_ENTITLEMENTS = MalinvoskyApp/MalinvoskyApp.entitlements;
 				PRODUCT_BUNDLE_IDENTIFIER = com.malinvoskyapp;
 				PRODUCT_NAME = MalinvoskyApp;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

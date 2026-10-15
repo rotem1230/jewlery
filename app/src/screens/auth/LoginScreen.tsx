@@ -2,12 +2,15 @@ import { useState } from 'react'
 import { Alert, Pressable, Text, View, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AuthScreenLayout } from '@/src/components/auth/AuthScreenLayout'
+import { AppleAuthButton } from '@/src/components/auth/AppleAuthButton'
 import { GoogleAuthButton } from '@/src/components/auth/GoogleAuthButton'
 import { Button, Checkbox, Field } from '@/src/components/ui'
-import { isEmailNotVerified, login, oauthGoogle, resendVerification } from '@/src/api/auth'
+import { isEmailNotVerified, login, resendVerification } from '@/src/api/auth'
+import { GOOGLE_WEB_CLIENT_ID } from '@/src/config/env'
+import { useSocialSignIn } from '@/src/hooks/useSocialSignIn'
 import { parseApiError } from '@/src/lib/api'
-import { signInWithGoogleNative } from '@/src/lib/googleSignIn'
 import { sessionFromAuth } from '@/src/lib/session'
+import { googleSignInConfigured } from '@/src/lib/socialSignIn'
 import { isValidEmail } from '@/src/lib/validation'
 import { useTranslation } from '@/src/i18n'
 import { useAppDispatch } from '@/src/store/hooks'
@@ -26,6 +29,7 @@ export function LoginScreen({ navigation, route }: Props) {
   const [remember, setRemember] = useState(true)
   const [busy, setBusy] = useState(false)
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({})
+  const social = useSocialSignIn({ persist: remember, setBusy })
 
   const onLogin = async () => {
     const trimmed = email.trim()
@@ -56,27 +60,6 @@ export function LoginScreen({ navigation, route }: Props) {
         return
       }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const onGoogle = async () => {
-    setBusy(true)
-    try {
-      const profile = await signInWithGoogleNative()
-      const result = await oauthGoogle({
-        idToken: profile.idToken,
-        firstName: profile.firstName,
-        lastName: profile.lastName,
-      })
-      dispatch(setSession({ ...sessionFromAuth(result), persist: remember }))
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message.startsWith('google-signin')
-          ? t('authGoogleUnavailable')
-          : parseApiError(err)
-      Alert.alert(t('authErrorTitle'), message)
     } finally {
       setBusy(false)
     }
@@ -121,7 +104,10 @@ export function LoginScreen({ navigation, route }: Props) {
           <Button fullWidth disabled={busy} onPress={() => void onLogin()}>
             {t('login')}
           </Button>
-          <GoogleAuthButton onPress={() => void onGoogle()} />
+          <AppleAuthButton onPress={social.withApple} />
+          {googleSignInConfigured(GOOGLE_WEB_CLIENT_ID) ? (
+            <GoogleAuthButton onPress={social.withGoogle} />
+          ) : null}
           <Pressable
             onPress={() => navigation.navigate('ForgotPassword')}
             style={styles.linkBtn}
