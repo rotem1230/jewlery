@@ -36,7 +36,8 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/prisma ./prisma
 COPY --chown=node:node package.json ./
 COPY --chown=node:node seed-assets ./seed-assets
-# Local media storage: mount a persistent volume here (see docs/production-readiness.md).
+# Media is stored in the database in production (STORAGE_DRIVER=database). This folder is only
+# used with STORAGE_DRIVER=local, which needs a persistent volume mounted here.
 RUN mkdir -p /app/uploads-local && chown node:node /app/uploads-local
 USER node
 EXPOSE 3000

@@ -8,6 +8,9 @@
  *   so domain modules (`src/api/*`) stay token-free (DRY).
  * - 401 responses rotate `POST /auth/refresh` once, then retry. Only a refresh the server
  *   rejects (401) signs the user out; an outage or timeout keeps the session for a later retry.
+ * - The hosted API sleeps when idle and its first answer can take up to a minute: a GET that
+ *   times out or fails on the network is tried once more with a minute to answer. Other methods
+ *   are never repeated (the first try may have reached the server).
  */
 import { API_BASE_URL } from '@/src/config/env'
 import { t, type TranslationKey } from '@/src/i18n'
@@ -15,6 +18,8 @@ import { t, type TranslationKey } from '@/src/i18n'
 export { API_BASE_URL }
 
 const DEFAULT_TIMEOUT_MS = 15_000
+/** How long a server waking up from idle may take to answer. */
+const COLD_START_TIMEOUT_MS = 60_000
 
 export class ApiError extends Error {
   status: number
@@ -77,6 +82,8 @@ export type RequestOptions = RequestInit & {
   anonymous?: boolean
   /** Do not attempt refresh-token rotation on 401 (used by `/auth/refresh` itself). */
   skipRefresh?: boolean
+  /** A GET that times out or fails on the network is not tried again. */
+  noRetry?: boolean
 }
 
 function withTimeout(signal: AbortSignal | undefined, timeoutMs: number) {
@@ -135,15 +142,62 @@ async function rotateAccessToken(): Promise<RefreshOutcome> {
   return refreshWaiter
 }
 
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  return sendRequest<T>(path, options, false)
+type ReadBody<T> = (res: Response) => Promise<T>
+
+/** `{ success, data }` envelope → data (plain JSON is returned as is). */
+async function readJson<T>(res: Response): Promise<T> {
+  const json = (await res.json()) as { success?: boolean; data?: T }
+  if (json && typeof json === 'object' && 'data' in json) return json.data as T
+  return json as T
 }
 
-async function sendRequest<T>(path: string, options: RequestOptions, didRefresh: boolean): Promise<T> {
+/** A binary answer (a picture) as a `data:` URI an <Image> can show without a request of its own. */
+async function readDataUri(res: Response): Promise<string> {
+  const blob = await res.blob()
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () =>
+      typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Unreadable picture'))
+    reader.onerror = () => reject(new Error('Unreadable picture'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return sendRequest<T>(path, options, false, false, readJson)
+}
+
+/**
+ * GET of a private picture with the session (bearer token, refresh on 401) as a `data:` URI.
+ * For pictures served only to a signed-in caller: an <Image> on Android does not send
+ * `source.headers`.
+ */
+export async function apiGetDataUri(path: string, options: RequestOptions = {}): Promise<string> {
+  return sendRequest<string>(path, options, false, false, readDataUri)
+}
+
+/**
+ * The request never got an answer: it timed out (not cancelled by the caller) or the network
+ * failed. A JSON parse error or an HTTP status is an answer and does not count.
+ */
+function isTransportFailure(err: unknown, callerSignal: AbortSignal | null | undefined): boolean {
+  if (!(err instanceof Error) || err instanceof ApiError) return false
+  if (err.name === 'AbortError') return !callerSignal?.aborted
+  return err instanceof TypeError
+}
+
+async function sendRequest<T>(
+  path: string,
+  options: RequestOptions,
+  didRefresh: boolean,
+  isRetry: boolean,
+  readBody: ReadBody<T>,
+): Promise<T> {
   const {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     anonymous = false,
     skipRefresh = false,
+    noRetry = false,
     headers,
     signal,
     ...init
@@ -171,18 +225,24 @@ async function sendRequest<T>(path: string, options: RequestOptions, didRefresh:
     ) {
       const outcome = await rotateAccessToken()
       // Superseded: retried once with whatever session is current now.
-      if (outcome === 'rotated' || outcome === 'superseded') return sendRequest<T>(path, options, true)
+      if (outcome === 'rotated' || outcome === 'superseded') {
+        return sendRequest<T>(path, options, true, isRetry, readBody)
+      }
       if (outcome === 'rejected') authBridge?.onAuthLost()
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       throw new ApiError(res.status, path, text.slice(0, 500))
     }
-    const json = (await res.json()) as { success?: boolean; data?: T }
-    if (json && typeof json === 'object' && 'data' in json) return json.data as T
-    return json as T
+    return await readBody(res)
   } catch (err) {
     if (err instanceof ApiError) throw err
+    const method = (init.method ?? 'GET').toUpperCase()
+    if (method === 'GET' && !noRetry && !isRetry && isTransportFailure(err, signal)) {
+      // The server may still be waking up: once more, with the time a cold start takes.
+      const retryTimeoutMs = timeoutMs > 0 ? Math.max(timeoutMs, COLD_START_TIMEOUT_MS) : 0
+      return sendRequest<T>(path, { ...options, timeoutMs: retryTimeoutMs }, didRefresh, true, readBody)
+    }
     if (err instanceof Error && err.name === 'AbortError') {
       throw new ApiError(0, path, 'Request timed out or was aborted')
     }
@@ -292,4 +352,16 @@ export function buildQuery(params: Record<string, string | number | boolean | un
 /** Liveness probe used by the dev status banner. */
 export function getHealth(signal?: AbortSignal): Promise<{ status: string }> {
   return request<{ status: string }>('/health', { signal, anonymous: true })
+}
+
+/**
+ * Fired once at launch: wakes a backend that went to sleep while idle, so the first screen's
+ * requests do not wait out its cold start. Fire and forget: it never fails and shows nothing.
+ */
+export async function warmUpBackend(): Promise<void> {
+  try {
+    await request<unknown>('/health', { anonymous: true, timeoutMs: COLD_START_TIMEOUT_MS, noRetry: true })
+  } catch {
+    // Nothing to tell the user: the screens' own requests report a real outage.
+  }
 }

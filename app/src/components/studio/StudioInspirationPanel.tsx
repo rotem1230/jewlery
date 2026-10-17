@@ -1,4 +1,4 @@
-import { StyleSheet, Text, TextInput, View } from 'react-native'
+import { Image, StyleSheet, Text, TextInput, View } from 'react-native'
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { useTranslation } from '@/src/i18n'
 import { colors, radii } from '@/src/theme/tokens'
@@ -7,6 +7,8 @@ type StudioInspirationPanelProps = {
   note: string
   jewelerNotes: string
   hasImage: boolean
+  /** The chosen inspiration picture, shown so the designer sees what the AI will work from. */
+  imageUri?: string | null
   generating?: boolean
   onChangeNote: (value: string) => void
   onChangeJewelerNotes: (value: string) => void
@@ -18,6 +20,7 @@ export function StudioInspirationPanel({
   note,
   jewelerNotes,
   hasImage,
+  imageUri,
   generating = false,
   onChangeNote,
   onChangeJewelerNotes,
@@ -27,6 +30,14 @@ export function StudioInspirationPanel({
   const { t } = useTranslation()
   return (
     <View style={styles.root}>
+      {hasImage && imageUri ? (
+        <Image
+          source={{ uri: imageUri }}
+          style={styles.thumb}
+          resizeMode="cover"
+          accessibilityLabel={t('studioInspirationImageA11y')}
+        />
+      ) : null}
       <BrandButton label={hasImage ? t('studioInspirationReplace') : t('studioInspirationUpload')} onPress={onUpload} disabled={generating} />
       <BrandButton
         label={generating ? t('studioInspirationGenerating') : t('studioInspirationGenerate')}
@@ -62,6 +73,13 @@ export function StudioInspirationPanel({
 
 const styles = StyleSheet.create({
   root: { gap: 10 },
+  thumb: {
+    width: 96,
+    height: 96,
+    borderRadius: radii.md,
+    alignSelf: 'flex-end',
+    backgroundColor: colors.formBorder,
+  },
   hint: {
     fontFamily: 'Heebo',
     fontSize: 12,

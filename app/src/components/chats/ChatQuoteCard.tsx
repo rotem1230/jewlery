@@ -1,7 +1,6 @@
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Image, type ImageSourcePropType, Pressable, StyleSheet, Text, View } from 'react-native'
 import { ChevronLeft } from 'lucide-react-native'
 import { colors } from '@/src/theme/tokens'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type ChatQuoteCardProps = {
   title: string
@@ -13,6 +12,10 @@ type ChatQuoteCardProps = {
   delivery: string
   ctaLabel: string
   onPressCta?: () => void
+  /** The picture of the design the quote prices (see designPicture). */
+  image: ImageSourcePropType
+  /** `center` draws a small illustration at its own size (a design without a picture). */
+  imageResizeMode?: 'cover' | 'center'
 }
 
 /**
@@ -28,10 +31,12 @@ export function ChatQuoteCard({
   delivery,
   ctaLabel,
   onPressCta,
+  image,
+  imageResizeMode = 'cover',
 }: ChatQuoteCardProps) {
   return (
     <View style={styles.card}>
-      <Image source={heroRing} style={styles.image} resizeMode="cover" />
+      <Image source={image} style={styles.image} resizeMode={imageResizeMode} />
 
       <View style={styles.body}>
         <View style={styles.headerRow}>

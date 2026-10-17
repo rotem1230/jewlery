@@ -88,6 +88,20 @@ describe('e-mail verification is enforced', () => {
     await t.http.get(`${API}/designs`).set(bearer(login.body.data.tokens.accessToken)).expect(200);
   });
 
+  it('the verification e-mail is in Hebrew first, and its link is exactly the one issued', async () => {
+    const { email } = await registerPending();
+    const token = await t.mailbox.tokenFor(email, 'verify');
+    const [mail] = t.mailbox.to(email);
+    expect(mail.subject).toMatch(/[֐-׿]/);
+    expect(mail.subject).not.toMatch(/[A-Za-z]{3,}/);
+    const lines = mail.body.split('\n');
+    expect(lines[0]).toMatch(/[֐-׿]/);
+    // The link stands on its own line, untouched; an English line follows the Hebrew text.
+    expect(lines).toContain(`http://localhost:3000/api/v1/auth/web/verify-email?token=${token}`);
+    expect(mail.body).toMatch(/Please confirm your email address/);
+    await t.http.post(`${API}/auth/verify-email`).send({ token }).expect(200);
+  });
+
   it('a verification token works only once under concurrent use', async () => {
     const { email } = await registerPending();
     const token = await t.mailbox.tokenFor(email, 'verify');

@@ -1,7 +1,12 @@
-import { Image, type ImageSourcePropType, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Image, type ImageSourcePropType, StyleSheet, Text, View } from 'react-native'
 import { MapPin } from 'lucide-react-native'
 import { RatingStarIcon } from '@/src/components/icons/RatingStarIcon'
+import { UserAvatar } from '@/src/components/ui/UserAvatar'
 import { colors } from '@/src/theme/tokens'
+import { PressableBox } from '@/src/components/ui/PressableBox'
+
+/** The logo inside its 4px ring (96 - 2 * 4). */
+const AVATAR_SIZE = 88
 
 export type JewelerCardCta = 'viewProfile' | 'quoteRequested' | 'ownProfile'
 
@@ -15,7 +20,8 @@ type JewelerCardProps = {
   ctaVariant: JewelerCardCta
   worksTitle: string
   bio: string
-  avatar: ImageSourcePropType
+  /** The business logo; without one the business initials are shown. */
+  avatarUri?: string
   works: ImageSourcePropType[]
   /** "+N" over the last picture — only with a real count of the further works; nothing otherwise. */
   moreCount?: string
@@ -40,7 +46,7 @@ export function JewelerCard({
   ctaVariant,
   worksTitle,
   bio,
-  avatar,
+  avatarUri,
   works,
   moreCount,
   onPressCta,
@@ -56,7 +62,7 @@ export function JewelerCard({
     <View style={styles.card}>
       <View style={styles.profile}>
         <View style={styles.avatarRing}>
-          <Image source={avatar} style={styles.avatar} resizeMode="cover" />
+          <UserAvatar uri={avatarUri} name={name} size={AVATAR_SIZE} style={styles.avatar} />
         </View>
 
         <Text style={styles.name}>{name}</Text>
@@ -81,35 +87,35 @@ export function JewelerCard({
 
         {isOwnProfile ? (
           <View style={styles.ownProfileRow}>
-            <Pressable
+            <PressableBox
               onPress={onPressEdit}
-              style={({ pressed }) => [styles.ctaPressable, styles.flexSlot, pressed && styles.pressed]}
+              style={[styles.ctaPressable, styles.flexSlot]} pressedStyle={styles.pressed}
               accessibilityRole="button"
             >
               <View style={[styles.cta, styles.ctaOutline]}>
                 <Text style={styles.ctaLabelOutline}>{editLabel}</Text>
               </View>
-            </Pressable>
-            <Pressable
+            </PressableBox>
+            <PressableBox
               onPress={onPressCta}
-              style={({ pressed }) => [styles.ctaPressable, styles.flexSlot, pressed && styles.pressed]}
+              style={[styles.ctaPressable, styles.flexSlot]} pressedStyle={styles.pressed}
               accessibilityRole="button"
             >
               <View style={[styles.cta, styles.ctaPrimary]}>
                 <Text style={styles.ctaLabel}>{ctaLabel}</Text>
               </View>
-            </Pressable>
+            </PressableBox>
           </View>
         ) : (
-          <Pressable
+          <PressableBox
             onPress={onPressCta}
-            style={({ pressed }) => [styles.ctaPressable, pressed && styles.pressed]}
+            style={[styles.ctaPressable]} pressedStyle={styles.pressed}
             accessibilityRole="button"
           >
             <View style={[styles.cta, primary ? styles.ctaPrimary : styles.ctaMuted]}>
               <Text style={styles.ctaLabel}>{ctaLabel}</Text>
             </View>
-          </Pressable>
+          </PressableBox>
         )}
       </View>
 

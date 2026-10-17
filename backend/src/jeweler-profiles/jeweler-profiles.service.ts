@@ -22,6 +22,7 @@ import { AppConfigService } from '../cms/app-config.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
 import { lockJewelerProfile, lockUser } from '../database/row-locks';
+import { withDesignPreview } from '../atelier/design-pictures';
 import { effectiveOrderStatus } from '../atelier/order-status';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
@@ -312,7 +313,16 @@ export class JewelerProfilesService {
         take: PAGE_SIZE,
         include: {
           design: {
-            select: { id: true, title: true, thumbnailUploadId: true, itemType: true, status: true, expiresAt: true, deletedAt: true },
+            select: {
+              id: true,
+              title: true,
+              thumbnailUploadId: true,
+              previewUploadId: true,
+              itemType: true,
+              status: true,
+              expiresAt: true,
+              deletedAt: true,
+            },
           },
           requester: { select: { id: true, firstName: true, lastName: true } },
           targets: { where: { jewelerProfileId: profile.id }, select: { status: true, statusChangedAt: true } },
@@ -340,7 +350,8 @@ export class JewelerProfilesService {
         const { deletedAt: _deletedAt, ...shownDesign } = design;
         return {
           ...request,
-          design: shownDesign,
+          // Pictured by its own rendered image (never a stock photo of another piece).
+          design: withDesignPreview(shownDesign, this.access),
           myStatus: effectiveOrderStatus(targets[0]?.status ?? RequestTargetStatus.NEW, request.status, design),
           myStatusChangedAt: targets[0]?.statusChangedAt ?? null,
         };

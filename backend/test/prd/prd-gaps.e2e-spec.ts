@@ -47,7 +47,7 @@ describe('PRD gaps', () => {
     it('a quote card sent live carries the real quote, not just a reference', async () => {
       const s = await marketplaceScenario(t);
       const gateway = t.app.get(ChatGateway);
-      const emitted: Array<{ event: string; payload: { type?: string; quote?: { totalPrice?: unknown } } }> = [];
+      const emitted: Array<{ event: string; payload: { type?: string; quote?: { totalPrice?: unknown }; sender?: { businessName?: string | null } } }> = [];
       const spy = jest.spyOn(gateway, 'emitToConversation').mockImplementation((_id, event, payload) => {
         emitted.push({ event, payload: payload as never });
       });
@@ -58,6 +58,8 @@ describe('PRD gaps', () => {
       }
       const card = emitted.find((e) => e.event === 'message:new' && e.payload.type === 'QUOTE_CARD');
       expect(Number(card?.payload.quote?.totalPrice)).toBe(150);
+      // The live card shows the jeweler the way the chat does: by business name.
+      expect(card?.payload.sender?.businessName).toBeTruthy();
     });
 
     it('the full quote names the item type and the design specification', async () => {
@@ -293,6 +295,8 @@ describe('PRD gaps', () => {
       const s = await marketplaceScenario(t);
       const selfie = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'selfie.png').expect(201);
       const body = { designId: s.design.id, inputUploadId: selfie.body.data.id };
+      // Other suites share this database and may have left the flag on.
+      await t.prisma.featureFlag.updateMany({ where: { key: 'phase2_visualization' }, data: { enabled: false } });
       const off = await t.http.post(`${API}/visualization/jobs`).set(s.designer.auth).send(body).expect(403);
       expect(off.body.code).toBe('FEATURE_DISABLED');
       await t.prisma.featureFlag.upsert({

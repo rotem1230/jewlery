@@ -118,12 +118,14 @@ const styles = StyleSheet.create({
     width: '100%',
     gap: 16,
   },
+  // Hebrew reads from the right: the links start at the right edge (layout RTL is off).
   editLink: {
+    width: '100%',
     fontFamily: 'Heebo',
     fontSize: 14,
     fontWeight: '500',
     color: colors.brand,
-    textAlign: 'left',
+    textAlign: 'right',
     writingDirection: 'rtl',
   },
 })

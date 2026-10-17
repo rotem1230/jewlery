@@ -200,7 +200,7 @@ export function ChatsScreen() {
                 preview={item.preview}
                 time={item.time}
                 unread={item.unread}
-                avatar={item.avatar}
+                avatarUri={item.avatarUri}
                 showDivider={index < rows.length - 1}
                 onPress={() =>
                   navigation.navigate('ChatThread', {

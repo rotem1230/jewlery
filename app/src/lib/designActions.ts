@@ -4,6 +4,7 @@
  * the app offers none and the studio only views it.
  */
 import { apiErrorCode, ApiError, parseApiError } from '@/src/lib/api'
+import { isolate } from '@/src/lib/rtl'
 import type { DesignStatus, Region } from '@/src/types/api'
 
 type Locale = 'he' | 'en' | string
@@ -63,7 +64,8 @@ export function completedByLabel(design: DesignState, locale: Locale): string | 
   if (!isDesignReadOnly(design)) return null
   const name = design.completedBy?.name?.trim()
   if (locale === 'en') return name ? `Completed by ${name}` : 'Completed'
-  return name ? `הושלם ע״י ${name}` : 'הושלם'
+  // A business name in Latin letters keeps its place in the Hebrew sentence.
+  return name ? `הושלם ע״י ${isolate(name)}` : 'הושלם'
 }
 
 /** The "no preferred region" choice of the publish sheet. */

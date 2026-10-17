@@ -5,7 +5,8 @@
 import type { ListConversationsParams } from '@/src/api/chat'
 import { t, type TranslationKey } from '@/src/i18n'
 import { formatChatTime } from '@/src/lib/chatTime'
-import { currencySymbol, displayName, formatMoney } from '@/src/lib/format'
+import { currencySymbol, formatMoney } from '@/src/lib/format'
+import { personName, personPhotoUri } from '@/src/lib/people'
 import type { ChatMessage, ConversationItem, Paginated } from '@/src/types/api'
 
 export type InboxFilters = {
@@ -145,7 +146,10 @@ export function conversationPreview(last: ChatMessage | null): string {
 
 export type InboxRow = {
   id: string
+  /** The other side: a jeweler by business name, a designer by their own name. */
   name: string
+  /** Their photo or business logo; none → the row draws their initials. */
+  avatarUri?: string
   design: string
   designId: string
   peerUserId: string | null
@@ -161,7 +165,8 @@ export function conversationRow(conv: ConversationItem, myUserId: string | undef
   const peer = peerParticipant?.user
   return {
     id: conv.id,
-    name: displayName(peer?.firstName, peer?.lastName, t('shChatPeerFallback')),
+    name: personName(peer, t('shChatPeerFallback')),
+    avatarUri: personPhotoUri(peer),
     design: conv.design.title ?? '',
     designId: conv.designId,
     peerUserId: peer?.id ?? null,

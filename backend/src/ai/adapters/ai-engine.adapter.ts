@@ -1,6 +1,8 @@
 export type AiGenerateRequest = {
   prompt: string;
   itemCode: string;
+  /** The designer's inspiration picture: when present the model is made from it (image to 3D). */
+  image?: { bytes: Buffer; mimeType: string };
 };
 
 export type AiGenerateResult = {
@@ -8,8 +10,10 @@ export type AiGenerateResult = {
   providerRef: string;
 };
 
-/** Boundary for text-to-GLB providers (dummy catalog copy today, Tripo when keyed). */
+/** Boundary for text / image to 3D providers (Tripo). */
 export interface AiEngineAdapter {
+  /** Whether a provider is configured; without one generation is refused up front. */
+  isConfigured(): boolean;
   generate(request: AiGenerateRequest): Promise<AiGenerateResult>;
 }
 

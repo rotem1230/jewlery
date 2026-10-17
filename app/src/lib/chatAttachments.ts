@@ -39,6 +39,16 @@ export async function pickChatPhoto(): Promise<LocalFile | null> {
   return firstAsset(await launchImageLibrary(PICKER_OPTIONS))
 }
 
+/** Longest side of a try-on photo: plenty for the picture, light to upload and to compose. */
+export const TRY_ON_PHOTO_SIDE = 1600
+
+/** A photo for a try-on, scaled down on the phone; null when cancelled. */
+export async function pickTryOnPhoto(): Promise<LocalFile | null> {
+  return firstAsset(
+    await launchImageLibrary({ ...PICKER_OPTIONS, maxWidth: TRY_ON_PHOTO_SIDE, maxHeight: TRY_ON_PHOTO_SIDE }),
+  )
+}
+
 /** System camera; null when cancelled, throws on real errors. */
 export async function takeChatPhoto(): Promise<LocalFile | null> {
   return firstAsset(await launchCamera({ ...PICKER_OPTIONS, saveToPhotos: true }))

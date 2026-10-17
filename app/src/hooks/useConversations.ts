@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useFocusEffect } from '@react-navigation/native'
-import type { ImageSourcePropType } from 'react-native'
 import { listConversations } from '@/src/api/chat'
 import { useAppSelector } from '@/src/store/hooks'
 import {
@@ -16,9 +15,8 @@ import {
   type InboxRow,
 } from '@/src/lib/inbox'
 import { useTranslation } from '@/src/i18n'
-import jewelerAvatar from '../../assets/images/designs/jeweler-avatar-1.png'
 
-export type ConversationRow = InboxRow & { avatar: ImageSourcePropType }
+export type ConversationRow = InboxRow
 
 const NO_OPTIONS: InboxFilterOptions = { designs: [], peers: [] }
 
@@ -110,7 +108,7 @@ export function useConversations(filters: Omit<InboxFilters, 'q'> = {}) {
   )
 
   const rows = useMemo<ConversationRow[]>(
-    () => state.items.map((conv) => ({ ...conversationRow(conv, myUserId, locale), avatar: jewelerAvatar })),
+    () => state.items.map((conv) => conversationRow(conv, myUserId, locale)),
     [state.items, myUserId, locale],
   )
 

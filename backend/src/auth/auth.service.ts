@@ -176,10 +176,19 @@ export class AuthService implements OnModuleDestroy {
     if (!rawToken) {
       return false;
     }
+    // Hebrew first, then English; the link stands on its own line.
     await this.mail.send(
       email,
-      'Verify your Malinvosky account',
-      `Welcome to Malinvosky! Please confirm your email address by opening this link:\n${this.hostedPageUrl('verify-email', rawToken)}\n\nIf you did not create this account, you can ignore this email.`,
+      'אימות החשבון שלך במלינובסקי',
+      [
+        'ברוכים הבאים למלינובסקי!',
+        'כדי לאמת את כתובת המייל שלך, פתחו את הקישור הבא:',
+        this.hostedPageUrl('verify-email', rawToken),
+        '',
+        'אם לא נרשמתם למלינובסקי, אפשר להתעלם מהודעה זו.',
+        '',
+        'Welcome to Malinvosky! Please confirm your email address by opening the link above. If you did not create this account, you can ignore this email.',
+      ].join('\n'),
     );
     return true;
   }
@@ -220,10 +229,18 @@ export class AuthService implements OnModuleDestroy {
     if (!rawToken) {
       return;
     }
+    // Hebrew first, then English; the link stands on its own line.
     await this.mail.send(
       email,
-      'Reset your Malinvosky password',
-      `We received a request to reset your password. Open this link to choose a new one:\n${this.hostedPageUrl('reset-password', rawToken)}\n\nIf you did not request this, you can safely ignore this email.`,
+      'איפוס הסיסמה שלך במלינובסקי',
+      [
+        'קיבלנו בקשה לאפס את הסיסמה שלך. כדי לבחור סיסמה חדשה, פתחו את הקישור הבא:',
+        this.hostedPageUrl('reset-password', rawToken),
+        '',
+        'אם לא ביקשת לאפס את הסיסמה, אפשר להתעלם מהודעה זו בבטחה.',
+        '',
+        'We received a request to reset your Malinvosky password. Open the link above to choose a new one. If you did not request this, you can safely ignore this email.',
+      ].join('\n'),
     );
   }
 

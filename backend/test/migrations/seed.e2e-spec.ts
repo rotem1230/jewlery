@@ -89,6 +89,43 @@ describe('database seed', () => {
     expect(await body('handoff.created')).not.toContain('Continue the handoff');
   });
 
+  it('plan features are in Hebrew (English beside them); a re-seed upgrades the old English list but keeps an operator edit', async () => {
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    type Inclusions = { bullets: string[]; bulletsEn?: string[] };
+    const inclusions = async (code: string) =>
+      (
+        await db.sql.$queryRawUnsafe<Array<{ inclusions: Inclusions }>>(
+          `SELECT "inclusions" FROM "plan_catalog" WHERE "code" = $1`,
+          code,
+        )
+      )[0]?.inclusions;
+    const hebrew = /[֐-׿]/;
+    for (const code of ['DESIGNER_FREE', 'DESIGNER_PRO', 'JEWELER_BASIC', 'JEWELER_ACTIVE']) {
+      const plan = await inclusions(code);
+      expect(plan.bullets.length).toBeGreaterThan(0);
+      expect(plan.bullets.every((line) => hebrew.test(line))).toBe(true);
+      expect(plan.bulletsEn?.some((line) => hebrew.test(line))).toBe(false);
+    }
+    const free = await inclusions('DESIGNER_FREE');
+    expect(free.bulletsEn).toEqual(['Unlimited draft designs', 'Standard export with watermark']);
+
+    // Production rows were seeded with the English-only list; an operator rewrote another plan's.
+    await db.sql.$executeRawUnsafe(
+      `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["Unlimited draft designs", "Standard export with watermark"]}'::jsonb WHERE "code" = 'DESIGNER_FREE'`,
+    );
+    await db.sql.$executeRawUnsafe(
+      `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["15 leads / month", "Warm, targeted leads", "Priority routing", "Internal CRM"]}'::jsonb WHERE "code" = 'JEWELER_ACTIVE'`,
+    );
+    await db.sql.$executeRawUnsafe(
+      `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["מבצע השקה למנויים"]}'::jsonb WHERE "code" = 'DESIGNER_PRO'`,
+    );
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+
+    expect((await inclusions('DESIGNER_FREE')).bullets).toEqual(free.bullets);
+    expect((await inclusions('JEWELER_ACTIVE')).bullets.every((line) => hebrew.test(line))).toBe(true);
+    expect(await inclusions('DESIGNER_PRO')).toEqual({ bullets: ['מבצע השקה למנויים'] });
+  });
+
   it('the ring size chart follows the PRD, and sizes it dropped are no longer offered', async () => {
     expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
     // A database seeded before: its US 5.00 row is still active.

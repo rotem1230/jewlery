@@ -1,7 +1,8 @@
-import { Pressable, Text, StyleSheet, View } from 'react-native'
+import { Text, StyleSheet, View } from 'react-native'
 import Svg, { Path } from 'react-native-svg'
 import { useTranslation } from '@/src/i18n'
 import { colors, heights, radii } from '@/src/theme/tokens'
+import { PressableBox } from '@/src/components/ui/PressableBox'
 
 type GoogleAuthButtonProps = {
   onPress?: () => void
@@ -36,12 +37,12 @@ function GoogleMark() {
 export function GoogleAuthButton({ onPress }: GoogleAuthButtonProps) {
   const { t } = useTranslation()
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.btn, pressed && styles.pressed]}>
+    <PressableBox onPress={onPress} style={[styles.btn]} pressedStyle={styles.pressed}>
       <View style={styles.content}>
         <GoogleMark />
         <Text style={styles.label}>{t('loginWithGoogle')}</Text>
       </View>
-    </Pressable>
+    </PressableBox>
   )
 }
 

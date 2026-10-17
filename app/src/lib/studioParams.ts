@@ -1,7 +1,7 @@
 import type { Metal, SettingItem } from '@/src/types/api'
 import { NECKLACE_STYLES, necklaceStyleForLength } from '@/src/lib/necklaceLengths'
 
-/** Maps live design.parameters onto the local catalog-GLB preview. */
+/** Reads and writes the studio's parts of design.parameters (size, metal, stones, elements…). */
 
 const METAL_HEX: Record<string, string> = {
   YELLOW_GOLD: '#E4C441',
@@ -127,41 +127,6 @@ export function metalHexFromCode(code: string | undefined): string {
   return METAL_HEX[code ?? ''] ?? METAL_HEX.YELLOW_GOLD
 }
 
-export function metalHexFromParameters(parameters: Record<string, unknown> | undefined): string {
-  const metal = recordOf(parameters?.metal)
-  const code = typeof metal?.metalCode === 'string' ? metal.metalCode : 'YELLOW_GOLD'
-  return metalHexFromCode(code)
-}
-
-export function scaleFromSize(size: StudioSize): number {
-  const code = size.sizeCode
-  const n = typeof code === 'string' || typeof code === 'number' ? Number(code) : NaN
-  if (!Number.isFinite(n)) {
-    const length = Number(size.necklaceLengthCm ?? size.wristCircumferenceCm)
-    if (Number.isFinite(length)) return 0.85 + Math.min(Math.max((length - 14) / 20, 0), 1) * 0.3
-    return 1
-  }
-  if (n > 20) return 0.85 + Math.min(Math.max((n - 52) / 12, 0), 1) * 0.3
-  return 0.85 + Math.min(Math.max((n - 5) / 4, 0), 1) * 0.3
-}
-
-export function scaleFromParameters(parameters: Record<string, unknown> | undefined): number {
-  return scaleFromSize(sizeFromParameters(parameters))
-}
-
-/** Band tube factor so 3.0mm is the default thickness; thicker bands fatten the Band mesh. */
-export function tubeFromBandWidthMm(mm: number): number {
-  const width = clampBandWidthMm(mm)
-  return Math.min(0.55, Math.max(0.16, 0.12 + width * 0.0667))
-}
-
-export function metalIdFromParameters(parameters: Record<string, unknown> | undefined): string {
-  const metal = recordOf(parameters?.metal)
-  const code = typeof metal?.metalCode === 'string' ? metal.metalCode : 'YELLOW_GOLD'
-  const purity = typeof metal?.purityCode === 'string' ? metal.purityCode : '14K'
-  return `${code}:${purity}`
-}
-
 export type StudioMetal = { metalCode: string; purityCode: string }
 
 export function metalFromParameters(parameters: Record<string, unknown> | undefined): StudioMetal {
@@ -183,22 +148,6 @@ export type StudioElement = {
   elementCode?: string
   customUploadId?: string
   placement: StudioPlacement
-}
-
-export type StudioMarker = {
-  kind: 'stone' | 'element'
-  code?: string
-  color: string
-  x: number
-  y: number
-  z: number
-}
-
-const STONE_HEX: Record<string, string> = {
-  DIAMOND: '#F5F7FF',
-  SAPPHIRE: '#2B5CDE',
-  RUBY: '#C41E3A',
-  EMERALD: '#1F8A4C',
 }
 
 export const FALLBACK_METALS: Metal[] = [
@@ -231,7 +180,7 @@ export const FALLBACK_METALS: Metal[] = [
   },
 ]
 
-/** Dummy GLB has one center stone; extras are band markers (6 unique seats). */
+/** The first stone is the centre stone; the others sit on the band (6 seats). */
 export const STUDIO_MAX_STONES = 3
 export const STUDIO_MAX_ELEMENTS = 3
 
@@ -324,19 +273,47 @@ export function aiOutputUploadFromParameters(parameters: Record<string, unknown>
   return typeof id === 'string' ? id : undefined
 }
 
-export function markersFromCatalog(stones: StudioStone[], elements: StudioElement[]): StudioMarker[] {
-  return [
-    ...stones.map((stone) => ({
-      kind: 'stone' as const,
-      code: stone.stoneCode,
-      color: STONE_HEX[stone.stoneCode] ?? '#B8C4FF',
-      ...stone.placement,
-    })),
-    ...elements.map((element) => ({
-      kind: 'element' as const,
-      code: element.elementCode,
-      color: element.customUploadId ? '#8B7CF6' : '#C9A227',
-      ...element.placement,
-    })),
-  ]
+export type StudioDrafts = {
+  size?: StudioSize | null
+  metal?: StudioMetal | null
+  settingCode?: string | null
+  stones?: StudioStone[] | null
+  elements?: StudioElement[] | null
+}
+
+/**
+ * The parameters the 3D viewer builds: the saved design with the open tab's unsaved choices
+ * applied, in the stored parameters' shape (so the viewer runs the same geometry as exports).
+ */
+export function viewerParameters(
+  itemType: 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS',
+  parameters: Record<string, unknown> | undefined,
+  drafts: StudioDrafts,
+): Record<string, unknown> {
+  const saved = parameters ?? {}
+  const next: Record<string, unknown> = { ...saved }
+  if (drafts.size) next.size = { ...(recordOf(saved.size) ?? {}), ...sizePayload(itemType, drafts.size) }
+  if (drafts.metal) next.metal = { metalCode: drafts.metal.metalCode, purityCode: drafts.metal.purityCode }
+  if (drafts.settingCode != null) next.setting = drafts.settingCode ? { settingCode: drafts.settingCode } : undefined
+  if (drafts.stones) next.stones = drafts.stones.map((stone) => ({ stoneCode: stone.stoneCode, placement: stone.placement }))
+  if (drafts.elements) {
+    next.elements = drafts.elements.map((element) => ({
+      elementCode: element.elementCode,
+      customUploadId: element.customUploadId,
+      placement: element.placement,
+    }))
+  }
+  return next
+}
+
+/** Mean inner diameter (mm) of a ring size in the size chart, or null when the chart lacks it. */
+export function ringChartDiameterMm(
+  charts: Array<{ standard: string; sizeCode: string; diameterMinMm?: string | number | null; diameterMaxMm?: string | number | null }>,
+  size: Pick<StudioSize, 'standard' | 'sizeCode'>,
+): number | null {
+  const row = charts.find((c) => c.standard === size.standard && c.sizeCode === size.sizeCode)
+  const min = finiteNumber(row?.diameterMinMm)
+  const max = finiteNumber(row?.diameterMaxMm)
+  if (min != null && max != null) return (min + max) / 2
+  return min ?? max ?? null
 }

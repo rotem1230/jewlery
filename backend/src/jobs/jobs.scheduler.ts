@@ -2,18 +2,21 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { AiService } from '../ai/ai.service';
 import { OutboxProcessor } from '../common/outbox/outbox.processor';
+import { DesignPreviewService } from '../designs/design-preview.service';
 import { QuotesService } from '../quotes/quotes.service';
+import { RenderJobsService } from '../render-jobs/render-jobs.service';
 import { SubscriptionLifecycleService } from '../subscriptions/subscription-lifecycle.service';
 import { VisualizationService } from '../visualization/visualization.service';
 
 const OUTBOX_MS = 2_000;
 const SUBSCRIPTION_SWEEP_MS = 10 * 60 * 1000;
 const VIZ_PURGE_MS = 60 * 60 * 1000;
+const PREVIEW_BACKFILL_MS = 2 * 60 * 1000;
 
 /**
  * Process-local timers for the outbox drain, the subscription lifecycle sweep, the
- * visualization retention purge, failing AI jobs left behind by a restart and expiring quotes past
- * their validity. Each job runs at most once at a time per process (a slow run is
+ * visualization retention purge, failing AI and render jobs left behind by a restart, expiring
+ * quotes past their validity and rendering design pictures that are missing or out of date. Each job runs at most once at a time per process (a slow run is
  * never overlapped by the next tick); cross-instance safety comes from the jobs themselves
  * (outbox rows are claimed with SKIP LOCKED, sweeps use conditional updates).
  * Disabled with JOBS_ENABLED=false (tests drive the jobs directly).
@@ -31,6 +34,8 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly visualization: VisualizationService,
     private readonly ai: AiService,
     private readonly quotes: QuotesService,
+    private readonly renderJobs: RenderJobsService,
+    private readonly previews: DesignPreviewService,
   ) {}
 
   onModuleInit(): void {
@@ -43,6 +48,9 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
     this.schedule('viz-purge', VIZ_PURGE_MS, () => this.visualization.purgeExpired(), true);
     this.schedule('ai-stale', SUBSCRIPTION_SWEEP_MS, () => this.ai.failStaleJobs(), true);
     this.schedule('quote-expiry', SUBSCRIPTION_SWEEP_MS, () => this.quotes.expireStale(), true);
+    this.schedule('render-stale', SUBSCRIPTION_SWEEP_MS, () => this.renderJobs.failStaleJobs(), true);
+    this.schedule('render-purge', VIZ_PURGE_MS, () => this.renderJobs.purgeOldOutputs(), true);
+    this.schedule('preview-backfill', PREVIEW_BACKFILL_MS, () => this.previews.backfill(), true);
   }
 
   onModuleDestroy(): void {

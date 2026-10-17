@@ -10,8 +10,11 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { QuoteApproveSuccessModal } from '@/src/components/ui/QuoteApproveSuccessModal'
 import { acceptQuote, declineQuote, getQuote } from '@/src/api/quotes'
 import { createJewelryPaymentIntent } from '@/src/api/jewelryPayments'
+import { getFeatureFlags } from '@/src/api/visualization'
 import { apiErrorCode, parseApiError } from '@/src/lib/api'
-import { contentBodyText, currencySymbol, displayName, formatMoney, imageFromUpload } from '@/src/lib/format'
+import { contentBodyText, currencySymbol, displayName, formatMoney } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
+import { isolate } from '@/src/lib/rtl'
 import { quoteTechRows, type QuoteTechRow } from '@/src/lib/quoteView'
 import { canAcceptQuote, effectiveQuoteStatus, quoteAcceptErrorMessage, quoteStatusLabel } from '@/src/lib/quoteStatus'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
@@ -19,7 +22,6 @@ import { useAppSelector } from '@/src/store/hooks'
 import { colors, spacing } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import type { ChatsStackParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<ChatsStackParamList, 'QuoteDetails'>
 type Route = RouteProp<ChatsStackParamList, 'QuoteDetails'>
@@ -43,11 +45,20 @@ export function QuoteDetailsScreen() {
   const { data: quote, loading, error, retry, refresh } = useAsyncData(load, {
     deps: [accessToken, route.params.quoteId],
   })
+  // In-app payment is offered only while its feature is on (phase3_jewelry_pay); flags that cannot
+  // be loaded count as off.
+  const { data: flags } = useAsyncData(
+    (signal) => getFeatureFlags(signal).catch((): Record<string, boolean> => ({})),
+    { deps: [accessToken] },
+  )
 
   // Expired, withdrawn or declined quotes show their status and offer no accept.
   const canAccept = quote ? canAcceptQuote(quote, userId) : false
   const statusLabel = quote ? quoteStatusLabel(effectiveQuoteStatus(quote), locale) : ''
-  const canPayInApp = quote?.status === 'ACCEPTED' && quote.authorUserId !== userId
+  const canPayInApp =
+    flags?.phase3_jewelry_pay === true && quote?.status === 'ACCEPTED' && quote.authorUserId !== userId
+  const notes = quote?.notes?.trim()
+  const picture = designPicture(quote?.design)
 
   const techLabel: Record<QuoteTechRow['key'], string> = {
     type: t('quoteTechTypeLabel'),
@@ -62,10 +73,11 @@ export function QuoteDetailsScreen() {
   const symbol = currencySymbol(quote?.currency)
   const jewelerName =
     quote?.author?.businessName ?? displayName(quote?.author?.firstName, quote?.author?.lastName, t('quoteJewelerFallback'))
+  // Names and amounts in Latin letters or digits keep their place in the Hebrew sentence.
   const successMessage = t('quoteSuccessMessage')
-    .replace('{jeweler}', jewelerName)
-    .replace('{design}', quote?.design?.title ?? quote?.design?.itemType?.labelHe ?? '')
-    .replace('{total}', formatMoney(quote?.totalPrice, symbol))
+    .replace('{jeweler}', isolate(jewelerName))
+    .replace('{design}', isolate(quote?.design?.title ?? quote?.design?.itemType?.labelHe ?? ''))
+    .replace('{total}', isolate(formatMoney(quote?.totalPrice, symbol)))
 
   const onAccept = async () => {
     if (!quote) return
@@ -161,11 +173,7 @@ export function QuoteDetailsScreen() {
           contentContainerStyle={[styles.scrollContent, { paddingBottom: 24 + insets.bottom }]}
           showsVerticalScrollIndicator={false}
         >
-          <Image
-            source={imageFromUpload(quote?.design?.thumbnailUploadId, heroRing)}
-            style={styles.hero}
-            resizeMode="cover"
-          />
+          {quote ? <Image source={picture.source} style={styles.hero} resizeMode={picture.resizeMode} /> : null}
 
           <View style={styles.card}>
             <Text style={styles.cardTitle}>{t('quoteSummaryTitle')}</Text>
@@ -202,6 +210,13 @@ export function QuoteDetailsScreen() {
               </View>
             ))}
           </View>
+
+          {notes ? (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>{t('quoteNotesTitle')}</Text>
+              <Text style={styles.notes}>{notes}</Text>
+            </View>
+          ) : null}
 
           <View style={styles.important}>
             <View style={styles.importantHeader}>
@@ -345,6 +360,17 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: colors.ink,
     textAlign: 'left',
+  },
+  notes: {
+    width: '100%',
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '400',
+    lineHeight: 21,
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+    paddingBottom: 8,
   },
   important: { width: '100%', gap: 8, paddingVertical: 4 },
   importantHeader: {

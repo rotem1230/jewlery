@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ItemType, ItemTypeConfig } from '@prisma/client';
 import Ajv, { ErrorObject, ValidateFunction } from 'ajv';
 import { PrismaService } from '../database/prisma.service';
+import { MAX_ELEMENTS, MAX_STONES } from '../jewelry/geometry';
 
 export type ItemTypeWithConfig = ItemType & { config: ItemTypeConfig | null };
 
@@ -135,6 +136,15 @@ export class WizardEngineService {
   async validateParameters(itemTypeId: string, parameters: unknown): Promise<ValidationResult> {
     const itemType = await this.loadConfig(itemTypeId);
     const errors: string[] = [];
+
+    // Hard bounds whatever the item type's schema says: every design is built into a mesh.
+    const raw = (parameters ?? {}) as Record<string, unknown>;
+    if (Array.isArray(raw.stones) && raw.stones.length > MAX_STONES) {
+      return { valid: false, errors: [`/stones must have at most ${MAX_STONES} items`] };
+    }
+    if (Array.isArray(raw.elements) && raw.elements.length > MAX_ELEMENTS) {
+      return { valid: false, errors: [`/elements must have at most ${MAX_ELEMENTS} items`] };
+    }
 
     if (!itemType.config) {
       // No schema configured yet for this item type — accept as-is.

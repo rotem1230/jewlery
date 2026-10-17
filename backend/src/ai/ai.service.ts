@@ -8,6 +8,7 @@ import {
   Logger,
   NotFoundException,
   OnModuleDestroy,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { AiGenerationJob, JobStatus, User, UserRole } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
@@ -29,10 +30,14 @@ const STALE_JOB_MS = 15 * 60 * 1000;
 
 export type AiJobView = AiGenerationJob & { outputUrl: string | null };
 
+/** Pictures the provider can read (the app sends JPEG / PNG photos). */
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
 /**
- * Text-to-3D generation calls a paid provider and can take minutes, so it is asynchronous
- * (the request returns 202 with a QUEUED job that the app polls) and bounded per user: one job
- * in flight and a daily quota (AppConfig `ai_limits.dailyPerUser`).
+ * 3D generation (from the design's inspiration picture, or from the prompt) calls a paid provider
+ * and can take minutes, so it is asynchronous (the request returns 202 with a QUEUED job that the
+ * app polls) and bounded per user: one job in flight and a daily quota (AppConfig
+ * `ai_limits.dailyPerUser`). Without a configured provider the request is refused up front.
  */
 @Injectable()
 export class AiService implements OnModuleDestroy {
@@ -61,7 +66,15 @@ export class AiService implements OnModuleDestroy {
   }
 
   async createInspiration(user: User, dto: CreateAiInspirationDto): Promise<AiJobView> {
+    if (!this.engine.isConfigured()) {
+      throw new ServiceUnavailableException({
+        success: false,
+        message: 'AI generation is not available right now',
+        code: 'AI_NOT_CONFIGURED',
+      });
+    }
     let itemCode = 'RING';
+    let imageUploadId: string | null = null;
     if (dto.designId) {
       const design = await this.prisma.design.findFirst({
         where: { id: dto.designId, deletedAt: null },
@@ -74,6 +87,7 @@ export class AiService implements OnModuleDestroy {
         throw new ForbiddenException({ success: false, message: 'Not the design owner' });
       }
       itemCode = design.itemType.code;
+      imageUploadId = await this.inspirationImage(design.ownerUserId, design.parameters);
     }
 
     const limit = await this.dailyLimit();
@@ -117,7 +131,7 @@ export class AiService implements OnModuleDestroy {
       after: toJsonValue(job),
     });
 
-    const work = this.process(job, itemCode, user.id).catch((err: Error) =>
+    const work = this.process(job, itemCode, user.id, imageUploadId).catch((err: Error) =>
       this.logger.error(`AI job ${job.id} crashed: ${err.message}`),
     );
     this.inFlight.add(work);
@@ -127,10 +141,24 @@ export class AiService implements OnModuleDestroy {
   }
 
   /**
-   * Adapter writes a GLB we host in Uploads. Provider URLs are downloaded immediately
+   * The design's inspiration picture (`parameters.inspirationUploadId`) when it is a picture the
+   * design's owner uploaded; anything else in that field is ignored.
+   */
+  private async inspirationImage(ownerUserId: string, parameters: unknown): Promise<string | null> {
+    const id = (parameters as { inspirationUploadId?: unknown } | null)?.inspirationUploadId;
+    if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) return null;
+    const upload = await this.prisma.upload.findFirst({
+      where: { id, ownerUserId, deletedAt: null, status: 'READY' },
+      select: { id: true, mimeType: true },
+    });
+    return upload && IMAGE_TYPES.has(upload.mimeType) ? upload.id : null;
+  }
+
+  /**
+   * Adapter returns a GLB we host in Uploads. Provider URLs are downloaded immediately
    * (they expire) and never returned to the client.
    */
-  private async process(job: AiGenerationJob, itemCode: string, ownerUserId: string): Promise<void> {
+  private async process(job: AiGenerationJob, itemCode: string, ownerUserId: string, imageUploadId: string | null): Promise<void> {
     // Every transition is conditional on the state this worker expects: once the stale sweep has
     // failed a job (and the user may have started another), a late result must not revive it.
     const started = await this.prisma.aiGenerationJob.updateMany({
@@ -141,7 +169,13 @@ export class AiService implements OnModuleDestroy {
       return;
     }
     try {
-      const generated = await this.engine.generate({ prompt: job.prompt, itemCode });
+      let image: { bytes: Buffer; mimeType: string } | undefined;
+      if (imageUploadId) {
+        const upload = await this.prisma.upload.findUnique({ where: { id: imageUploadId }, select: { mimeType: true } });
+        const bytes = await this.uploads.readBytes(imageUploadId);
+        if (upload && bytes) image = { bytes, mimeType: upload.mimeType };
+      }
+      const generated = await this.engine.generate({ prompt: job.prompt, itemCode, image });
       const upload = await this.uploads.createGeneratedLocal(ownerUserId, generated.glb, GLB_MIME);
       const finished = await this.prisma.aiGenerationJob.updateMany({
         where: { id: job.id, status: JobStatus.RUNNING },

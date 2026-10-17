@@ -1,10 +1,19 @@
 import { BadRequestException, INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { json, raw, urlencoded } from 'express';
+import { Server } from 'http';
 import helmet from 'helmet';
 import { ApiFieldError } from '../common/dto/api-response.dto';
 import { AllExceptionsFilter, HttpExceptionFilter } from '../common/filters/all-exceptions.filter';
 import { parseTrustProxy } from './trust-proxy';
+
+/**
+ * How long an idle client connection stays open. Clients (the phone, the hosting proxy in front of
+ * the API) send their next request on a connection they keep; Node closes idle ones after 5 s, and a
+ * request sent on a connection that was just closed fails without an answer (an upload cannot be
+ * sent again). Longer than the proxies in front of the API keep theirs (commonly 60 s).
+ */
+export const KEEP_ALIVE_TIMEOUT_MS = 65_000;
 
 /**
  * Global HTTP pipeline shared by main.ts and the e2e test harness, so tests exercise exactly
@@ -15,6 +24,11 @@ export function configureApp(app: INestApplication): void {
   const apiPrefix = config.get<string>('apiPrefix', 'api/v1');
   const corsOrigins = config.get<string[]>('corsOrigins', []);
   const bodyLimit = config.get<number>('bodySizeLimit', 1_048_576);
+
+  const server = app.getHttpServer() as Server;
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+  // Waiting for a request's headers must outlast the idle wait, or the socket is cut first.
+  server.headersTimeout = KEEP_ALIVE_TIMEOUT_MS + 1_000;
 
   // Client IPs feed the per-client rate limits; an invalid value throws here, at boot.
   app.getHttpAdapter().getInstance().set('trust proxy', parseTrustProxy(config.get<string>('trustProxy')));

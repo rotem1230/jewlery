@@ -11,7 +11,8 @@ const SIGNATURE_HEX = /^[a-f0-9]{64}$/;
  * Decides who may read an uploaded file and mints short-lived signed URLs for private media.
  *
  * Public (served to anyone): seed showcase assets, avatars of active users, logos / portfolio
- * images of PUBLISHED jeweler profiles, thumbnails of PUBLISHED or COMPLETED designs.
+ * images of PUBLISHED jeweler profiles, thumbnails and server-rendered preview pictures of
+ * PUBLISHED or COMPLETED designs.
  * Everything else (chat images and voice notes, selfies, AI / render outputs, drafts) needs a
  * signed URL issued to an authorized caller, or the bearer token of the owner / a conversation
  * participant / an admin.
@@ -77,12 +78,13 @@ export class UploadAccessService {
       this.prisma.portfolioItem.count({
         where: { uploadId: upload.id, profile: { userId: owner, publishStatus: ProfilePublishStatus.PUBLISHED } },
       }),
+      // The thumbnail, or the picture the server renders of the design (same rule).
       this.prisma.design.count({
         where: {
           ownerUserId: owner,
-          thumbnailUploadId: upload.id,
           deletedAt: null,
           status: { in: [DesignStatus.PUBLISHED, DesignStatus.COMPLETED] },
+          OR: [{ thumbnailUploadId: upload.id }, { previewUploadId: upload.id }],
         },
       }),
       // Pictures a listed design is specified with (PRD 5.4): its inspiration and custom elements,

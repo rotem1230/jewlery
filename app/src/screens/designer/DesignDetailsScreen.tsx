@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react'
-import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
+import { useCallback, useRef, useState } from 'react'
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { useFocusEffect, useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
 import { ChevronDown, ChevronUp } from 'lucide-react-native'
@@ -21,7 +21,7 @@ import {
 } from '@/src/api/designs'
 import { listMetals, listRegions, metalChoices, parseMetalChoice } from '@/src/api/masterData'
 import { parseApiError } from '@/src/lib/api'
-import { imageFromMedia } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
 import { specsFromDesign } from '@/src/lib/designSpecs'
 import {
   completedByLabel,
@@ -39,7 +39,6 @@ import { colors, spacing } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import { FilterOptionsSheet } from '@/src/components/chats/FilterOptionsSheet'
 import type { DesignerTabParamList, MyDesignsStackParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<MyDesignsStackParamList, 'DesignDetails'>
 type TabNav = BottomTabNavigationProp<DesignerTabParamList>
@@ -74,6 +73,20 @@ export function DesignDetailsScreen() {
     (signal) => listDesignQuotes(route.params.designId, signal),
     { deps: [accessToken, route.params.designId] },
   )
+  // Back from the studio (or another tab) the design may have changed: reload it in the
+  // background, keeping what is shown until the fresh answer replaces it. The first focus is the
+  // initial load itself.
+  const focusedOnce = useRef(false)
+  const refreshQuotes = quotesQuery.refresh
+  useFocusEffect(
+    useCallback(() => {
+      if (focusedOnce.current) {
+        void refresh()
+        void refreshQuotes()
+      }
+      focusedOnce.current = true
+    }, [refresh, refreshQuotes]),
+  )
   const metalsQuery = useAsyncData((signal) => listMetals(signal), { deps: [] })
   const regionsQuery = useAsyncData((signal) => listRegions(signal), { deps: [] })
   const metalOptions = metalChoices(metalsQuery.data ?? [], locale)
@@ -84,6 +97,7 @@ export function DesignDetailsScreen() {
   const quoteRows = previousQuoteRows(quotesQuery.data ?? [], locale)
   const showQuotes = status !== 'DRAFT' || quoteRows.length > 0
   const specs = design ? specsFromDesign(design) : []
+  const picture = designPicture(design)
   const quoteCount = quotesQuery.data ? quoteRows.length : design?.quoteCount ?? 0
   const completedBy = design ? completedByLabel(design, locale) : null
   const expiry = status === 'PUBLISHED' ? listingExpiryLabel(design?.expiresAt, locale) : null
@@ -180,7 +194,7 @@ export function DesignDetailsScreen() {
 
   const openStudio = () => {
     if (!design) return
-    tabNavigation?.navigate('Home', { screen: 'DesignStudio', params: { designId: design.id } })
+    tabNavigation?.navigate('Home', { screen: 'DesignStudio', initial: false, params: { designId: design.id } })
   }
 
   const closePublishSuccess = () => setPublishSuccessOpen(false)
@@ -206,19 +220,12 @@ export function DesignDetailsScreen() {
             <>
               <DesignDetailsCard
                 sectionTitle={t('designDetailsShort')}
-                image={imageFromMedia(design.thumbnailUrl, design.thumbnailUploadId, heroRing)}
+                image={picture.source}
+                imageResizeMode={picture.resizeMode}
                 title={designDisplayTitle(design, locale)}
                 quote={design.description || ''}
                 specs={specs}
-                onMaximize={() => {
-                  const source = imageFromMedia(design.thumbnailUrl, design.thumbnailUploadId, heroRing)
-                  if (typeof source === 'object' && source && 'uri' in source && source.uri) {
-                    setViewerUri(source.uri)
-                    return
-                  }
-                  const resolved = Image.resolveAssetSource(source)
-                  if (resolved?.uri) setViewerUri(resolved.uri)
-                }}
+                onMaximize={picture.uri ? () => setViewerUri(picture.uri ?? null) : undefined}
               />
 
               {completedBy || expiry || regionLabel ? (
@@ -396,6 +403,7 @@ export function DesignDetailsScreen() {
                             onPress={() =>
                               tabNavigation?.navigate('Chats', {
                                 screen: 'QuoteDetails',
+                                initial: false,
                                 params: { quoteId: row.id, chatId: row.conversationId },
                               })
                             }

@@ -97,14 +97,35 @@ media over lowering it).
   request; on other instances a socket of that account can no longer join conversations, and
   closes when its token expires (15 min by default). A Socket.IO Redis adapter would close them
   everywhere at once.
-- **Media storage.** Uploads are stored on local disk (`/app/uploads-local`, mount a persistent
-  volume). The S3 presign/confirm flow is not implemented and answers 501 in production. Local
-  storage limits the API to instances sharing that volume. A CDN or caching proxy in front of the
-  signed media URLs is recommended.
+- **Media storage.** In production uploads and generated files are stored in PostgreSQL
+  (`STORAGE_DRIVER=database`, table `upload_blobs`), so they survive deploys and restarts on hosts
+  without a persistent disk and work across instances. They count toward the database's size:
+  watch it, and move to object storage (S3 / R2) as volume grows. `STORAGE_DRIVER=local` keeps
+  files in `/app/uploads-local` (needs a persistent volume). The S3 presign/confirm flow is not
+  implemented and answers 501 in production. A CDN or caching proxy in front of the signed media
+  URLs is recommended.
+- **Exports and pictures.** STL / OBJ exports, HD pictures (1600 px), design preview pictures and
+  try-on images are built from each design's parameters by the parametric geometry in
+  `backend/src/jewelry` — the same code the app's 3D studio runs (synced into the app by
+  `app/scripts/sync-jewelry-geometry.cjs`). Rendering is on the CPU in slices, so the API keeps
+  answering; on a small instance an HD picture takes several seconds (the app polls the job).
+  STEP export is not available (400 `EXPORT_FORMAT_UNSUPPORTED`).
+- **Try-on** (PRD 5.10) works when the `phase2_visualization` flag is on and the plan includes
+  `personal_visualization` (Designer Pro). The designer places the piece on their photo in the app;
+  the server composes the picture at that placement. The transparent overlay the app places
+  (`GET /visualization/designs/:id/overlay`) is served only to the design's owner, with their
+  bearer token (the app fetches it with its session: an Android image view drops request headers).
+- **HTTP keep-alive.** Idle client connections stay open 65 s (`KEEP_ALIVE_TIMEOUT_MS` in
+  `backend/src/bootstrap/configure-app.ts`), longer than the proxies in front of the API keep
+  theirs. With Node's 5 s default, a request sent on a connection the server had just closed
+  failed without an answer, e.g. the first photo upload after a short pause.
+- **AI inspiration** needs `TRIPO_API_KEY`; without it the request is refused (503
+  `AI_NOT_CONFIGURED`) — no stand-in models. With an inspiration picture the model is made from
+  the picture (image to model), otherwise from the note.
 - **Background jobs** (`JOBS_ENABLED=true`): outbox delivery, subscription lifecycle, visualization
-  retention purge (also once at start-up), stale AI jobs, and expiring pending quotes past their
-  `validUntil` (every 10 minutes). All are safe to run on several instances at once (conditional
-  updates).
+  retention purge (also once at start-up), stale AI and render jobs, expiring pending quotes past
+  their `validUntil` (every 10 minutes), and rendering design pictures that are missing or out of
+  date (every 2 minutes). All are safe to run on several instances at once (conditional updates).
 
 ## 4. Payments
 

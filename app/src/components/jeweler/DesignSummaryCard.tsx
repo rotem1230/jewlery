@@ -7,11 +7,15 @@ import { colors, radii } from '@/src/theme/tokens'
 type DesignSummaryCardProps = {
   sectionTitle: string
   image: ImageSourcePropType
+  /** `center` draws a small illustration at its own size (a design without a picture). */
+  imageResizeMode?: 'cover' | 'center'
   title: string
   quote: string
   specs: DesignSpec[]
   /** Short lines under the title, e.g. the listing period ("בתוקף עד …"). */
   details?: string[]
+  /** The inspiration picture of the brief (PRD 5.4), when the designer added one. */
+  inspiration?: { title: string; uri: string }
 }
 
 /**
@@ -21,10 +25,12 @@ type DesignSummaryCardProps = {
 export function DesignSummaryCard({
   sectionTitle,
   image,
+  imageResizeMode = 'cover',
   title,
   quote,
   specs,
   details,
+  inspiration,
 }: DesignSummaryCardProps) {
   return (
     <View style={styles.card}>
@@ -34,7 +40,7 @@ export function DesignSummaryCard({
       </View>
 
       <View style={styles.mediaWrap}>
-        <Image source={image} style={styles.image} resizeMode="cover" />
+        <Image source={image} style={styles.image} resizeMode={imageResizeMode} />
       </View>
 
       <View style={styles.copy}>
@@ -48,6 +54,20 @@ export function DesignSummaryCard({
       </View>
 
       <SpecGrid items={specs} />
+
+      {inspiration ? (
+        <View style={styles.inspiration}>
+          <Text style={styles.inspirationTitle}>{inspiration.title}</Text>
+          <View style={styles.inspirationWrap}>
+            <Image
+              source={{ uri: inspiration.uri }}
+              style={styles.image}
+              resizeMode="cover"
+              accessibilityLabel={inspiration.title}
+            />
+          </View>
+        </View>
+      ) : null}
     </View>
   )
 }
@@ -83,6 +103,26 @@ const styles = StyleSheet.create({
   },
   image: {
     ...StyleSheet.absoluteFill,
+  },
+  inspiration: {
+    width: '100%',
+    gap: 8,
+  },
+  inspirationTitle: {
+    width: '100%',
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  inspirationWrap: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: radii.md,
+    overflow: 'hidden',
+    backgroundColor: '#F1F5F9',
   },
   copy: {
     width: '100%',

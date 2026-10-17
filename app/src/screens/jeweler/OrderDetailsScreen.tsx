@@ -16,14 +16,15 @@ import { declineMyOrder } from '@/src/api/jewelerProfiles'
 import { withdrawQuote } from '@/src/api/quotes'
 import { parseApiError } from '@/src/lib/api'
 import { listingExpiry } from '@/src/lib/atelierView'
-import { currencySymbol, displayName, formatMoney, imageFromUpload } from '@/src/lib/format'
+import { currencySymbol, displayName, formatMoney } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
+import { mediaUrl } from '@/src/lib/media'
 import { jewelerErrorKey, shouldReload, type JewelerAction } from '@/src/lib/jewelerErrors'
 import { designSpecRows, orderActions, orderBadge } from '@/src/lib/jewelerOrders'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation } from '@/src/i18n'
 import type { JewelerTabParamList, MyOrdersStackParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<MyOrdersStackParamList, 'OrderDetails'>
 type Route = RouteProp<MyOrdersStackParamList, 'OrderDetails'>
@@ -89,6 +90,7 @@ export function OrderDetailsScreen() {
       const conv = await createConversation(request.designId, [request.requesterId])
       tabNavigation.navigate('Chats', {
         screen: 'ChatThread',
+        initial: false,
         params: { chatId: conv.id, title: displayName(requester?.firstName, requester?.lastName) },
       })
     } catch (err) {
@@ -102,6 +104,7 @@ export function OrderDetailsScreen() {
     if (!request) return
     tabNavigation.navigate('Atelier', {
       screen: 'SubmitQuote',
+      initial: false,
       params: {
         designId: request.designId,
         requestId: request.id,
@@ -155,6 +158,8 @@ export function OrderDetailsScreen() {
     ? new Date(request.createdAt).toLocaleDateString(locale === 'he' ? 'he-IL' : 'en-GB')
     : ''
   const itemType = request?.design?.itemType
+  const picture = designPicture(request?.design)
+  const inspirationUri = mediaUrl(request?.design?.inspirationUrl)
 
   return (
     <View style={styles.root}>
@@ -184,11 +189,13 @@ export function OrderDetailsScreen() {
 
               <DesignSummaryCard
                 sectionTitle={t('jewelerOrderDetailDesignTitle')}
-                image={imageFromUpload(request.design?.thumbnailUploadId, heroRing)}
+                image={picture.source}
+                imageResizeMode={picture.resizeMode}
                 title={request.design?.title || itemType?.labelHe || t('jwUntitledDesign')}
                 details={details}
                 quote={request.design?.description ?? ''}
                 specs={specs}
+                inspiration={inspirationUri ? { title: t('jwInspirationTitle'), uri: inspirationUri } : undefined}
               />
 
               {quote ? (

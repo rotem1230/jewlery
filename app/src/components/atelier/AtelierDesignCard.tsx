@@ -1,6 +1,7 @@
-import { Image, type ImageSourcePropType, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Image, type ImageSourcePropType, StyleSheet, Text, View } from 'react-native'
 import { ChevronLeft } from 'lucide-react-native'
 import { colors, radii } from '@/src/theme/tokens'
+import { PressableBox } from '@/src/components/ui/PressableBox'
 
 type AtelierDesignCardProps = {
   title: string
@@ -10,6 +11,8 @@ type AtelierDesignCardProps = {
   expiryLabel?: string
   ctaLabel: string
   image: ImageSourcePropType
+  /** `center` draws a small illustration at its own size (a design without a picture). */
+  imageResizeMode?: 'cover' | 'center'
   onPress?: () => void
   sponsored?: boolean
   sponsoredLabel?: string
@@ -25,6 +28,7 @@ export function AtelierDesignCard({
   expiryLabel,
   ctaLabel,
   image,
+  imageResizeMode = 'cover',
   onPress,
   sponsored,
   sponsoredLabel,
@@ -32,7 +36,7 @@ export function AtelierDesignCard({
   return (
     <View style={styles.card}>
       <View style={styles.row}>
-        <Image source={image} style={styles.thumb} resizeMode="cover" />
+        <Image source={image} style={styles.thumb} resizeMode={imageResizeMode} />
 
         <View style={styles.copy}>
           {sponsored ? (
@@ -53,16 +57,16 @@ export function AtelierDesignCard({
             </Text>
           ) : null}
 
-          <Pressable
+          <PressableBox
             onPress={onPress}
-            style={({ pressed }) => [styles.ctaPressable, pressed && styles.pressed]}
+            style={[styles.ctaPressable]} pressedStyle={styles.pressed}
             accessibilityRole="button"
           >
             <View style={styles.cta}>
               <ChevronLeft size={14} color={colors.textInverse} strokeWidth={2.25} />
               <Text style={styles.ctaLabel}>{ctaLabel}</Text>
             </View>
-          </Pressable>
+          </PressableBox>
         </View>
       </View>
     </View>

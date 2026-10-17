@@ -15,7 +15,9 @@ import { createConversation } from '@/src/api/chat'
 import { createQuote, getQuote, updateQuote, withdrawQuote } from '@/src/api/quotes'
 import { parseApiError } from '@/src/lib/api'
 import { isNotFound, listingExpiry } from '@/src/lib/atelierView'
-import { currencySymbol, displayName, imageFromUpload } from '@/src/lib/format'
+import { currencySymbol, displayName } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
+import { mediaUrl } from '@/src/lib/media'
 import { jewelerErrorKey, shouldReload, type JewelerAction } from '@/src/lib/jewelerErrors'
 import { designSpecRows } from '@/src/lib/jewelerOrders'
 import {
@@ -29,7 +31,6 @@ import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation } from '@/src/i18n'
 import type { AtelierDesign } from '@/src/types/api'
 import type { AtelierStackParamList, JewelerTabParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<AtelierStackParamList, 'SubmitQuote'>
 type Route = RouteProp<AtelierStackParamList, 'SubmitQuote'>
@@ -109,6 +110,7 @@ export function SubmitQuoteScreen() {
   const goToChat = (conversationId: string) =>
     tabNavigation.navigate('Chats', {
       screen: 'ChatThread',
+      initial: false,
       params: { chatId: conversationId, title: displayName(owner?.firstName, owner?.lastName) },
     })
 
@@ -220,6 +222,8 @@ export function SubmitQuoteScreen() {
         />
       )
     }
+    const picture = designPicture(design)
+    const inspirationUri = mediaUrl(design?.inspirationUrl)
     if (!design) {
       return (
         <>
@@ -250,7 +254,9 @@ export function SubmitQuoteScreen() {
 
         <DesignSummaryCard
           sectionTitle={t('jewelerOrderDetailDesignTitle')}
-          image={imageFromUpload(design.thumbnailUploadId, heroRing)}
+          image={picture.source}
+          imageResizeMode={picture.resizeMode}
+          inspiration={inspirationUri ? { title: t('jwInspirationTitle'), uri: inspirationUri } : undefined}
           title={design.title || design.itemType?.labelHe || t('jwUntitledDesign')}
           details={
             expiry

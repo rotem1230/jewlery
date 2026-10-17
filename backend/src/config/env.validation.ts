@@ -1,5 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, validateSync } from 'class-validator';
+import { STORAGE_DRIVERS } from './configuration';
 
 /** Secrets that appear in this repository (examples, scripts, dev fallback) and so are public. */
 export const KNOWN_PUBLIC_JWT_SECRETS: ReadonlySet<string> = new Set([
@@ -151,6 +152,10 @@ export function validateEnv(config: Record<string, unknown>) {
   }
   if (config.PAYMENTS_PROVIDER && !PAYMENT_PROVIDERS.includes(String(config.PAYMENTS_PROVIDER))) {
     problems.push(`PAYMENTS_PROVIDER must be unset or one of: ${PAYMENT_PROVIDERS.join(', ')}`);
+  }
+  // Unset or empty = the default for NODE_ENV (database in production, local otherwise).
+  if (config.STORAGE_DRIVER && !(STORAGE_DRIVERS as readonly string[]).includes(String(config.STORAGE_DRIVER))) {
+    problems.push(`STORAGE_DRIVER must be unset or one of: ${STORAGE_DRIVERS.join(', ')}`);
   }
 
   if (config.NODE_ENV === 'production') {

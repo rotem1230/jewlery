@@ -21,6 +21,16 @@ function list(value: string | undefined): string[] {
 /** Local web clients; production lists its origins explicitly (no default). */
 const DEVELOPMENT_CORS_ORIGINS = 'http://localhost:3000,http://localhost:8081';
 
+/**
+ * Where uploaded and generated files are kept (STORAGE_DRIVER):
+ *  - database: in the `upload_blobs` table, so they survive deploys and restarts of hosts without
+ *    a persistent disk (the production default);
+ *  - local: in `uploads-local/` on this machine's disk (the default everywhere else).
+ * Existing files are always read from the store they were written to, whatever the driver.
+ */
+export const STORAGE_DRIVERS = ['database', 'local'] as const;
+export type StorageDriver = (typeof STORAGE_DRIVERS)[number];
+
 export const configuration = () => {
   const port = int(process.env.PORT, 3000);
   const production = process.env.NODE_ENV === 'production';
@@ -41,6 +51,10 @@ export const configuration = () => {
       bucket: process.env.S3_BUCKET ?? 'local-dev',
       endpoint: process.env.S3_ENDPOINT,
     },
+    storage: {
+      /** See STORAGE_DRIVERS; unset or empty = database in production, local otherwise. */
+      driver: process.env.STORAGE_DRIVER || (production ? 'database' : 'local'),
+    },
     mail: {
       from: process.env.MAIL_FROM ?? 'no-reply@mailnvosky.local',
       smtpUrl: process.env.SMTP_URL,
@@ -48,7 +62,7 @@ export const configuration = () => {
     tripo: {
       apiKey: process.env.TRIPO_API_KEY,
       /** Largest model accepted from the provider (the file is held in memory while stored). */
-      maxModelBytes: int(process.env.TRIPO_MAX_MODEL_BYTES, 50 * 1024 * 1024),
+      maxModelBytes: int(process.env.TRIPO_MAX_MODEL_BYTES, 20 * 1024 * 1024),
     },
     visualization: {
       /** Try-on jobs one user may start per 24 hours (each one stores a generated image). */

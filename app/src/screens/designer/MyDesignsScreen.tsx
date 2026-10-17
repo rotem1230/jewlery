@@ -20,7 +20,7 @@ import { FilterChip } from '@/src/components/designs/FilterChip'
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { listDesigns } from '@/src/api/designs'
-import { imageFromMedia } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
 import { completedByLabel, designDisplayTitle } from '@/src/lib/designActions'
 import {
   appendDesignPage,
@@ -35,7 +35,6 @@ import { colors, spacing } from '@/src/theme/tokens'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
 import type { DesignStatus as ApiStatus } from '@/src/types/api'
 import type { DesignerTabParamList, MyDesignsStackParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type DesignStatus = 'draft' | 'published' | 'completed' | 'archived'
 type FilterId = 'all' | DesignStatus
@@ -188,6 +187,7 @@ export function MyDesignsScreen() {
               <View style={styles.list}>
                 {items.map((item) => {
                   const status = uiStatus(item.status)
+                  const picture = designPicture(item)
                   return (
                     <DesignListCard
                       key={item.id}
@@ -201,7 +201,8 @@ export function MyDesignsScreen() {
                           ? t('quotesCount').replace('{{count}}', String(item.quoteCount))
                           : undefined
                       }
-                      image={imageFromMedia(item.thumbnailUrl, item.thumbnailUploadId, heroRing)}
+                      image={picture.source}
+                      imageResizeMode={picture.resizeMode}
                       onPress={() => navigation.navigate('DesignDetails', { designId: item.id })}
                     />
                   )
@@ -223,7 +224,7 @@ export function MyDesignsScreen() {
             label={t('startNewDesign')}
             variant="primary"
             flex={false}
-            onPress={() => tabNavigation?.navigate('Home', { screen: 'CategorySelect' })}
+            onPress={() => tabNavigation?.navigate('Home', { screen: 'CategorySelect', initial: false })}
           />
         </View>
       </View>

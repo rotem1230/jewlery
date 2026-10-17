@@ -20,11 +20,11 @@ import {
 } from '@/src/lib/chatThread'
 import { connectConversationSocket, type ConversationSocket } from '@/src/lib/socket'
 import { formatClock, formatDayLabel, groupMessagesByDay } from '@/src/lib/chatTime'
+import { avatarProps, personName } from '@/src/lib/people'
 import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation } from '@/src/i18n'
 import { useVoicePlayback } from '@/src/hooks/useVoicePlayback'
-import type { ChatMessage, QuoteSummary } from '@/src/types/api'
-import jewelerAvatar from '../../assets/images/designs/jeweler-avatar-1.png'
+import type { ChatMessage, ChatPeerUser, QuoteSummary } from '@/src/types/api'
 
 export type ThreadBubble = {
   id: string
@@ -38,6 +38,7 @@ export type ThreadBubble = {
   /** My messages only: `read` once the other side's last read reached it. */
   delivery?: Delivery
   time: string
+  /** The sender's photo or business logo (none: `avatarLabel`, their initials, is drawn). */
   avatar?: ImageSourcePropType
   avatarLabel?: string
 }
@@ -61,7 +62,7 @@ const LINK_REFRESH_RETRY_MS = 30_000
  * `initialPeerReadAt`: the other side's last read as the inbox listed it (if opened from there).
  */
 export function useConversationThread(conversationId: string, initialPeerReadAt?: string | null) {
-  const { locale } = useTranslation()
+  const { t, locale } = useTranslation()
   const myUserId = useAppSelector((s) => s.auth.user?.id)
   const myFirstName = useAppSelector((s) => s.auth.user?.firstName)
   const accessToken = useAppSelector((s) => s.auth.accessToken)
@@ -74,6 +75,8 @@ export function useConversationThread(conversationId: string, initialPeerReadAt?
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const [peerReadAt, setPeerReadAt] = useState<string | null>(initialPeerReadAt ?? null)
+  // The other side as the inbox lists them (a jeweler by business name and logo).
+  const [peer, setPeer] = useState<ChatPeerUser | null>(null)
   const socketRef = useRef<ConversationSocket | null>(null)
   const mountedRef = useRef(true)
   const conversationRef = useRef(conversationId)
@@ -203,6 +206,7 @@ export function useConversationThread(conversationId: string, initialPeerReadAt?
         if (!conversation || !mountedRef.current || conversationRef.current !== conversationId) return
         const fresh = peerLastReadAt(conversation.participants, myUserId)
         setPeerReadAt((prev) => latestReadAt(prev, fresh))
+        setPeer(conversation.participants.find((p) => p.userId !== myUserId)?.user ?? null)
       })
       .catch(() => {
         // Ticks stay as they are; `message:read` still moves them.
@@ -315,7 +319,7 @@ export function useConversationThread(conversationId: string, initialPeerReadAt?
               time: formatClock(msg.createdAt),
               ...(outgoing
                 ? { avatarLabel: (myFirstName ?? 'מ').charAt(0), delivery: messageDelivery(msg.createdAt, peerReadAt) }
-                : { avatar: jewelerAvatar }),
+                : avatarProps(msg.sender ?? peer, t('shChatPeerFallback'))),
             }
             if (msg.type === 'SYSTEM') {
               return { ...base, kind: 'system', text: msg.body || msg.type, contactUrl: contactLinkFromPayload(msg.payload) }
@@ -330,7 +334,7 @@ export function useConversationThread(conversationId: string, initialPeerReadAt?
           }),
       }))
       .filter((group) => group.items.length > 0)
-  }, [messages, myUserId, myFirstName, locale, peerReadAt])
+  }, [messages, myUserId, myFirstName, locale, peerReadAt, peer, t])
 
   const latestQuote = useMemo(() => {
     const withQuote = [...messages]
@@ -344,6 +348,8 @@ export function useConversationThread(conversationId: string, initialPeerReadAt?
   return {
     groups,
     latestQuote,
+    /** The other side's name, once the inbox listed the conversation. */
+    peerName: peer ? personName(peer, '') || undefined : undefined,
     loading,
     loadingEarlier,
     sending,

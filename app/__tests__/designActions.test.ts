@@ -53,6 +53,9 @@ describe('what a designer can do with a design', () => {
     expect(completedByLabel({ status: 'COMPLETED', completedBy: { id: 'j1', name: 'צורפות כהן' } }, 'he')).toBe(
       'הושלם ע״י צורפות כהן',
     )
+    expect(completedByLabel({ status: 'COMPLETED', completedBy: { id: 'j1', name: 'QA Goldsmith' } }, 'he')).toBe(
+      'הושלם ע״י \u2068QA Goldsmith\u2069',
+    )
     expect(completedByLabel({ status: 'COMPLETED', completedBy: { id: 'j1', name: null } }, 'he')).toBe('הושלם')
     expect(completedByLabel({ status: 'DRAFT', completedBy: null }, 'he')).toBeNull()
   })

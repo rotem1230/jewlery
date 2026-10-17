@@ -1,6 +1,6 @@
 # Handoff לסשן הבא — Malinvosky (צילה תכשיטים)
 
-נכתב: 2026-10-15. המסמך הזה הוא נקודת הפתיחה לסשן הבא. ההיסטוריה המלאה של סבבי ההקשחה (1–5) נמצאת ב-`docs/HANDOFF.md`, ומעקב הפערים מול ה-PRD ב-`docs/prd-gap-audit.md`.
+נכתב: 2026-10-15, עודכן 2026-10-17 (QA חי מקצה לקצה ותיקונים לפרודקשן). המסמך הזה הוא נקודת הפתיחה לסשן הבא. ההיסטוריה המלאה של סבבי ההקשחה (1–5) נמצאת ב-`docs/HANDOFF.md`, ומעקב הפערים מול ה-PRD ב-`docs/prd-gap-audit.md`.
 
 > **אין במסמך הזה סיסמאות או מפתחות.** איפה כל סוד יושב — בסעיף 9.
 
@@ -11,6 +11,7 @@
 - **שרת (NestJS):** רץ ב-Render על `https://jewlery.onrender.com`, עם PostgreSQL של Render. כל המיגרציות וה-seed רצו.
 - **אפליקציה (React Native, בלי Expo):** נבנית בענן של Expo (EAS). APK ל-Android, ו-iOS ב-TestFlight.
 - **קוד:** סבב 5 (התאמה מלאה ל-PRD) הושלם ונדחף ל-GitHub. אחריו נוספו: אייקונים, סרגל ניווט RTL, תיקון כפתורים, והתחברות עם Apple.
+- **17.10:** ייצוא STL/OBJ/HD, תמונות התצוגה של העיצובים וההדמיה על תמונה אישית נבנים מהגיאומטריה של העיצוב עצמו — אין יותר תחליפים או מודלי דמה. השרת בפרודקשן עודכן. **האפליקציה צריכה בנייה חדשה ב-EAS כדי שהמשתמשים יקבלו את השינויים** (סעיף 7).
 - **מה פתוח עכשיו (לפי סדר):** סעיף 7.
 
 ---
@@ -38,7 +39,9 @@ git log --oneline -5
 |---|---|---|
 | `17d90a7` | סבב 5: התאמה ל-PRD, review אחד, מסמכים | ✅ |
 | `dcb97bd` | בניות ראשונות ב-EAS, אייקונים, ניווט RTL, כפתורים שלא נחתכים | ✅ |
-| `3745b38` | התחברות עם Apple (iOS), חבילת Google, hook משותף | ❌ **מקומי בלבד — לדחוף אחרי אישור המשתמש** |
+| `3745b38` | התחברות עם Apple (iOS), חבילת Google, hook משותף | ✅ |
+| `1eacdb4` | מסמך handoff | ✅ |
+| 17.10 "Real exports, previews and try-on…" | גיאומטריה פרמטרית, ייצוא, תצוגות, הדמיה, אחסון במסד, keep-alive | ✅ |
 
 ---
 
@@ -61,7 +64,7 @@ git log --oneline -5
    node node_modules/prisma/build/index.js migrate deploy
    ```
 6. **EAS בלי git:** בכל פקודת `eas` צריך `EAS_NO_VCS=1` (ב-PowerShell: `$env:EAS_NO_VCS = '1'`). מה שלא נשלח לענן מוגדר ב-`app/.easignore`.
-7. **bug-finder (MCP)** לא עובד כאן כי הפרויקט אינו git רגיל — לסקור ידנית ולציין זאת למשתמש.
+7. **bug-finder (MCP)** עובד (סוקר שינויים לפי נתיבים) — להריץ `review_changes` אחרי כל שינוי.
 8. **הטרמינל של Bash** לפעמים נופל על `tail`/fork (cygheap) — לכתוב פלט לקובץ ולקרוא אותו.
 
 ---
@@ -74,9 +77,11 @@ git log --oneline -5
 | כתובת | https://jewlery.onrender.com — API ב-`/api/v1`, בריאות ב-`/api/v1/health` |
 | בנייה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile` |
 | מסד נתונים | `jewelry-db` (dpg-db7nc2bncjis73eu48eg-a), PostgreSQL 18, **Free**, Oregon |
-| מיגרציות | כולן הוחלו, כולל `20261013120000_jeweler_order_status` |
+| מיגרציות | כולן הוחלו, כולל `20261017130000_design_preview_key` (17.10) |
 | seed | הורץ ב-production (בלי חשבונות דמו): קטלוג, מסלולים, מידות טבעת PRD, תבניות הודעה בעברית |
 | דגל `phase3_oauth` | **דלוק** (שונה ידנית במסד, `enabled=true`, `rolloutPct=100`) |
+| דגל `phase2_visualization` | **דלוק** מ-17.10 (הדמיה על תמונה אישית, למסלול Designer Pro) |
+| תכני המסלולים | בעברית (עם אנגלית לצד) — עודכנו במסד ב-17.10 רק היכן שהיה עדיין הטקסט האנגלי המקורי |
 
 ### משתני סביבה שהוגדרו ב-Render (שמות בלבד)
 `NODE_ENV=production`, `DATABASE_URL` (Internal), `JWT_SECRET`, `TRIAL_HASH_SECRET`, `UPLOAD_URL_SECRET`, `API_PUBLIC_URL`, `CORS_ORIGINS`, `TRUST_PROXY=1`, `JOBS_ENABLED=true`, `SMTP_URL` (Resend, `smtp.resend.com:2465`), `MAIL_FROM=onboarding@resend.dev`.
@@ -84,11 +89,12 @@ git log --oneline -5
 **חסר / לבדוק:**
 - `APPLE_CLIENT_ID=com.malinvoskyapp` — **ביקשתי מהמשתמש להוסיף. בלי זה התחברות Apple מחזירה 503 `OAUTH_NOT_CONFIGURED`.**
 - `GOOGLE_CLIENT_ID` — רק כשיוגדרו מזהי Google (סעיף 7).
+- `TRIPO_API_KEY` — **לא מוגדר**. בלעדיו "השראת AI" מחזירה 503 `AI_NOT_CONFIGURED` (אין מודלי דמה). המשתמש מוסיף ב-Render → Environment.
 
 ### מגבלות ידועות של המסלול החינמי
 - **השרת נרדם** אחרי חוסר פעילות — בקשה ראשונה עד כדקה.
 - **Render חוסם SMTP בפורטים 25/465/587** במסלול Free (לכן Gmail נכשל ב-`Connection timeout`, ועברנו ל-Resend בפורט 2465).
-- **אין דיסק קבוע:** תמונות (`/app/uploads-local`) נמחקות בכל הפעלה מחדש. צריך Starter + Persistent Disk.
+- **אין דיסק קבוע:** לכן קבצים נשמרים במסד הנתונים (`STORAGE_DRIVER=database`, ברירת המחדל בפרודקשן) — הם שורדים פריסות. הם נספרים בנפח המסד החינמי (1GB): לעקוב, ובהמשך לעבור לאחסון אובייקטים (R2/S3).
 - **המסד החינמי יימחק ב-13 בנובמבר 2026** — לשדרג לפני כן. אין גיבויים.
 
 ### מיילים
@@ -131,6 +137,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 | **iOS build 5** | **רץ בלשונית הטרמינל "iOS build (Apple sign-in)" — מחכה שהמשתמש יתחבר ל-Apple. אחרי זה עולה אוטומטית ל-TestFlight.** |
 | Android APK אחרון שהושלם | https://expo.dev/artifacts/eas/tdGK_3eYxK7fIPfrOevwJfRNqnQbnDq_FyP5mVg2EDU.apk |
 | **Android APK חדש (Apple/Google)** | build `9c877401-4ca1-455f-8bc9-301fad984141` — **לבדוק סטטוס** |
+| **בנייה חדשה ל-17.10 (Android + iOS)** | **לא הופעלה.** נדרשת כדי שהסטודיו, ההדמיה והייצוא החדשים יגיעו למשתמשים. הקרדיטים החינמיים של EAS נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. |
 
 ### דברים שתוקנו בדרך לבניות (לא לשבור)
 - **ספריית הקלטה** `react-native-audio-recorder-player` לא מתקמפלת על RN 0.86 → `app/scripts/patch-native-modules.cjs` רץ ב-`postinstall` (גם בשרתי EAS), עם טסט. נכשל בקול אם הספרייה משתנה.
@@ -147,10 +154,16 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 3. **התחברות עם Apple** (iOS בלבד) — `src/lib/socialSignIn.ts`, `src/hooks/useSocialSignIn.ts`, `src/components/auth/AppleAuthButton.tsx`, במסכי Login/Signup. בהרשמה: דורש אישור תנאים; אם נבחר "צורף" — מוסיף את התפקיד ועובר אליו.
 4. **Google** — החבילה `@react-native-google-signin/google-signin@16.1.5` מותקנת; הכפתור **מוסתר** עד שיש `GOOGLE_WEB_CLIENT_ID` בבנייה.
 5. חבילת Apple: `@invertase/react-native-apple-authentication@2.5.1`.
+6. **17.10 — QA חי ותיקונים לפרודקשן:**
+   - `backend/src/jewelry`: גיאומטריה פרמטרית (טבעת לפי טבלת המידות, פס, ראש שיניים/משבצת/פאווה, אבנים, אלמנטים, שרשראות, עגילים) — אותו קוד רץ בסטודיו של האפליקציה (`app/scripts/sync-jewelry-geometry.cjs` מייצר `jewelryGeometry.generated.ts`; טסט משווה sha256).
+   - ייצוא STL/OBJ/PNG_HD אמיתי (STEP נדחה ב-400), תמונות תצוגה לעיצובים (ברקע, לפי מפתח תוכן), הדמיה שמרכיבה את התכשיט על התמונה במקום שהמעצב בחר.
+   - קבצים נשמרים ב-PostgreSQL (`upload_blobs`) — שורדים פריסות ב-Render.
+   - AI: רק Tripo (נמחק ה-dummy), image-to-model מתמונת ההשראה.
+   - **תוקן באמולטור:** שכבת התכשיט בהדמיה לא הוצגה (תמונה ב-Android לא שולחת headers — נטענת עכשיו עם ה-session), והעלאת התמונה הראשונה אחרי הפסקה נכשלה (Node סוגר חיבורים אחרי 5 שניות — עכשיו 65).
 
 ### מצב טסטים אחרון
-- **אפליקציה:** 37 קבצים, **228/228**, tsc 0, lint 0 שגיאות (78 אזהרות; בסיס 82).
-- **שרת (סבב 5):** 541/542 בריצה מלאה (הכישלון: timeout בעומס), `test/migrations` לבד 21/21, מוטציות 12/12, smoke 33/33, drift נקי.
+- **אפליקציה (17.10):** 55 קבצים, **293/293**, tsc 0, lint 0 שגיאות (84 אזהרות).
+- **שרת (17.10):** 63 קבצים, **653/653** בריצה מלאה (כולל `test/migrations`).
 
 ---
 
@@ -166,6 +179,12 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 
 ## 7. מה פתוח — לפי סדר עדיפות
 
+**קודם כול (17.10):**
+- **לשחרר את האפליקציה:** בנייה חדשה ל-Android (APK) ול-iOS (TestFlight) — עולה כסף ב-EAS, רק באישור המשתמש. אחר כך לעבור על הסטודיו, הייצוא וההדמיה על מכשיר אמיתי מול השרת בפרודקשן.
+- **`TRIPO_API_KEY` ב-Render** — כדי שהשראת AI תעבוד (לא נבדק חי מול Tripo).
+
+**ואחר כך:**
+
 1. **iOS build 5** — לוודא שהמשתמש התחבר ל-Apple בלשונית הטרמינל, שהבנייה הסתיימה ועלתה ל-TestFlight.
 2. **`APPLE_CLIENT_ID=com.malinvoskyapp` ב-Render** — לוודא שהמשתמש הוסיף, ואז לבדוק התחברות Apple על אייפון אמיתי.
 3. **דחיפה ל-GitHub** של `3745b38` — אחרי אישור המשתמש.
@@ -175,7 +194,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
    - באפליקציה: `GOOGLE_WEB_CLIENT_ID` ב-`eas.json` (ולהוסיף `GOOGLE_IOS_CLIENT_ID` + URL scheme הפוך ב-Info.plist), ו-`iosClientId` ב-`googleSignIn.ts`.
    - בשרת: `GOOGLE_CLIENT_ID` ב-Render עם שלושת המזהים.
    - **כלל App Store:** אם יש Google — חובה גם Apple (כבר קיים).
-6. **שדרוג Render:** Web Service ל-Starter + Persistent Disk (`/app/uploads-local`), ו-Postgres למסלול בתשלום לפני 13.11.2026.
+6. **שדרוג Render:** Web Service ל-Starter (בלי הירדמות; רינדור מהיר יותר), ו-Postgres למסלול בתשלום לפני 13.11.2026 (גם בגלל נפח הקבצים שנשמרים במסד).
 7. **סודות שנחשפו בצ'אט — להחליף:** סיסמת מסד הנתונים ב-Render, מפתח Resend, סיסמת אפליקציה של Gmail (לבטל — כבר לא בשימוש), ומפתח Tripo אם נדרש.
 8. **לפנות מקום ב-C:** (המשתמש).
 9. **החלטות מוצר** D1–D8 ושאלות 🟡 ב-`docs/prd-gap-audit.md`.
@@ -213,7 +232,7 @@ node E:/claude-work/malinvosky/tmp/round5/pg-dev.cjs stop
 | כתובת המסד (External) | Render → jewelry-db → Connect; מקומית ב-`backend/.env.render.local` (gitignored) |
 | JWT / TRIAL / UPLOAD secrets | Render Environment (נוצרו ב-Generate) |
 | SMTP (Resend API key) | Render Environment (`SMTP_URL`) |
-| Tripo | `backend/.env` מקומי (gitignored); לא ב-Render |
+| Tripo | `backend/.env` מקומי (gitignored); **עדיין לא ב-Render** — להוסיף כדי שהשראת AI תעבוד |
 | חתימת Android | EAS (expo.dev → Credentials) |
 | תעודת הפצה / provisioning iOS | EAS; מפתח ASC API `HDV3Q2YWV4` ב-EAS |
 | Apple ID | של המשתמש (`antselrotem@gmail.com`) — רק הוא מקליד סיסמה/קוד |

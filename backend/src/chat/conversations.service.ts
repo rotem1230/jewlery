@@ -7,9 +7,10 @@ import {
 } from '@nestjs/common';
 import { DesignStatus, Prisma, ProfilePublishStatus, User, UserRole, RequestTargetStatus } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
+import { withDesignPreview } from '../atelier/design-pictures';
 import { moveOrders } from '../atelier/order-status';
 import { NotificationsService } from '../notifications/notifications.service';
-import { QUOTE_DESIGN_SELECT } from '../quotes/quote-view';
+import { QUOTE_DESIGN_SELECT, withQuoteDesignPreview } from '../quotes/quote-view';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { ChatGateway } from './chat.gateway';
 import { CreateConversationDto, CreateMessageDto, QueryConversationsDto, QueryMessagesDto } from './dto/chat.dto';
@@ -17,11 +18,13 @@ import { CreateConversationDto, CreateMessageDto, QueryConversationsDto, QueryMe
 const PAGE_SIZE = 20;
 const MESSAGE_PAGE_SIZE = 30;
 
+/** A person in a conversation; shown through ConversationsService.person (signed links). */
 const PARTICIPANT_USER_SELECT = {
   id: true,
   firstName: true,
   lastName: true,
   avatarUploadId: true,
+  jewelerProfile: { select: { businessName: true, logoUploadId: true } },
 } satisfies Prisma.UserSelect;
 
 const MESSAGE_INCLUDE = {
@@ -31,6 +34,26 @@ const MESSAGE_INCLUDE = {
   // A quote card shows the real figures and the design they price (PRD 5.6).
   quote: { include: { design: { select: QUOTE_DESIGN_SELECT } } },
 } satisfies Prisma.MessageInclude;
+
+/** The design a conversation is about; its owner tells which participant is the jeweler. */
+const CONVERSATION_DESIGN_SELECT = {
+  id: true,
+  title: true,
+  thumbnailUploadId: true,
+  previewUploadId: true,
+  status: true,
+  ownerUserId: true,
+} satisfies Prisma.DesignSelect;
+
+const CONVERSATION_INCLUDE = {
+  design: { select: CONVERSATION_DESIGN_SELECT },
+  participants: { include: { user: { select: PARTICIPANT_USER_SELECT } } },
+  messages: { orderBy: { createdAt: 'desc' }, take: 1, include: MESSAGE_INCLUDE },
+} satisfies Prisma.ConversationInclude;
+
+type ParticipantUser = Prisma.UserGetPayload<{ select: typeof PARTICIPANT_USER_SELECT }>;
+type MessageRow = Prisma.MessageGetPayload<{ include: typeof MESSAGE_INCLUDE }>;
+type ConversationRow = Prisma.ConversationGetPayload<{ include: typeof CONVERSATION_INCLUDE }>;
 
 @Injectable()
 export class ConversationsService {
@@ -46,6 +69,53 @@ export class ConversationsService {
   /** Attaches a signed, short-lived URL to message media for the participants who receive it. */
   private withMedia<T extends { imageUpload: { id: string; mimeType: string } | null }>(message: T) {
     return { ...message, imageUpload: message.imageUpload ? this.access.withUrl(message.imageUpload) : null };
+  }
+
+  /**
+   * A person as the other side of the conversation sees them: their own photo (signed), and the
+   * jeweler of the conversation (anyone but the design's owner) by business name and logo.
+   */
+  private person(user: ParticipantUser, designOwnerId: string) {
+    const { jewelerProfile, ...rest } = user;
+    const business = user.id !== designOwnerId ? jewelerProfile : null;
+    return {
+      ...rest,
+      avatarUrl: this.access.urlFor(user.avatarUploadId),
+      businessName: business?.businessName ?? null,
+      logoUrl: this.access.urlFor(business?.logoUploadId),
+    };
+  }
+
+  /**
+   * Sends a message written elsewhere (quote cards, system messages) to the conversation's open
+   * sockets in the same shape as messages sent here: sender by business name / logo, media signed.
+   */
+  async broadcastMessage(messageId: string): Promise<void> {
+    const row = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: { ...MESSAGE_INCLUDE, conversation: { select: { design: { select: { ownerUserId: true } } } } },
+    });
+    if (!row) return;
+    const { conversation, ...message } = row;
+    this.gateway.emitToConversation(message.conversationId, 'message:new', this.present(message, conversation.design.ownerUserId));
+  }
+
+  /** A message as participants receive it: signed media, its sender, the quote card's design pictured. */
+  private present(message: MessageRow, designOwnerId: string) {
+    const { sender, ...rest } = withQuoteDesignPreview(this.withMedia(message), this.access);
+    return { ...rest, sender: sender ? this.person(sender, designOwnerId) : null };
+  }
+
+  private conversationView(conversation: ConversationRow, unreadCount: number) {
+    const { messages, participants, design, ...rest } = conversation;
+    const { ownerUserId, ...shownDesign } = design;
+    return {
+      ...rest,
+      design: withDesignPreview(shownDesign, this.access),
+      participants: participants.map(({ user, ...participant }) => ({ ...participant, user: this.person(user, ownerUserId) })),
+      lastMessage: messages[0] ? this.present(messages[0], ownerUserId) : null,
+      unreadCount,
+    };
   }
 
   async assertParticipant(conversationId: string, userId: string) {
@@ -72,19 +142,14 @@ export class ConversationsService {
   private async detail(conversationId: string, userId: string) {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
-      include: {
-        design: { select: { id: true, title: true, thumbnailUploadId: true, status: true } },
-        participants: { include: { user: { select: PARTICIPANT_USER_SELECT } } },
-        messages: { orderBy: { createdAt: 'desc' }, take: 1, include: MESSAGE_INCLUDE },
-      },
+      include: CONVERSATION_INCLUDE,
     });
     if (!conversation) {
       throw new NotFoundException({ success: false, message: 'Conversation not found' });
     }
     const me = conversation.participants.find((p) => p.userId === userId);
     const unreadCount = await this.unreadCountFor(conversationId, userId, me?.lastReadAt ?? null);
-    const { messages, ...rest } = conversation;
-    return { ...rest, lastMessage: messages[0] ? this.withMedia(messages[0]) : null, unreadCount };
+    return this.conversationView(conversation, unreadCount);
   }
 
   /** One conversation as the inbox shows it, with each participant's last read time (read ticks). */
@@ -142,11 +207,7 @@ export class ConversationsService {
         orderBy: { lastMessageAt: 'desc' },
         skip: (page - 1) * PAGE_SIZE,
         take: PAGE_SIZE,
-        include: {
-          design: { select: { id: true, title: true, thumbnailUploadId: true, status: true } },
-          participants: { include: { user: { select: PARTICIPANT_USER_SELECT } } },
-          messages: { orderBy: { createdAt: 'desc' }, take: 1, include: MESSAGE_INCLUDE },
-        },
+        include: CONVERSATION_INCLUDE,
       }),
       this.prisma.conversation.count({ where }),
     ]);
@@ -155,8 +216,7 @@ export class ConversationsService {
       rows.map(async (conv) => {
         const me = conv.participants.find((p) => p.userId === userId);
         const unreadCount = await this.unreadCountFor(conv.id, userId, me?.lastReadAt ?? null);
-        const { messages, ...rest } = conv;
-        return { ...rest, lastMessage: messages[0] ? this.withMedia(messages[0]) : null, unreadCount };
+        return this.conversationView(conv, unreadCount);
       }),
     );
 
@@ -264,19 +324,26 @@ export class ConversationsService {
     await this.assertParticipant(conversationId, userId);
     const limit = query.limit && query.limit > 0 && query.limit <= 100 ? query.limit : MESSAGE_PAGE_SIZE;
 
-    const rows = await this.prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: limit + 1,
-      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-      include: MESSAGE_INCLUDE,
-    });
+    const [rows, conversation] = await Promise.all([
+      this.prisma.message.findMany({
+        where: { conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: limit + 1,
+        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+        include: MESSAGE_INCLUDE,
+      }),
+      this.prisma.conversation.findUniqueOrThrow({
+        where: { id: conversationId },
+        select: { design: { select: { ownerUserId: true } } },
+      }),
+    ]);
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     const nextCursor = hasMore ? page[page.length - 1].id : null;
+    const ownerUserId = conversation.design.ownerUserId;
 
-    return { items: page.reverse().map((message) => this.withMedia(message)), nextCursor };
+    return { items: page.reverse().map((message) => this.present(message, ownerUserId)), nextCursor };
   }
 
   async createMessage(conversationId: string, userId: string, dto: CreateMessageDto) {
@@ -344,7 +411,7 @@ export class ConversationsService {
       }
       return row;
     });
-    const message = this.withMedia(created);
+    const message = this.present(created, conversation.design.ownerUserId);
 
     this.gateway.emitToConversation(conversationId, 'message:new', message);
 

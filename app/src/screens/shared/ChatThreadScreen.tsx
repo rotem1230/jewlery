@@ -27,6 +27,7 @@ import { Skeleton } from '@/src/components/ui/Skeleton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { useConversationThread, type ThreadBubble } from '@/src/hooks/useConversationThread'
 import { quoteCardLines } from '@/src/lib/quoteView'
+import { designPicture } from '@/src/lib/designPicture'
 import { restoreDraft, sendErrorMessage } from '@/src/lib/chatThread'
 import { pickChatPhoto, takeChatPhoto, voiceFileName } from '@/src/lib/chatAttachments'
 import {
@@ -167,7 +168,9 @@ export function ChatThreadScreen() {
     playbackDurationMs,
     togglePlayback,
     latestQuote,
+    peerName,
   } = useConversationThread(route.params.chatId, route.params.peerLastReadAt)
+  const quotePicture = designPicture(latestQuote?.design)
   const quoteCard = latestQuote?.id
     ? quoteCardLines({
         currency: latestQuote.currency ?? 'ILS',
@@ -299,7 +302,10 @@ export function ChatThreadScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={0}
     >
-      <ScreenTopBar title={route.params.title || t('shChatThreadFallbackTitle')} onBack={() => navigation.goBack()} />
+      <ScreenTopBar
+        title={route.params.title || peerName || t('shChatThreadFallbackTitle')}
+        onBack={() => navigation.goBack()}
+      />
 
       <ScrollView
         ref={scrollRef}
@@ -320,6 +326,8 @@ export function ChatThreadScreen() {
               labor={`${t('chatQuoteLabor').split(':')[0]}: ${quoteCard?.labor ?? '—'}`}
               delivery={t('chatQuoteDelivery').replace('14', String(quoteCard?.etaDays ?? '—'))}
               ctaLabel={t('chatQuoteCta')}
+              image={quotePicture.source}
+              imageResizeMode={quotePicture.resizeMode}
               onPressCta={() =>
                 navigation.navigate('QuoteDetails', {
                   quoteId: latestQuote.id,

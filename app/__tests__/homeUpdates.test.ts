@@ -50,8 +50,9 @@ describe('update titles by event (titles are stored in English)', () => {
       payload: { conversationId: 'c1', designId: 'd1', senderName: 'אריאל הצורף' },
     }
     expect(notificationTitle(n, 'he')).toBe('הודעה חדשה מאריאל הצורף')
+    // A Latin name is isolated so the Hebrew sentence keeps its order (U+2068 … U+2069).
     expect(notificationTitle({ ...n, payload: { conversationId: 'c1', senderName: 'Ariel' } }, 'he')).toBe(
-      'הודעה חדשה מ-Ariel',
+      'הודעה חדשה מ-\u2068Ariel\u2069',
     )
     expect(notificationTitle({ ...n, payload: { conversationId: 'c1', designTitle: 'טבעת סוליטר' } }, 'he')).toBe(
       'הודעה חדשה על טבעת סוליטר',

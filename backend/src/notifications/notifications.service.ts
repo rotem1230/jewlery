@@ -3,6 +3,7 @@ import { NotificationChannel, Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { QueryNotificationsDto } from './dto/notification.dto';
+import { notificationMail } from './notification-mail';
 
 const PAGE_SIZE = 20;
 const MESSAGE_EVENT = 'message.new';
@@ -39,7 +40,7 @@ export class NotificationsService {
       },
     });
 
-    this.dispatchAuxiliaryChannels(userId, title, body).catch((err) =>
+    this.dispatchAuxiliaryChannels(userId, eventKey, title, body, payload).catch((err) =>
       this.logger.warn(`Auxiliary notification dispatch failed for user ${userId}: ${err.message}`),
     );
 
@@ -79,7 +80,13 @@ export class NotificationsService {
     });
   }
 
-  private async dispatchAuxiliaryChannels(userId: string, title: string, body: string): Promise<void> {
+  private async dispatchAuxiliaryChannels(
+    userId: string,
+    eventKey: string,
+    title: string,
+    body: string,
+    payload: Prisma.InputJsonValue | undefined,
+  ): Promise<void> {
     const [user, preference, deviceTokens] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: userId }, select: { email: true } }),
       this.prisma.userPreference.findUnique({ where: { userId } }),
@@ -87,7 +94,9 @@ export class NotificationsService {
     ]);
 
     if (user?.email && (preference?.notifyEmailEnabled ?? true)) {
-      await this.mail.send(user.email, title, body);
+      // Hebrew first (the in-app update keeps its English text; the app words it per event).
+      const mail = notificationMail(eventKey, title, body, payload);
+      await this.mail.send(user.email, mail.subject, mail.body);
     }
 
     if ((preference?.notifyPushEnabled ?? true) && deviceTokens.length > 0) {

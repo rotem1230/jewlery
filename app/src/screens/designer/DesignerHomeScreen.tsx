@@ -94,12 +94,13 @@ export function DesignerHomeScreen() {
     if (target.kind === 'quote') {
       tabNavigation.navigate('Chats', {
         screen: 'QuoteDetails',
+        initial: false,
         params: { quoteId: target.quoteId, chatId: target.chatId },
       })
       return
     }
     if (target.kind === 'chat') {
-      tabNavigation.navigate('Chats', { screen: 'ChatThread', params: { chatId: target.chatId } })
+      tabNavigation.navigate('Chats', { screen: 'ChatThread', initial: false, params: { chatId: target.chatId } })
       return
     }
     tabNavigation.navigate('Chats')
@@ -115,7 +116,7 @@ export function DesignerHomeScreen() {
         onRequestClose={() => setTrialModalVisible(false)}
         onPrimary={() => {
           setTrialModalVisible(false)
-          tabNavigation.navigate('Profile', { screen: 'Pricing' })
+          tabNavigation.navigate('Profile', { screen: 'Pricing', initial: false })
         }}
       />
       <HomeHeader />
@@ -132,6 +133,7 @@ export function DesignerHomeScreen() {
                 ? () =>
                     tabNavigation.navigate('Atelier', {
                       screen: 'DesignPreview',
+                      initial: false,
                       params: { designId: galleryDesignId },
                     })
                 : undefined

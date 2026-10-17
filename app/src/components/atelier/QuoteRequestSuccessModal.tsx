@@ -1,6 +1,7 @@
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native'
 import { Check } from 'lucide-react-native'
 import { colors, radii, spacing } from '@/src/theme/tokens'
+import { PressableBox } from '@/src/components/ui/PressableBox'
 
 type QuoteRequestSuccessModalProps = {
   visible: boolean
@@ -39,15 +40,15 @@ export function QuoteRequestSuccessModal({
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.message}>{message}</Text>
 
-          <Pressable
+          <PressableBox
             onPress={onCta}
-            style={({ pressed }) => [styles.ctaPressable, pressed && styles.pressed]}
+            style={[styles.ctaPressable]} pressedStyle={styles.pressed}
             accessibilityRole="button"
           >
             <View style={styles.cta}>
               <Text style={styles.ctaLabel}>{ctaLabel}</Text>
             </View>
-          </Pressable>
+          </PressableBox>
         </Pressable>
       </Pressable>
     </Modal>

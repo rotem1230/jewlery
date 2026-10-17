@@ -3,6 +3,7 @@
  * titles), relative times, where each update leads, and an in-memory cache of the last summary so
  * returning to the home tab shows it at once while it refreshes.
  */
+import { isolate } from '@/src/lib/rtl'
 import type { AppNotification, HomeSummary } from '@/src/types/api'
 
 const MINUTE_MS = 60_000
@@ -77,10 +78,10 @@ export function notificationTitle(notification: NotificationLike, locale: string
     const sender = payloadText(notification.payload, 'senderName')
     if (sender) {
       if (!he) return `New message from ${sender}`
-      return HEBREW_LETTER.test(sender) ? `הודעה חדשה מ${sender}` : `הודעה חדשה מ-${sender}`
+      return HEBREW_LETTER.test(sender) ? `הודעה חדשה מ${sender}` : `הודעה חדשה מ-${isolate(sender)}`
     }
     const design = payloadText(notification.payload, 'designTitle')
-    if (design) return he ? `הודעה חדשה על ${design}` : `New message about ${design}`
+    if (design) return he ? `הודעה חדשה על ${isolate(design)}` : `New message about ${design}`
     return he ? 'הודעה חדשה' : 'New message'
   }
   const known = EVENT_TITLES[notification.eventKey]

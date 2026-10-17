@@ -12,7 +12,6 @@ import { portfolioItemsToAdd } from '@/src/lib/portfolio'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useTranslation } from '@/src/i18n'
 import type { ProfileStackParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<ProfileStackParamList, 'BusinessProfilePreview'>
 type Route = RouteProp<ProfileStackParamList, 'BusinessProfilePreview'>
@@ -55,11 +54,10 @@ export function BusinessProfilePreviewScreen() {
             name={name}
             about={about}
             galleryTitle={t('businessProfileGalleryLabel')}
-            gallery={gallery.map((item) => ({
-              id: item.id,
-              image: item.uri ? { uri: item.uri } : heroRing,
-              title: item.title ?? name,
-            }))}
+            // Only the jeweler's own pictures (never a stock photo for one without a picture).
+            gallery={gallery.flatMap((item) =>
+              item.uri ? [{ id: item.id, image: { uri: item.uri }, title: item.title ?? name }] : [],
+            )}
             reviewsTitle={t('businessProfileReviewsLabel')}
             reviews={[]}
             reviewsEmptyLabel={t('businessProfileReviewsEmpty')}

@@ -13,6 +13,7 @@ import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { PrismaService } from '../database/prisma.service';
 import { stableJson } from './design-fingerprint';
+import { DesignPreviewService } from './design-preview.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { WizardEngineService } from '../wizard/wizard-engine.service';
@@ -39,6 +40,7 @@ export class DesignsService {
     private readonly outbox: OutboxService,
     private readonly uploads: UploadsService,
     private readonly access: UploadAccessService,
+    private readonly previews: DesignPreviewService,
   ) {}
 
   private assertOwnerOrAdmin(design: { ownerUserId: string }, user: User): void {
@@ -184,6 +186,7 @@ export class DesignsService {
     });
 
     await this.snapshotVersion(design, ownerUserId, 'create');
+    this.previews.schedule(design.id);
     await this.audit.log({
       actorUserId: ownerUserId,
       action: 'design.create',
@@ -225,6 +228,7 @@ export class DesignsService {
     const items = rows.map(({ _count, completedBy, ...design }) => ({
       ...design,
       thumbnailUrl: this.access.urlFor(design.thumbnailUploadId),
+      previewUrl: this.access.urlFor(design.previewUploadId),
       quoteCount: _count.quotes,
       completedBy: this.completedBy(completedBy),
     }));
@@ -242,6 +246,19 @@ export class DesignsService {
    */
   private async aiOutputUrl(design: Pick<Design, 'ownerUserId' | 'parameters'>): Promise<string | null> {
     const id = (design.parameters as { aiOutputUploadId?: unknown } | null)?.aiOutputUploadId;
+    if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) {
+      return null;
+    }
+    const upload = await this.prisma.upload.findFirst({
+      where: { id, ownerUserId: design.ownerUserId, deletedAt: null },
+      select: { id: true },
+    });
+    return upload ? this.access.signedContentPath(upload.id) : null;
+  }
+
+  /** Signed link to the design's inspiration picture, minted only for an upload its owner owns. */
+  private async inspirationUrl(design: Pick<Design, 'ownerUserId' | 'parameters'>): Promise<string | null> {
+    const id = (design.parameters as { inspirationUploadId?: unknown } | null)?.inspirationUploadId;
     if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) {
       return null;
     }
@@ -280,11 +297,15 @@ export class DesignsService {
       },
     });
 
+    // A design saved while the server was down (or before previews existed) gets its picture now.
+    if (!design.previewUploadId || design.previewVersion !== design.version) this.previews.schedule(design.id);
     const { _count, completedBy, ...rest } = design;
     return {
       ...rest,
       thumbnailUrl: this.access.urlFor(rest.thumbnailUploadId),
+      previewUrl: this.access.urlFor(rest.previewUploadId),
       aiOutputUrl: await this.aiOutputUrl(design),
+      inspirationUrl: await this.inspirationUrl(design),
       quoteCount: _count.quotes,
       completedBy: this.completedBy(completedBy),
       versions,
@@ -358,6 +379,7 @@ export class DesignsService {
 
     if (dto.parameters !== undefined) {
       await this.snapshotVersion(updated, user.id, 'autosave');
+      this.previews.schedule(id);
     }
 
     await this.audit.log({
@@ -399,6 +421,7 @@ export class DesignsService {
     });
 
     await this.snapshotVersion(copy, user.id, 'duplicate');
+    this.previews.schedule(copy.id);
     await this.audit.log({
       actorUserId: user.id,
       action: 'design.duplicate',
@@ -578,6 +601,7 @@ export class DesignsService {
     const updated = await this.prisma.design.findUniqueOrThrow({ where: { id } });
 
     await this.snapshotVersion(updated, user.id, `restore:${versionNumber}`);
+    this.previews.schedule(id);
     await this.audit.log({
       actorUserId: user.id,
       action: 'design.restore_version',

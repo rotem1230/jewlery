@@ -12,14 +12,13 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { listAtelierBanners, listAtelierDesigns, listAtelierGeoSearch, listAtelierJewelers } from '@/src/api/atelier'
 import { listRegions } from '@/src/api/masterData'
 import { bannerViews, isFeatureDisabled, listingExpiry, type BannerView } from '@/src/lib/atelierView'
-import { imageFromUpload } from '@/src/lib/format'
+import { uploadContentUrl } from '@/src/api/uploads'
+import { designPicture } from '@/src/lib/designPicture'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, radii } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import type { AtelierStackParamList, JewelerTabParamList } from '@/src/navigation/types'
-import jewelerAvatar from '../../../assets/images/designs/jeweler-avatar-1.png'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type TabNav = BottomTabNavigationProp<JewelerTabParamList>
 type AtelierTab = 'jewelers' | 'designs'
@@ -174,7 +173,7 @@ export function AtelierScreen() {
                   <Text style={styles.bannerTag}>{t('atelierSponsored')}</Text>
                   {banner.imageUploadId ? (
                     <Image
-                      source={imageFromUpload(banner.imageUploadId, heroRing)}
+                      source={{ uri: uploadContentUrl(banner.imageUploadId) }}
                       style={styles.bannerImage}
                       resizeMode="cover"
                     />
@@ -262,6 +261,7 @@ export function AtelierScreen() {
               ) : (
                 designs.map((item) => {
                   const expiry = listingExpiry(item.expiresAt, locale)
+                  const picture = designPicture(item)
                   return (
                     <AtelierDesignCard
                       key={item.id}
@@ -280,7 +280,8 @@ export function AtelierScreen() {
                           : undefined
                       }
                       ctaLabel={t('atelierViewDesignDetails')}
-                      image={imageFromUpload(item.thumbnailUploadId, heroRing)}
+                      image={picture.source}
+                      imageResizeMode={picture.resizeMode}
                       sponsored={item.sponsored === true}
                       sponsoredLabel={t('atelierSponsored')}
                       onPress={() => navigation.navigate('DesignPreview', { designId: item.id })}
@@ -296,7 +297,8 @@ export function AtelierScreen() {
               ) : (
                 jewelers.map((item) => {
                   const own = item.userId === myUserId
-                  const works = item.portfolio.map((p) => imageFromUpload(p.uploadId, heroRing))
+                  const works = item.portfolio.map((p) => ({ uri: uploadContentUrl(p.uploadId) }))
+                  const logoUploadId = item.logoUploadId ?? item.logoUpload?.id
                   return (
                     <JewelerCard
                       key={item.id}
@@ -309,7 +311,7 @@ export function AtelierScreen() {
                       ctaVariant={own ? 'ownProfile' : 'viewProfile'}
                       worksTitle={t('atelierSelectedWorks')}
                       bio={item.bio ?? ''}
-                      avatar={imageFromUpload(item.logoUpload?.id, jewelerAvatar)}
+                      avatarUri={logoUploadId ? uploadContentUrl(logoUploadId) : undefined}
                       // The listing carries at most four works and no total, so no "+N" is shown.
                       works={works}
                       matchScore={item.matchScore}
@@ -320,7 +322,7 @@ export function AtelierScreen() {
                           ? () =>
                               navigation
                                 .getParent<TabNav>()
-                                ?.navigate('Profile', { screen: 'BusinessProfileView' })
+                                ?.navigate('Profile', { screen: 'BusinessProfileView', initial: false })
                           : undefined
                       }
                       onPressCta={() => navigation.navigate('JewelerProfile', { jewelerId: item.id })}

@@ -20,9 +20,12 @@ export type DesignSpec = {
 type DesignDetailsCardProps = {
   sectionTitle: string
   image: ImageSourcePropType
+  /** `center` draws a small illustration at its own size (a design without a picture). */
+  imageResizeMode?: 'cover' | 'center'
   title: string
   quote: string
   specs: DesignSpec[]
+  /** Opens the picture full screen; without it (no real picture) the button is not shown. */
   onMaximize?: () => void
 }
 
@@ -30,6 +33,7 @@ type DesignDetailsCardProps = {
 export function DesignDetailsCard({
   sectionTitle,
   image,
+  imageResizeMode = 'cover',
   title,
   quote,
   specs,
@@ -43,20 +47,22 @@ export function DesignDetailsCard({
       </View>
 
       <View style={styles.media}>
-        <Image source={image} style={styles.image} resizeMode="cover" />
-        <View style={styles.maximizeAnchor} pointerEvents="box-none">
-          <Pressable
-            onPress={onMaximize}
-            accessibilityRole="button"
-            accessibilityLabel="Maximize"
-            hitSlop={8}
-            style={({ pressed }) => pressed && styles.pressed}
-          >
-            <View style={styles.maximizeBtn}>
-              <MaximizeIcon />
-            </View>
-          </Pressable>
-        </View>
+        <Image source={image} style={styles.image} resizeMode={imageResizeMode} />
+        {onMaximize ? (
+          <View style={styles.maximizeAnchor} pointerEvents="box-none">
+            <Pressable
+              onPress={onMaximize}
+              accessibilityRole="button"
+              accessibilityLabel="Maximize"
+              hitSlop={8}
+              style={({ pressed }) => pressed && styles.pressed}
+            >
+              <View style={styles.maximizeBtn}>
+                <MaximizeIcon />
+              </View>
+            </Pressable>
+          </View>
+        ) : null}
       </View>
 
       <View style={styles.body}>

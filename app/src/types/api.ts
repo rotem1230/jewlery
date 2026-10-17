@@ -97,12 +97,19 @@ export type ChatPeerUser = {
   firstName: string | null
   lastName: string | null
   avatarUploadId: string | null
+  /** Signed link to the person's own photo. */
+  avatarUrl?: string | null
+  /** The jeweler of the conversation: shown by business name and logo (null for the designer). */
+  businessName?: string | null
+  logoUrl?: string | null
 }
 
 export type ConversationDesign = {
   id: string
   title: string | null
   thumbnailUploadId: string | null
+  /** Signed link to the server-rendered picture of the design (null until rendered). */
+  previewUrl?: string | null
   status: string
 }
 
@@ -129,6 +136,7 @@ export type QuoteSummary = {
     id: string
     title: string | null
     thumbnailUploadId: string | null
+    previewUrl?: string | null
     status: string
     itemType?: { code: string; labelHe?: string | null; labelEn?: string | null } | null
     parameters?: Record<string, unknown> | null
@@ -284,6 +292,10 @@ export type DesignListItem = {
   thumbnailUploadId: string | null
   /** Signed thumbnail link for the owner (a draft's thumbnail is private). */
   thumbnailUrl?: string | null
+  /** Signed link to the server-rendered picture of the design (null until rendered). */
+  previewUrl?: string | null
+  /** `GET /designs/:id`: the owner's signed link to the inspiration picture (parameters.inspirationUploadId). */
+  inspirationUrl?: string | null
   parameters: Record<string, unknown>
   publishedAt: string | null
   createdAt: string
@@ -371,6 +383,9 @@ export type DesignRequest = {
     id: string
     title: string | null
     thumbnailUploadId: string | null
+    previewUrl?: string | null
+    /** Order detail: signed link to the inspiration picture of the brief. */
+    inspirationUrl?: string | null
     ownerUserId?: string
     itemType?: ItemType | null
     parameters?: Record<string, unknown>
@@ -395,6 +410,10 @@ export type AtelierDesign = {
   description: string | null
   ownerUserId: string
   thumbnailUploadId: string | null
+  /** Signed link to the server-rendered picture of the design (null until rendered). */
+  previewUrl?: string | null
+  /** Design page only: signed link to the inspiration picture of the brief. */
+  inspirationUrl?: string | null
   publishedAt: string | null
   /** End of the listing period; null = no end date. */
   expiresAt?: string | null

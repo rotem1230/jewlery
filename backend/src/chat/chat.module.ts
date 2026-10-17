@@ -20,6 +20,7 @@ import { ConversationsService } from './conversations.service';
   ],
   controllers: [ConversationsController],
   providers: [ConversationsService, ChatGateway],
+  // Quote cards are chat messages: modules posting them sign their media like the chat does.
   exports: [ConversationsService, ChatGateway],
 })
 export class ChatModule {}

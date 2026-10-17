@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { join, normalize, sep } from 'path';
 import { randomUUID } from 'crypto';
 import {
@@ -15,6 +16,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Prisma, Upload, UploadStatus } from '@prisma/client';
 import { AppConfigService } from '../cms/app-config.service';
+import { STORAGE_DRIVERS, StorageDriver } from '../config/configuration';
 import { PrismaService } from '../database/prisma.service';
 import { designPictureReferences } from './design-pictures';
 import { contentMatchesMimeType } from './file-signature';
@@ -30,22 +32,56 @@ export type PresignResult = {
   expiresInSeconds: number;
 };
 
-export type ServableUpload = { upload: Upload; path: string };
+/** A READY upload whose bytes exist: a file on disk, or a blob read once access is granted. */
+export type ServableUpload =
+  | { upload: Upload; storage: 'local'; path: string }
+  | { upload: Upload; storage: 'database' };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Object keys of server-generated outputs (stored under uploads-local/generated/). */
-const GENERATED_PREFIX = 'local/generated/';
+/** Bucket of files on this machine's disk (`local/` under uploads-local/, `seed/` under seed-assets/). */
+const LOCAL_BUCKET = 'local-dev';
+/** Bucket of files kept in `upload_blobs` (keys `db/<uuid>.<ext>`, generated ones `db/generated/...`). */
+const DATABASE_BUCKET = 'database';
+/** Object keys of server-generated outputs; they are capped by their own job quotas. */
+const GENERATED_PREFIXES = ['local/generated/', 'db/generated/'];
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Writing a file of up to the upload limit into the database can outlast the 5 s default. */
+const DATABASE_WRITE_TIMEOUT_MS = 30_000;
+
+/** Prisma returns Bytes as a Uint8Array; callers get a Buffer over the same memory (no copy). */
+function toBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+/** Prisma's Bytes input type; a Node Buffer is always backed by a plain ArrayBuffer. */
+function asBytes(buffer: Buffer): Prisma.Bytes {
+  return buffer as Prisma.Bytes;
+}
 
 @Injectable()
 export class UploadsService {
   private readonly logger = new Logger(UploadsService.name);
+  /** Where new files are written. Existing rows are always read from where they were written. */
+  private readonly driver: StorageDriver;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly appConfig: AppConfigService,
     private readonly access: UploadAccessService,
-  ) {}
+  ) {
+    const driver = this.config.get<string>('storage.driver', 'local');
+    if (!(STORAGE_DRIVERS as readonly string[]).includes(driver)) {
+      throw new Error(`Unknown STORAGE_DRIVER "${driver}" (expected one of: ${STORAGE_DRIVERS.join(', ')})`);
+    }
+    this.driver = driver as StorageDriver;
+    if (this.driver === 'local' && this.config.get<string>('nodeEnv') === 'production') {
+      this.logger.warn(
+        'STORAGE_DRIVER=local in production: files are kept on this machine\'s disk and are lost when it is ' +
+          'replaced (every deploy on a host without a persistent disk)',
+      );
+    }
+  }
 
   /** AppConfig `upload_limits`, with every missing / malformed field taken from the defaults. */
   private async getLimits(): Promise<UploadLimits> {
@@ -186,7 +222,11 @@ export class UploadsService {
   ): Promise<void> {
     const since = new Date(Date.now() - DAY_MS);
     const usage = await db.upload.aggregate({
-      where: { ownerUserId, createdAt: { gt: since }, NOT: { objectKey: { startsWith: GENERATED_PREFIX } } },
+      where: {
+        ownerUserId,
+        createdAt: { gt: since },
+        NOT: GENERATED_PREFIXES.map((prefix) => ({ objectKey: { startsWith: prefix } })),
+      },
       _sum: { sizeBytes: true },
       _count: { _all: true },
     });
@@ -204,9 +244,10 @@ export class UploadsService {
   }
 
   /**
-   * Direct upload to local storage under `uploads-local/` (server-generated file name). The
-   * declared type must be allowed AND match the file's leading bytes; per-user daily volume is
-   * capped. Returns the READY row plus a signed `contentUrl` for the owner.
+   * Direct upload, stored by the configured driver (database blob, or a file under
+   * `uploads-local/`) under a server-generated name. The declared type must be allowed AND match
+   * the file's leading bytes; per-user daily volume is capped. Returns the READY row plus a signed
+   * `contentUrl` for the owner.
    */
   async createLocal(
     ownerUserId: string,
@@ -234,10 +275,36 @@ export class UploadsService {
         code: 'UPLOAD_CONTENT_MISMATCH',
       });
     }
-    const dir = join(process.cwd(), 'uploads-local');
-    mkdirSync(dir, { recursive: true });
     // Server-generated name only — never user input (traversal-safe).
     const filename = `${randomUUID()}.${this.extensionFor(file.mimetype)}`;
+
+    if (this.driver === 'database') {
+      // Quota check, row and bytes in one transaction under the user's row lock: simultaneous
+      // uploads cannot all pass the check, and a failed save leaves neither row nor bytes.
+      const upload = await this.prisma.$transaction(
+        async (tx) => {
+          await lockUser(tx, ownerUserId);
+          await this.assertDailyQuota(tx, ownerUserId, file.size, limits);
+          return tx.upload.create({
+            data: {
+              ownerUserId,
+              bucket: DATABASE_BUCKET,
+              objectKey: `db/${filename}`,
+              mimeType: file.mimetype,
+              sizeBytes: file.size,
+              status: UploadStatus.READY,
+              readyAt: new Date(),
+              blob: { create: { data: asBytes(file.buffer) } },
+            },
+          });
+        },
+        { timeout: DATABASE_WRITE_TIMEOUT_MS },
+      );
+      return this.access.withUrl(upload);
+    }
+
+    const dir = join(process.cwd(), 'uploads-local');
+    mkdirSync(dir, { recursive: true });
     const path = join(dir, filename);
 
     // Quota check, file and row under the user's row lock: simultaneous uploads cannot all pass
@@ -250,7 +317,7 @@ export class UploadsService {
         return tx.upload.create({
           data: {
             ownerUserId,
-            bucket: 'local-dev',
+            bucket: LOCAL_BUCKET,
             objectKey: `local/${filename}`,
             mimeType: file.mimetype,
             sizeBytes: file.size,
@@ -266,19 +333,38 @@ export class UploadsService {
     }
   }
 
-  /** Server-written file (AI / render / try-on output). Skips the chat MIME allowlist. */
+  /**
+   * Server-written file (AI / render / try-on output, design preview), stored by the configured
+   * driver. Skips the chat MIME allowlist and the personal upload quota.
+   */
   async createGeneratedLocal(ownerUserId: string, bytes: Buffer, mimeType: string): Promise<Upload> {
+    const filename = `${randomUUID()}.${this.extensionFor(mimeType)}`;
+    if (this.driver === 'database') {
+      // Nested create: the row and its bytes are written in one transaction.
+      return this.prisma.upload.create({
+        data: {
+          ownerUserId,
+          bucket: DATABASE_BUCKET,
+          objectKey: `db/generated/${filename}`,
+          mimeType,
+          sizeBytes: bytes.length,
+          status: UploadStatus.READY,
+          readyAt: new Date(),
+          blob: { create: { data: asBytes(bytes) } },
+        },
+      });
+    }
+
     const dir = join(process.cwd(), 'uploads-local', 'generated');
     mkdirSync(dir, { recursive: true });
-    const filename = `${randomUUID()}.${this.extensionFor(mimeType)}`;
     const path = join(dir, filename);
     writeFileSync(path, bytes, { mode: 0o600 });
     try {
       return await this.prisma.upload.create({
         data: {
           ownerUserId,
-          bucket: 'local-dev',
-          objectKey: `${GENERATED_PREFIX}${filename}`,
+          bucket: LOCAL_BUCKET,
+          objectKey: `local/generated/${filename}`,
           mimeType,
           sizeBytes: bytes.length,
           status: UploadStatus.READY,
@@ -300,7 +386,7 @@ export class UploadsService {
 
   /** Absolute path of a locally stored upload, confined to its storage root (traversal-safe). */
   private resolveLocalPath(upload: Pick<Upload, 'bucket' | 'objectKey'>): string | null {
-    if (upload.bucket !== 'local-dev') {
+    if (upload.bucket !== LOCAL_BUCKET) {
       return null;
     }
     const { seedDir, localDir } = this.localBaseDirs();
@@ -315,17 +401,60 @@ export class UploadsService {
     return null;
   }
 
-  /** A READY, not-deleted, locally stored upload together with its file path; otherwise null. */
+  /**
+   * A READY, not-deleted upload whose bytes exist (a database blob, or a local / seed file and its
+   * path); otherwise null. Blob bytes are not loaded here: read them with `readBytes` once the
+   * caller is allowed to see them.
+   */
   async findServable(uploadId: string): Promise<ServableUpload | null> {
-    const upload = await this.prisma.upload.findUnique({ where: { id: uploadId } });
-    if (!upload || upload.deletedAt || upload.status !== UploadStatus.READY) {
+    const found = await this.prisma.upload.findUnique({
+      where: { id: uploadId },
+      include: { blob: { select: { uploadId: true } } },
+    });
+    if (!found || found.deletedAt || found.status !== UploadStatus.READY) {
       return null;
+    }
+    const { blob, ...upload } = found;
+    if (upload.bucket === DATABASE_BUCKET) {
+      return blob ? { upload, storage: 'database' } : null;
     }
     const path = this.resolveLocalPath(upload);
     if (!path || !existsSync(path)) {
       return null;
     }
-    return { upload, path };
+    return { upload, storage: 'local', path };
+  }
+
+  /**
+   * The stored bytes of a READY, not-deleted upload, from whichever store holds it (database blob,
+   * local file or seed asset); null when the upload is not ready, deleted, unknown or its bytes
+   * are gone. Does not check who may read it: callers decide that.
+   */
+  async readBytes(uploadOrId: string | Pick<Upload, 'id'>): Promise<Buffer | null> {
+    const id = typeof uploadOrId === 'string' ? uploadOrId : uploadOrId.id;
+    if (!UUID_PATTERN.test(id)) {
+      return null;
+    }
+    const upload = await this.prisma.upload.findUnique({ where: { id }, include: { blob: true } });
+    if (!upload || upload.deletedAt || upload.status !== UploadStatus.READY) {
+      return null;
+    }
+    if (upload.bucket === DATABASE_BUCKET) {
+      return upload.blob ? toBuffer(upload.blob.data) : null;
+    }
+    const path = this.resolveLocalPath(upload);
+    if (!path) {
+      return null;
+    }
+    try {
+      return await readFile(path);
+    } catch (err) {
+      // A file that did not survive a redeploy is "no bytes"; anything else is worth a look.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.logger.warn(`Could not read stored file ${upload.objectKey}: ${(err as Error).message}`);
+      }
+      return null;
+    }
   }
 
   /**
@@ -336,7 +465,9 @@ export class UploadsService {
     const counts = await Promise.all([
       this.prisma.user.count({ where: { avatarUploadId: uploadId } }),
       // A deleted design no longer uses its pictures (nobody can open them through it).
-      this.prisma.design.count({ where: { thumbnailUploadId: uploadId, deletedAt: null } }),
+      this.prisma.design.count({
+        where: { deletedAt: null, OR: [{ thumbnailUploadId: uploadId }, { previewUploadId: uploadId }] },
+      }),
       this.prisma.design.count({ where: { deletedAt: null, OR: designPictureReferences(uploadId) } }),
       this.prisma.jewelerProfile.count({ where: { logoUploadId: uploadId } }),
       this.prisma.jewelerOnboardingDraft.count({ where: { logoUploadId: uploadId } }),
@@ -377,17 +508,30 @@ export class UploadsService {
 
   /** Withdraws an upload nobody references (e.g. a result that arrived too late): row and bytes. */
   async discard(upload: Pick<Upload, 'id' | 'bucket' | 'objectKey'>): Promise<void> {
-    await this.prisma.upload.update({
+    const markDeleted = this.prisma.upload.update({
       where: { id: upload.id },
       data: { status: UploadStatus.DELETED, deletedAt: new Date() },
     });
-    this.deleteStoredFile(upload);
+    if (upload.bucket === DATABASE_BUCKET) {
+      // Row and bytes go together.
+      await this.prisma.$transaction([markDeleted, this.prisma.uploadBlob.deleteMany({ where: { uploadId: upload.id } })]);
+      return;
+    }
+    await markDeleted;
+    void this.deleteStoredFile(upload);
   }
 
-  /** Removes the stored bytes of a locally stored, non-seed upload (seed assets are shared). */
-  deleteStoredFile(upload: Pick<Upload, 'bucket' | 'objectKey'>): void {
+  /**
+   * Removes the stored bytes of an upload: its database blob, or its local file (seed assets are
+   * shared and never removed). Callable without await: failures are logged and the returned
+   * promise always resolves. Local files are removed before it returns.
+   */
+  deleteStoredFile(upload: Pick<Upload, 'bucket' | 'objectKey'> & { id?: string }): Promise<void> {
+    if (upload.bucket === DATABASE_BUCKET) {
+      return this.deleteBlob(upload);
+    }
     if (!upload.objectKey.startsWith('local/')) {
-      return;
+      return Promise.resolve();
     }
     const path = this.resolveLocalPath(upload);
     if (path) {
@@ -396,6 +540,19 @@ export class UploadsService {
       } catch (err) {
         this.logger.warn(`Could not delete stored file ${upload.objectKey}: ${(err as Error).message}`);
       }
+    }
+    return Promise.resolve();
+  }
+
+  private async deleteBlob(upload: Pick<Upload, 'bucket' | 'objectKey'> & { id?: string }): Promise<void> {
+    try {
+      await this.prisma.uploadBlob.deleteMany({
+        where: upload.id
+          ? { uploadId: upload.id }
+          : { upload: { bucket: upload.bucket, objectKey: upload.objectKey } },
+      });
+    } catch (err) {
+      this.logger.warn(`Could not delete stored bytes of ${upload.objectKey}: ${(err as Error).message}`);
     }
   }
 

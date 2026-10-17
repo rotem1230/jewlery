@@ -12,6 +12,8 @@ process.env.AUTH_MAIL_THROTTLE_LIMIT = '100000';
 process.env.AUTH_LOGIN_THROTTLE_LIMIT = '100000';
 process.env.BCRYPT_ROUNDS = '4';
 process.env.JOBS_ENABLED = 'false';
+// Design pictures render in the background after saves; suites that test them turn this on.
+process.env.DESIGN_PREVIEWS = 'off';
 process.env.CORS_ORIGINS = 'http://localhost:8081';
 process.env.API_PUBLIC_URL = 'http://localhost:3000';
 process.env.SMTP_URL = '';

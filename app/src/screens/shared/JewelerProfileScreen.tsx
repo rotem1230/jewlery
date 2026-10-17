@@ -14,14 +14,13 @@ import { listDesigns } from '@/src/api/designs'
 import { createAtelierRequest } from '@/src/api/atelier'
 import { parseApiError } from '@/src/lib/api'
 import { DAY_LABEL_KEYS, hoursRows } from '@/src/lib/businessHours'
-import { imageFromUpload } from '@/src/lib/format'
+import { uploadContentUrl } from '@/src/api/uploads'
 import { formatHeTimeAgo } from '@/src/hooks/useMyBusinessProfile'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, radii } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import type { AtelierStackParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type ProfileNav = NativeStackNavigationProp<AtelierStackParamList, 'JewelerProfile'>
 type ProfileRoute = RouteProp<AtelierStackParamList, 'JewelerProfile'>
@@ -127,7 +126,7 @@ export function JewelerProfileScreen() {
                   {profile.portfolio.map((work) => (
                     <GalleryWorkCard
                       key={work.id}
-                      image={imageFromUpload(work.uploadId, heroRing)}
+                      image={{ uri: uploadContentUrl(work.uploadId) }}
                       title={work.title ?? ''}
                     />
                   ))}

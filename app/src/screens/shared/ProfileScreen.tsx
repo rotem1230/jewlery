@@ -287,13 +287,17 @@ export function ProfileScreen() {
               <Pressable
                 key={item.id}
                 onPress={() => navigation.navigate(item.route)}
-                style={({ pressed }) => [styles.menuRow, pressed && styles.pressed]}
+                style={({ pressed }) => pressed && styles.pressed}
                 accessibilityRole="button"
               >
-                <View style={styles.chevronSlot}>
-                  <ChevronLeft size={20} color="#767686" strokeWidth={1.75} />
+                {/* The row is laid out by a plain View: NativeWind drops a Pressable style
+                    function, which left the chevron stacked above its label. */}
+                <View style={styles.menuRow}>
+                  <View style={styles.chevronSlot}>
+                    <ChevronLeft size={20} color="#767686" strokeWidth={1.75} />
+                  </View>
+                  <Text style={styles.menuLabel}>{t(item.labelKey)}</Text>
                 </View>
-                <Text style={styles.menuLabel}>{t(item.labelKey)}</Text>
               </Pressable>
             ))}
           </View>

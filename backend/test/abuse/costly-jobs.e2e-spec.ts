@@ -14,6 +14,10 @@ class GatedAiEngine {
   private waiting: Array<() => void> = [];
   calls = 0;
 
+  isConfigured(): boolean {
+    return true;
+  }
+
   async generate(_req: AiGenerateRequest): Promise<AiGenerateResult> {
     this.calls += 1;
     if (!this.isOpen) {
@@ -182,9 +186,13 @@ describe('render job limits and ownership', () => {
           t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'STL' }),
         ),
       );
-      expect(results.filter((r) => r.status === 201)).toHaveLength(2);
-      expect(results.filter((r) => r.status === 429)).toHaveLength(6);
-      expect(await t.prisma.renderJob.count({ where: { designId: design.id } })).toBe(2);
+      // Requests that meet a running export are refused (409, one at a time per owner); the rest
+      // are bounded by the quota. Never more jobs than the quota, whatever the interleaving.
+      const created = results.filter((r) => r.status === 201).length;
+      expect(created).toBeGreaterThanOrEqual(1);
+      expect(created).toBeLessThanOrEqual(2);
+      expect(results.every((r) => [201, 409, 429].includes(r.status))).toBe(true);
+      expect(await t.prisma.renderJob.count({ where: { designId: design.id } })).toBe(created);
     } finally {
       await t.prisma.appConfig.delete({ where: { key: 'render_limits' } });
     }
@@ -209,7 +217,13 @@ describe('render job limits and ownership', () => {
       .set(user.auth)
       .send({ designId: design.id, exportFormat: 'PNG_HD' })
       .expect(201);
-    expect(res.body.data.outputUrl).toMatch(/^\/uploads\/.+\/content\?exp=/);
-    await t.http.get(`${API}${res.body.data.outputUrl}`).expect(200);
+    // An HD picture can take longer than the request waits: then it is polled until done.
+    let job = res.body.data;
+    for (let i = 0; i < 300 && ['QUEUED', 'RUNNING'].includes(job.status); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      job = (await t.http.get(`${API}/render-jobs/${job.id}`).set(user.auth).expect(200)).body.data;
+    }
+    expect(job.outputUrl).toMatch(/^\/uploads\/.+\/content\?exp=/);
+    await t.http.get(`${API}${job.outputUrl}`).expect(200);
   });
 });

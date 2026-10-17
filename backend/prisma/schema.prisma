@@ -344,10 +344,24 @@ model Upload {
   vizInputs          VisualizationJob[]       @relation("VizInput")
   vizOutputs         VisualizationJob[]       @relation("VizOutput")
   messageAttachments Message[]                @relation("MessageImage")
+  designPreviews     Design[]                 @relation("DesignPreview")
+  blob               UploadBlob?
 
   @@unique([bucket, objectKey])
   @@index([ownerUserId, status])
   @@map("uploads")
+}
+
+/// Stored bytes of an upload kept in the database (STORAGE_DRIVER=database): survives deploys and
+/// restarts of hosts without a persistent disk.
+model UploadBlob {
+  uploadId  String   @id @db.Uuid
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  upload Upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@map("upload_blobs")
 }
 
 model AppConfig {
@@ -730,6 +744,12 @@ model Design {
   parametersSchemaVersion Int               @default(1)
   jewelerNotes            String?
   thumbnailUploadId       String?           @db.Uuid
+  /// Server-rendered picture of the current parameters (rendered from the same geometry as the STL).
+  previewUploadId         String?           @db.Uuid
+  /// The design version the preview was rendered for; a different version means it is stale.
+  previewVersion          Int?
+  /// Fingerprint of what the preview was rendered from (spec + renderer version).
+  previewKey              String?
   lockedAt                DateTime?
   lockedFields            String[]          @default([])
   feasibilityStatus       FeasibilityStatus @default(NOT_REQUIRED)
@@ -752,6 +772,7 @@ model Design {
   completedBy         User?              @relation("DesignCompletedBy", fields: [completedByJewelerId], references: [id], onDelete: SetNull)
   feasibilityReviewer User?              @relation("DesignFeasibilityReviewer", fields: [feasibilityReviewerId], references: [id], onDelete: SetNull)
   acceptedQuote       Quote?             @relation("DesignAcceptedQuote", fields: [acceptedQuoteId], references: [id], onDelete: SetNull)
+  previewUpload       Upload?            @relation("DesignPreview", fields: [previewUploadId], references: [id], onDelete: SetNull)
   versions            DesignVersion[]
   assets              DesignAsset[]
   requests            DesignRequest[]
@@ -764,6 +785,7 @@ model Design {
   usageEvents         UsageEvent[]
 
   @@index([thumbnailUploadId])
+  @@index([previewUploadId])
   @@index([ownerUserId, status])
   @@index([status, publishedAt])
   @@index([itemTypeId])

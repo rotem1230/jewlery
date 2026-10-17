@@ -634,7 +634,10 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
     extraLeadPrice?: number;
     trialDays: number;
     sortOrder: number;
-    inclusions: Prisma.InputJsonValue;
+    /** What the plan includes, in Hebrew (the app's language) with the English beside it. */
+    inclusions: { bullets: string[]; bulletsEn: string[] };
+    /** The English-only list seeded before: a re-seed replaces it (an operator's own list is kept). */
+    legacyInclusions: Prisma.InputJsonValue;
     entitlementKeys: string[];
   };
 
@@ -649,7 +652,11 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
       leadQuota: 0,
       trialDays: 0,
       sortOrder: 1,
-      inclusions: { bullets: ['Unlimited draft designs', 'Standard export with watermark'] },
+      inclusions: {
+        bullets: ['עיצובי טיוטה ללא הגבלה', 'ייצוא רגיל עם סימן מים'],
+        bulletsEn: ['Unlimited draft designs', 'Standard export with watermark'],
+      },
+      legacyInclusions: { bullets: ['Unlimited draft designs', 'Standard export with watermark'] },
       entitlementKeys: [],
     },
     {
@@ -663,6 +670,10 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
       trialDays: 14,
       sortOrder: 2,
       inclusions: {
+        bullets: ['ייצוא ללא סימן מים', 'ייצוא תמונת HD', 'הדמיה על תמונה אישית', 'תג "מעצב מאומת"'],
+        bulletsEn: ['Exports without a watermark', 'HD image export', 'Try-on on your own photo', '"Verified designer" badge'],
+      },
+      legacyInclusions: {
         bullets: ['No watermark exports', 'HD export', 'Personal visualization', 'Verified badge'],
       },
       entitlementKeys: ['no_watermark', 'hd_export', 'personal_visualization', 'verified_designer_badge'],
@@ -677,7 +688,11 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
       leadQuota: 3,
       trialDays: 0,
       sortOrder: 1,
-      inclusions: { bullets: ['3 design requests / month', 'Standard profile listing'] },
+      inclusions: {
+        bullets: ['3 לידים בחודש', 'הצגה ברשימת הצורפים באטלייה'],
+        bulletsEn: ['3 leads per month', 'Standard profile listing'],
+      },
+      legacyInclusions: { bullets: ['3 design requests / month', 'Standard profile listing'] },
       entitlementKeys: [],
     },
     {
@@ -692,6 +707,10 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
       trialDays: 14,
       sortOrder: 2,
       inclusions: {
+        bullets: ['15 לידים בחודש', 'לידים חמים וממוקדים', 'עדיפות בהפניית בקשות', 'מעקב ייצור (CRM)'],
+        bulletsEn: ['15 leads per month', 'Warm, targeted leads', 'Priority request routing', 'Production tracking (CRM)'],
+      },
+      legacyInclusions: {
         bullets: ['15 leads / month', 'Warm, targeted leads', 'Priority routing', 'Internal CRM'],
       },
       entitlementKeys: ['warm_leads', 'priority_routing', 'jeweler_crm', 'priority_cloud_processing'],
@@ -718,6 +737,11 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
         inclusions: plan.inclusions,
       },
     });
+    // The feature texts of a plan seeded before were English only: those are replaced; a list an
+    // operator rewrote is not.
+    if (JSON.stringify(row.inclusions) === JSON.stringify(plan.legacyInclusions)) {
+      await prisma.planCatalog.update({ where: { id: row.id }, data: { inclusions: plan.inclusions } });
+    }
 
     for (const key of plan.entitlementKeys) {
       const entitlementId = entitlementIds[key];

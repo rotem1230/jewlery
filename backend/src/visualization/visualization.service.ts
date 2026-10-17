@@ -1,15 +1,14 @@
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
 import {
   BadRequestException,
   ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JobStatus, UploadStatus, User, UserRole, VisualizationJob } from '@prisma/client';
+import { Design, JobStatus, UploadStatus, User, UserRole, VisualizationJob } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
 import { AppConfigService } from '../cms/app-config.service';
@@ -18,6 +17,9 @@ import { PrismaService } from '../database/prisma.service';
 import { lockUser } from '../database/row-locks';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
+import { DEFAULT_PLACEMENT, MAX_PHOTO_SIDE, Placement, composite, decodePhoto, encodeJpeg, fitWithin } from '../jewelry/compose';
+import { JewelryRenderService } from '../jewelry/jewelry-render.service';
+import { encodePngAsync } from '../jewelry/png';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { CreateVisualizationJobDto, QueryVisualizationJobsDto } from './dto/visualization.dto';
@@ -27,13 +29,21 @@ const DEFAULT_RETENTION_HOURS = 72;
 const VIZ_ENTITLEMENT_KEY = 'personal_visualization';
 const VIZ_FLAG = 'phase2_visualization';
 const DAY_MS = 24 * 60 * 60 * 1000;
-const TINY_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-  'base64',
-);
+/** Pixels per side of the transparent picture the app places over the photo. */
+export const OVERLAY_SIZE = 768;
+const OVERLAY_CACHE = 16;
 
+/**
+ * Try-on: the designer places a transparent picture of their design (rendered from its
+ * parameters) on a photo of their own; the server composes the same picture at that place, size
+ * and angle into a new image. The selfie is never echoed back and is purged after retention.
+ */
 @Injectable()
 export class VisualizationService {
+  private readonly logger = new Logger(VisualizationService.name);
+  /** Recent overlay pictures by design id + version (rendering one takes a moment). */
+  private readonly overlays = new Map<string, Promise<Buffer>>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly entitlements: EntitlementsService,
@@ -44,6 +54,7 @@ export class VisualizationService {
     private readonly uploads: UploadsService,
     private readonly access: UploadAccessService,
     private readonly config: ConfigService,
+    private readonly jewelry: JewelryRenderService,
   ) {}
 
   private view(job: VisualizationJob) {
@@ -62,16 +73,7 @@ export class VisualizationService {
   }
 
   async create(user: User, dto: CreateVisualizationJobDto) {
-    const flagOn = await this.featureFlags.isEnabled(VIZ_FLAG, user);
-    if (!flagOn) {
-      throw new ForbiddenException({
-        success: false,
-        message: 'Visualization is not enabled',
-        code: 'FEATURE_DISABLED',
-      });
-    }
-
-    await this.entitlements.assert(user.id, VIZ_ENTITLEMENT_KEY);
+    await this.assertTryOnAllowed(user);
 
     const design = await this.prisma.design.findFirst({ where: { id: dto.designId, deletedAt: null } });
     if (!design) {
@@ -131,19 +133,69 @@ export class VisualizationService {
       after: toJsonValue(job),
     });
 
-    return this.view(await this.process(job, user.id));
+    return this.view(await this.process(job, design, upload.mimeType, user.id, dto.placement ?? DEFAULT_PLACEMENT));
   }
 
-  /** Overlay catalog jewelry onto the selfie as a distinct output upload (never echo the input). */
-  private async process(job: VisualizationJob, ownerUserId: string): Promise<VisualizationJob> {
-    const overlay = this.readOverlayPng();
-    const output = await this.uploads.createGeneratedLocal(ownerUserId, overlay, 'image/png');
+  /**
+   * The transparent picture of the design the app shows over the photo while the designer places
+   * it (the owner's own design only). The composed try-on uses this same picture.
+   */
+  async overlay(designId: string, user: User): Promise<Buffer> {
+    // The same gates as a try-on: the overlay exists only to place one.
+    await this.assertTryOnAllowed(user);
+    const design = await this.prisma.design.findFirst({ where: { id: designId, deletedAt: null } });
+    if (!design || (design.ownerUserId !== user.id && !user.roles.includes(UserRole.ADMIN))) {
+      throw new NotFoundException({ success: false, message: 'Design not found' });
+    }
+    const key = `${design.id}:${design.version}`;
+    let png = this.overlays.get(key);
+    if (!png) {
+      // One render per key, shared by simultaneous requests; a failure is not remembered.
+      png = this.jewelry.cutout(design, OVERLAY_SIZE).then((image) => encodePngAsync(image));
+      png.catch(() => this.overlays.delete(key));
+      this.overlays.set(key, png);
+      if (this.overlays.size > OVERLAY_CACHE) this.overlays.delete(this.overlays.keys().next().value as string);
+    }
+    return png;
+  }
+
+  private async assertTryOnAllowed(user: User): Promise<void> {
+    if (!(await this.featureFlags.isEnabled(VIZ_FLAG, user))) {
+      throw new ForbiddenException({ success: false, message: 'Visualization is not enabled', code: 'FEATURE_DISABLED' });
+    }
+    await this.entitlements.assert(user.id, VIZ_ENTITLEMENT_KEY);
+  }
+
+  /** Composes the design onto the photo as a distinct output upload (never echoes the input). */
+  private async process(
+    job: VisualizationJob,
+    design: Design,
+    mimeType: string,
+    ownerUserId: string,
+    placement: Placement,
+  ): Promise<VisualizationJob> {
+    let outputId: string;
+    try {
+      const bytes = await this.uploads.readBytes(job.inputUploadId);
+      if (!bytes) throw new Error('The photo is no longer available');
+      const photo = fitWithin(decodePhoto(bytes, mimeType), MAX_PHOTO_SIDE);
+      const size = Math.round(Math.min(1600, Math.max(64, placement.scale * photo.width)));
+      const piece = await this.jewelry.cutout(design, size);
+      const output = await this.uploads.createGeneratedLocal(ownerUserId, encodeJpeg(composite(photo, piece, placement)), 'image/jpeg');
+      outputId = output.id;
+    } catch (err) {
+      this.logger.warn(`Try-on ${job.id} failed: ${(err as Error).message}`);
+      return this.prisma.visualizationJob.update({
+        where: { id: job.id },
+        data: { status: JobStatus.FAILED, errorMessage: 'Could not compose the try-on picture', finishedAt: new Date() },
+      });
+    }
 
     const succeeded = await this.prisma.visualizationJob.update({
       where: { id: job.id },
       data: {
         status: JobStatus.SUCCEEDED,
-        outputUploadId: output.id,
+        outputUploadId: outputId,
         finishedAt: new Date(),
       },
     });
@@ -156,11 +208,6 @@ export class VisualizationService {
     });
 
     return succeeded;
-  }
-
-  private readOverlayPng(): Buffer {
-    const path = join(process.cwd(), 'seed-assets/showcase/work-ring.png');
-    return existsSync(path) ? readFileSync(path) : TINY_PNG;
   }
 
   private async getOwned(id: string, user: User): Promise<VisualizationJob> {
@@ -235,7 +282,7 @@ export class VisualizationService {
       data: { deletedAt: now, status: UploadStatus.DELETED },
     });
     for (const upload of uploads) {
-      this.uploads.deleteStoredFile(upload);
+      await this.uploads.deleteStoredFile(upload);
     }
     await this.prisma.visualizationJob.updateMany({
       where: { id: { in: expired.map((job) => job.id) } },

@@ -150,6 +150,24 @@ describe('inbox row status snippet', () => {
     nameless.participants[1].user = { id: 'peer-b', firstName: null, lastName: null, avatarUploadId: null }
     expect(conversationRow(nameless, 'me', 'he').name).toBe('משתמש/ת')
   })
+
+  it('a jeweler is listed under the business name, pictured by the logo; without one, no picture (initials)', () => {
+    const withBusiness = conversation('c')
+    withBusiness.participants[1].user = {
+      id: 'peer-c',
+      firstName: 'Avi',
+      lastName: 'Cohen',
+      avatarUploadId: null,
+      avatarUrl: null,
+      businessName: 'QA Goldsmith',
+      logoUrl: '/uploads/logo-c/content?exp=1&sig=ab',
+    }
+    const row = conversationRow(withBusiness, 'me', 'he')
+    expect(row.name).toBe('QA Goldsmith')
+    expect(row.avatarUri).toMatch(/\/uploads\/logo-c\/content\?exp=1&sig=ab$/)
+
+    expect(conversationRow(conversation('d'), 'me', 'he').avatarUri).toBeUndefined()
+  })
 })
 
 describe('filter options', () => {

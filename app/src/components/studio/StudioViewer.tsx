@@ -1,37 +1,22 @@
 import { useEffect, useMemo, useRef, type ComponentType, type Ref } from 'react'
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Pressable, StyleSheet, Text, View } from 'react-native'
 import WebView from 'react-native-webview'
 import type { WebView as WebViewRef, WebViewMessageEvent } from 'react-native-webview'
-import ringGlb from '../../../assets/models/studio/ring.glb'
-import necklaceGlb from '../../../assets/models/studio/necklace.glb'
-import braceletGlb from '../../../assets/models/studio/bracelet.glb'
-import earringsGlb from '../../../assets/models/studio/earrings.glb'
 import { studioViewerHtml } from '@/src/lib/studioViewerHtml'
 import { API_BASE_URL } from '@/src/lib/api'
-import type { StudioMarker } from '@/src/lib/studioParams'
 import { useTranslation } from '@/src/i18n'
 import { colors } from '@/src/theme/tokens'
 
 type StudioItemType = 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS'
 
-const CATALOG = {
-  RING: ringGlb,
-  NECKLACE: necklaceGlb,
-  BRACELET: braceletGlb,
-  EARRINGS: earringsGlb,
-}
-
 type StudioViewerProps = {
   itemType?: StudioItemType
-  metalHex: string
-  metalCode?: string
-  purityCode?: string
-  settingCode?: string
-  scale: number
-  tube: number
-  markers: StudioMarker[]
+  /** The design's parameters with the open tab's draft applied: what the piece looks like now. */
+  parameters: Record<string, unknown>
+  /** Inner diameter of the chosen ring size from the size chart (mm), when known. */
+  ringChartDiameterMm?: number | null
   interactive?: boolean
-  /** Hosted GLB from our uploads (AI sample). Catalog dummy if omitted. Never a Tripo URL. */
+  /** Hosted GLB from our uploads (inspiration AI). The parametric piece is shown when omitted. */
   modelUri?: string
 }
 
@@ -58,103 +43,45 @@ type StudioWebViewProps = {
 
 const StudioWebView = WebView as unknown as ComponentType<StudioWebViewProps>
 
-function send(
-  view: WebViewRef | null,
-  payload: {
-    type: string
-    hex?: string
-    code?: string
-    purity?: string
-    scale?: number
-    tube?: number
-    factor?: number
-    width?: number
-    height?: number
-    markers?: StudioMarker[]
-  },
-) {
+function send(view: WebViewRef | null, payload: Record<string, unknown>) {
   view?.injectJavaScript(`window.__studioSet && window.__studioSet(${JSON.stringify(payload)}); true;`)
 }
 
-/** Local preview: catalog dummy GLB, or an upload we host after Inspiration AI. Tabs only PATCH parameters. */
+/**
+ * The 3D studio: builds the piece from its parameters with the same geometry the server exports
+ * (STL, HD pictures), so edits show exactly what will be made. Tabs only PATCH parameters.
+ */
 export function StudioViewer({
   itemType = 'RING',
-  metalHex,
-  metalCode,
-  purityCode,
-  settingCode,
-  scale,
-  tube,
-  markers,
+  parameters,
+  ringChartDiameterMm,
   interactive = true,
   modelUri,
 }: StudioViewerProps) {
   const { t } = useTranslation()
   const ref = useRef<WebViewRef>(null)
   const ready = useRef(false)
-  const metalRef = useRef({ hex: metalHex, code: metalCode, purity: purityCode })
-  const scaleRef = useRef(scale)
-  const tubeRef = useRef(tube)
-  const settingRef = useRef(settingCode)
-  const markersRef = useRef(markers)
-  metalRef.current = { hex: metalHex, code: metalCode, purity: purityCode }
-  scaleRef.current = scale
-  tubeRef.current = tube
-  settingRef.current = settingCode
-  markersRef.current = markers
+  const design = useMemo(
+    () => ({ type: 'setDesign', itemType, parameters, ringChartDiameterMm: ringChartDiameterMm ?? null }),
+    [itemType, parameters, ringChartDiameterMm],
+  )
+  const designJson = JSON.stringify(design)
+  const designRef = useRef(design)
+  designRef.current = design
 
-  const catalogUri = Image.resolveAssetSource(CATALOG[itemType] ?? ringGlb)?.uri ?? ''
-  const glbUri = modelUri || catalogUri
-  const html = useMemo(() => studioViewerHtml(glbUri, itemType), [glbUri, itemType])
-  const htmlRev = `glb-${itemType}-${modelUri ?? 'catalog'}-v20`
-  const baseUrl = modelUri ? API_BASE_URL.replace(/\/api\/v1\/?$/, '') : 'http://localhost:8081'
+  const html = useMemo(() => studioViewerHtml({ itemType, modelUri }), [itemType, modelUri])
+  const htmlRev = `studio-${itemType}-${modelUri ?? 'parametric'}-v21`
+  const baseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '')
   const layout = useRef({ width: 0, height: 0 })
 
   useEffect(() => {
     ready.current = false
   }, [htmlRev])
 
-  const pushAll = () => {
-    if (!ready.current) return
-    send(ref.current, {
-      type: 'setMetal',
-      hex: metalRef.current.hex,
-      code: metalRef.current.code,
-      purity: metalRef.current.purity,
-    })
-    send(ref.current, { type: 'setScale', scale: scaleRef.current })
-    send(ref.current, { type: 'setTube', tube: tubeRef.current })
-    send(ref.current, { type: 'setSetting', code: settingRef.current })
-    send(ref.current, { type: 'setMarkers', markers: markersRef.current })
-    if (layout.current.width > 0 && layout.current.height > 0) {
-      send(ref.current, { type: 'resize', width: layout.current.width, height: layout.current.height })
-    }
-  }
-
   useEffect(() => {
     if (!ready.current) return
-    send(ref.current, { type: 'setMetal', hex: metalHex, code: metalCode, purity: purityCode })
-  }, [metalHex, metalCode, purityCode])
-
-  useEffect(() => {
-    if (!ready.current) return
-    send(ref.current, { type: 'setScale', scale })
-  }, [scale])
-
-  useEffect(() => {
-    if (!ready.current) return
-    send(ref.current, { type: 'setTube', tube })
-  }, [tube])
-
-  useEffect(() => {
-    if (!ready.current) return
-    send(ref.current, { type: 'setSetting', code: settingCode })
-  }, [settingCode])
-
-  useEffect(() => {
-    if (!ready.current) return
-    send(ref.current, { type: 'setMarkers', markers })
-  }, [markers])
+    send(ref.current, designRef.current)
+  }, [designJson])
 
   return (
     <View
@@ -194,7 +121,10 @@ export function StudioViewer({
           }
           if (data !== 'ready') return
           ready.current = true
-          pushAll()
+          if (layout.current.width > 0) {
+            send(ref.current, { type: 'resize', width: layout.current.width, height: layout.current.height })
+          }
+          send(ref.current, designRef.current)
         }}
       />
       <View style={styles.zoomStack} pointerEvents="box-none">

@@ -31,12 +31,15 @@ import { Public } from '../authorization/decorators/public.decorator';
 import { RateLimiterService } from '../common/rate-limit/rate-limiter.service';
 import { PrismaService } from '../database/prisma.service';
 import { ConfirmUploadDto, CreatePresignDto } from './dto/upload.dto';
+import { sendBytes } from './send-bytes';
 import { UploadAccessService } from './upload-access.service';
 import { UploadsService } from './uploads.service';
 
 type AuthedRequest = Request & { user: User };
 
 const INLINE_PREFIXES = ['image/', 'audio/', 'video/'];
+/** Players seek in these with byte ranges (voice notes, videos); images are always sent whole. */
+const RANGE_PREFIXES = ['audio/', 'video/'];
 
 @ApiTags('Uploads')
 @ApiBearerAuth()
@@ -98,6 +101,7 @@ export class UploadsController {
     @Query('sig') sig: unknown,
     @Headers('authorization') authorization: string | undefined,
     @Ip() clientIp: string,
+    @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
     // Media has its own budget: a screen full of images must not lock the client out of the API.
@@ -114,7 +118,7 @@ export class UploadsController {
     if (!servable) {
       throw notFound();
     }
-    const { upload, path } = servable;
+    const { upload } = servable;
 
     let visibility: 'public' | 'signed' | 'private' | null = null;
     if (await this.access.isPublic(upload)) {
@@ -128,6 +132,12 @@ export class UploadsController {
       }
     }
     if (!visibility) {
+      throw notFound();
+    }
+    // Blob bytes are loaded only once access is granted, and before any header is set (a refusal
+    // must still go out as a JSON error).
+    const bytes = servable.storage === 'database' ? await this.uploads.readBytes(upload) : null;
+    if (servable.storage === 'database' && !bytes) {
       throw notFound();
     }
 
@@ -144,7 +154,17 @@ export class UploadsController {
     if (visibility !== 'private') {
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     }
-    res.sendFile(path);
+    if (servable.storage === 'local') {
+      // Files on disk (legacy uploads, seed assets): send handles ETag, ranges and errors.
+      res.sendFile(servable.path);
+      return;
+    }
+    if (bytes) {
+      sendBytes(req, res, bytes, {
+        etag: `"${upload.id}"`,
+        ranges: RANGE_PREFIXES.some((prefix) => upload.mimeType.startsWith(prefix)),
+      });
+    }
   }
 
   private async authenticate(authorization: string): Promise<User | null> {

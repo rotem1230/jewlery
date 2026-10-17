@@ -26,6 +26,8 @@ import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PUBLIC_PORTFOLIO_SELECT, toPublicJewelerProfile } from '../jeweler-profiles/public-profile';
+import { UploadAccessService } from '../uploads/upload-access.service';
+import { inspirationUrlFor, withDesignPreview } from './design-pictures';
 import { CreateAtelierRequestDto, GeoSearchDto, QueryAtelierDesignsDto, QueryAtelierJewelersDto } from './dto/atelier.dto';
 
 const PAGE_SIZE = 20;
@@ -43,7 +45,10 @@ const GEO_SEARCH_FLAG = 'phase3_postgis';
 const MIN_GEO_RADIUS_KM = 1;
 const DEFAULT_MATCHING_WEIGHTS = { regionMatchWeight: 50, specialtyOverlapWeight: 10 };
 
-/** What the public design feed exposes; reviewer ids, locks and acceptance data stay internal. */
+/**
+ * What the public design feed exposes; reviewer ids, locks and acceptance data stay internal. The
+ * rendered picture is shown through a signed `previewUrl` (see withDesignPreview).
+ */
 const PUBLIC_DESIGN_SELECT = {
   id: true,
   title: true,
@@ -51,6 +56,7 @@ const PUBLIC_DESIGN_SELECT = {
   status: true,
   ownerUserId: true,
   thumbnailUploadId: true,
+  previewUploadId: true,
   parameters: true,
   preferredRegionId: true,
   publishedAt: true,
@@ -85,6 +91,7 @@ export class AtelierService {
     private readonly promotions: PromotionsService,
     private readonly subscriptions: SubscriptionsService,
     private readonly config: ConfigService,
+    private readonly access: UploadAccessService,
   ) {}
 
   private async getMatchingWeights(): Promise<typeof DEFAULT_MATCHING_WEIGHTS> {
@@ -170,7 +177,8 @@ export class AtelierService {
 
     // Sprint 11: when the ranker flag is on, blend sponsored Promotion rows into the page and tag
     // each item `sponsored`; otherwise keep the Phase 1 behavior of only attaching page banners.
-    const items = rankerEnabled ? await this.promotions.rankDesignResults(rows, DESIGNS_FEED_PLACEMENT) : rows;
+    const ranked = rankerEnabled ? await this.promotions.rankDesignResults(rows, DESIGNS_FEED_PLACEMENT) : rows;
+    const items = ranked.map((row) => withDesignPreview(row, this.access));
 
     return {
       items,
@@ -303,7 +311,10 @@ export class AtelierService {
     };
   }
 
-  /** One live listing by id (the screens that open a design from a request or a quote). */
+  /**
+   * One live listing by id (the screens that open a design from a request or a quote), with the
+   * inspiration picture of its brief: a listed design's pictures are public already (PRD 5.4).
+   */
   async design(id: string) {
     const design = await this.prisma.design.findFirst({
       where: { id, ...liveListing(), owner: { deletedAt: null } },
@@ -312,7 +323,10 @@ export class AtelierService {
     if (!design) {
       throw new NotFoundException({ success: false, message: 'Design not found' });
     }
-    return design;
+    return {
+      ...withDesignPreview(design, this.access),
+      inspirationUrl: await inspirationUrlFor(this.prisma, this.access, design),
+    };
   }
 
   async createRequest(user: User, dto: CreateAtelierRequestDto) {
@@ -513,6 +527,7 @@ export class AtelierService {
             description: true,
             ownerUserId: true,
             thumbnailUploadId: true,
+            previewUploadId: true,
             parameters: true,
             jewelerNotes: true,
             status: true,
@@ -536,6 +551,12 @@ export class AtelierService {
       throw new ForbiddenException({ success: false, message: 'Not authorized to view this request' });
     }
 
+    // The brief as the jeweler prices it: the design's picture and its inspiration picture.
+    const design = {
+      ...withDesignPreview(request.design, this.access),
+      inspirationUrl: await inspirationUrlFor(this.prisma, this.access, request.design),
+    };
+
     // Competing jewelers see neither each other's prices nor who else received the request; the
     // requester sees every delivery and every quote. A jeweler sees all their own quotes on the
     // design, also one sent from the Atelier feed before (or without) this request.
@@ -546,10 +567,11 @@ export class AtelierService {
       });
       return {
         ...request,
+        design,
         targets: request.targets.filter((target) => target.jewelerProfile.userId === user.id),
         quotes: own,
       };
     }
-    return request;
+    return { ...request, design };
   }
 }

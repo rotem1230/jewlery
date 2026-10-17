@@ -20,15 +20,18 @@ import {
 } from '@prisma/client';
 import { toJsonValue } from '../audit/json.util';
 import { EventLogService } from '../audit/event-log.service';
+import { ConversationsService } from '../chat/conversations.service';
 import { ChatGateway } from '../chat/chat.gateway';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { StateMachineService } from '../common/state-machine/state-machine.service';
 import { AUTH_ERROR } from '../auth/constants';
 import { PrismaService } from '../database/prisma.service';
 import { shareLockUser } from '../database/row-locks';
+import { withDesignPreview } from '../atelier/design-pictures';
 import { moveOrders } from '../atelier/order-status';
 import { designFingerprint } from '../designs/design-fingerprint';
 import { NotificationsService } from '../notifications/notifications.service';
+import { UploadAccessService } from '../uploads/upload-access.service';
 import { AcceptQuoteDto, CreateQuoteDto, DeclineQuoteDto, MAX_AMOUNT, UpdateQuoteDto } from './dto/quote.dto';
 import { QUOTE_AUTHOR_SELECT, QUOTE_DESIGN_SELECT, withBusinessName } from './quote-view';
 
@@ -95,6 +98,8 @@ export class QuotesService {
     private readonly eventLog: EventLogService,
     private readonly notifications: NotificationsService,
     private readonly gateway: ChatGateway,
+    private readonly access: UploadAccessService,
+    private readonly conversations: ConversationsService,
   ) {}
 
   /** The jeweler as the designer knows them: the business name, else their own name. */
@@ -319,7 +324,7 @@ export class QuotesService {
       return { quote: createdQuote, message: createdMessage };
     });
 
-    this.gateway.emitToConversation(dto.conversationId, 'message:new', message);
+    await this.conversations.broadcastMessage(message.id);
 
     await this.eventLog.record('quote.created', 'Quote', quote.id, {
       designId: quote.designId,
@@ -373,7 +378,7 @@ export class QuotesService {
     if (!allowed) {
       throw new ForbiddenException({ success: false, message: 'Not authorized to view this quote' });
     }
-    return { ...rest, author: withBusinessName(author), design };
+    return { ...rest, author: withBusinessName(author), design: withDesignPreview(design, this.access) };
   }
 
   /** Every quote a design received, newest first, for its owner to compare (PRD 5.6). */
@@ -745,8 +750,8 @@ export class QuotesService {
       throw err;
     }
 
-    this.gateway.emitToConversation(existing.conversationId, 'message:new', result.acceptedMsg);
-    this.gateway.emitToConversation(existing.conversationId, 'message:new', result.handoffMsg);
+    await this.conversations.broadcastMessage(result.acceptedMsg.id);
+    await this.conversations.broadcastMessage(result.handoffMsg.id);
     this.gateway.emitToConversation(existing.conversationId, 'quote:updated', quoteUpdate(result.accepted));
     for (const other of result.declined) {
       this.gateway.emitToConversation(other.conversationId, 'quote:updated', {

@@ -29,6 +29,19 @@ describe('password reset', () => {
     return await t.mailbox.tokenFor(email, 'reset');
   }
 
+  it('the reset e-mail is in Hebrew first, and its link is exactly the one issued', async () => {
+    const user = await registerVerified(t);
+    const token = await requestReset(user.email);
+    const mail = t.mailbox.to(user.email).filter((m) => m.body.includes('reset-password')).pop();
+    expect(mail?.subject).toMatch(/[֐-׿]/);
+    expect(mail?.subject).not.toMatch(/[A-Za-z]{3,}/);
+    const lines = mail?.body.split('\n') ?? [];
+    expect(lines[0]).toMatch(/[֐-׿]/);
+    expect(lines).toContain(`http://localhost:3000/api/v1/auth/web/reset-password?token=${token}`);
+    expect(mail?.body).toMatch(/reset your Malinvosky password/);
+    await t.http.post(`${API}/auth/reset-password`).send({ token, newPassword: NEW_PASSWORD }).expect(200);
+  });
+
   it('a weak new password does not burn the reset token', async () => {
     const user = await registerVerified(t);
     const token = await requestReset(user.email);

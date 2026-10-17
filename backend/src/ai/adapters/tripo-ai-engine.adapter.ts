@@ -1,7 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiEngineAdapter, AiGenerateRequest, AiGenerateResult } from './ai-engine.adapter';
-import { DummyAiEngineAdapter } from './dummy-ai-engine.adapter';
 
 const TRIPO_BASE = 'https://api.tripo3d.ai/v2/openapi';
 const POLL_MS = 2_000;
@@ -12,38 +11,31 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_MODEL_BYTES = 50 * 1024 * 1024;
 
 /**
- * Calls Tripo when TRIPO_API_KEY is set and downloads the GLB immediately
- * (provider URLs expire in about 5 minutes). Falls back to the dummy catalog copy.
+ * Generates a 3D model with Tripo (TRIPO_API_KEY): from the designer's inspiration picture when
+ * there is one (image to model), otherwise from the prompt (text to model). The GLB is downloaded
+ * at once (provider URLs expire in about 5 minutes). Failures are reported, never papered over
+ * with a stand-in model.
  */
 @Injectable()
 export class TripoAiEngineAdapter implements AiEngineAdapter {
-  private readonly logger = new Logger(TripoAiEngineAdapter.name);
+  constructor(private readonly config: ConfigService) {}
 
-  constructor(
-    private readonly config: ConfigService,
-    private readonly dummy: DummyAiEngineAdapter,
-  ) {}
+  isConfigured(): boolean {
+    return Boolean(this.config.get<string>('tripo.apiKey'));
+  }
 
   async generate(request: AiGenerateRequest): Promise<AiGenerateResult> {
     const apiKey = this.config.get<string>('tripo.apiKey');
     if (!apiKey) {
-      return this.dummy.generate(request);
+      throw new Error('No AI provider is configured (TRIPO_API_KEY)');
     }
-
-    try {
-      return await this.generateFromTripo(apiKey, request);
-    } catch (err) {
-      this.logger.warn(`Tripo failed, using dummy GLB: ${(err as Error).message}`);
-      return this.dummy.generate(request);
-    }
-  }
-
-  private async generateFromTripo(apiKey: string, request: AiGenerateRequest): Promise<AiGenerateResult> {
-    const jewelryPrompt = `${request.prompt}. Photorealistic ${request.itemCode.toLowerCase()} jewelry, single object, studio lighting.`;
-    const created = await this.tripoFetch(apiKey, '/task', {
-      method: 'POST',
-      body: JSON.stringify({ type: 'text_to_model', prompt: jewelryPrompt }),
-    });
+    const task = request.image
+      ? { type: 'image_to_model', file: await this.uploadImage(apiKey, request.image) }
+      : {
+          type: 'text_to_model',
+          prompt: `${request.prompt}. Photorealistic ${request.itemCode.toLowerCase()} jewelry, single object, studio lighting.`,
+        };
+    const created = await this.tripoFetch(apiKey, '/task', { method: 'POST', body: JSON.stringify(task) });
     const taskId = (created as { data?: { task_id?: string } }).data?.task_id;
     if (!taskId) {
       throw new Error('Tripo did not return a task_id');
@@ -106,6 +98,27 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
       }
       chunks.push(Buffer.from(value));
     }
+  }
+
+  /** Uploads the inspiration picture to Tripo; returns the task's `file` reference. */
+  private async uploadImage(apiKey: string, image: { bytes: Buffer; mimeType: string }): Promise<{ type: string; file_token: string }> {
+    const type = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(image.bytes)], { type: image.mimeType }), `inspiration.${type}`);
+    const res = await fetch(`${TRIPO_BASE}/upload`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) {
+      throw new Error(`Tripo /upload ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    }
+    const token = ((await res.json()) as { data?: { image_token?: string } }).data?.image_token;
+    if (!token) {
+      throw new Error('Tripo did not return an image_token');
+    }
+    return { type, file_token: token };
   }
 
   private async tripoFetch(apiKey: string, path: string, init?: RequestInit): Promise<unknown> {

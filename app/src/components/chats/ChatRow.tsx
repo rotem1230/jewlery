@@ -1,5 +1,7 @@
-import { Image, type ImageSourcePropType, Pressable, StyleSheet, Text, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
+import { UserAvatar } from '@/src/components/ui/UserAvatar'
 import { colors } from '@/src/theme/tokens'
+import { PressableBox } from '@/src/components/ui/PressableBox'
 
 type ChatRowProps = {
   name: string
@@ -7,7 +9,8 @@ type ChatRowProps = {
   preview: string
   time: string
   unread?: number
-  avatar: ImageSourcePropType
+  /** The other side's photo or business logo; without one their initials are shown. */
+  avatarUri?: string
   onPress?: () => void
   showDivider?: boolean
 }
@@ -27,14 +30,14 @@ export function ChatRow({
   preview,
   time,
   unread,
-  avatar,
+  avatarUri,
   onPress,
   showDivider = true,
 }: ChatRowProps) {
   return (
-    <Pressable
+    <PressableBox
       onPress={onPress}
-      style={({ pressed }) => [styles.pressable, pressed && styles.pressed]}
+      style={[styles.pressable]} pressedStyle={styles.pressed}
     >
       <View style={[styles.row, showDivider && styles.divider]}>
         <View style={styles.meta} pointerEvents="none">
@@ -61,10 +64,10 @@ export function ChatRow({
         </View>
 
         <View style={styles.avatarSlot} pointerEvents="none">
-          <Image source={avatar} style={styles.avatar} resizeMode="cover" />
+          <UserAvatar uri={avatarUri} name={name} size={AVATAR} />
         </View>
       </View>
-    </Pressable>
+    </PressableBox>
   )
 }
 
@@ -172,11 +175,5 @@ const styles = StyleSheet.create({
     width: AVATAR,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  avatar: {
-    width: AVATAR,
-    height: AVATAR,
-    borderRadius: AVATAR / 2,
-    backgroundColor: '#E8E8E8',
   },
 })

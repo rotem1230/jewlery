@@ -12,13 +12,14 @@ import { StudioMetalPanel } from '@/src/components/studio/StudioMetalPanel'
 import { StudioSettingPanel } from '@/src/components/studio/StudioSettingPanel'
 import { StudioCatalogList } from '@/src/components/studio/StudioCatalogList'
 import { StudioInspirationPanel } from '@/src/components/studio/StudioInspirationPanel'
+import { TryOnPlacement } from '@/src/components/studio/TryOnPlacement'
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
 import { getDesign, lockDesign, updateDesign } from '@/src/api/designs'
 import { createInspiration, waitForAiJob } from '@/src/api/ai'
-import { createRenderJob, type RenderExportFormat } from '@/src/api/renderJobs'
-import { createVisualizationJob, getFeatureFlags } from '@/src/api/visualization'
+import { createRenderJob, waitForRenderJob, type RenderExportFormat } from '@/src/api/renderJobs'
+import { createVisualizationJob, getFeatureFlags, getTryOnOverlay } from '@/src/api/visualization'
 import { getMyEntitlements } from '@/src/api/subscriptions'
 import {
   CATEGORY_CODE,
@@ -31,10 +32,11 @@ import {
 import { deleteUpload, uploadChatFile } from '@/src/api/uploads'
 import { linkForUpload, mediaUrl } from '@/src/lib/media'
 import { attachedAiJob, rememberPendingAiJob, takeFinishedAiJob } from '@/src/lib/pendingAiJobs'
-import { pickChatPhoto } from '@/src/lib/chatAttachments'
+import { pickChatPhoto, pickTryOnPhoto } from '@/src/lib/chatAttachments'
 import { apiErrorCode, parseApiError } from '@/src/lib/api'
 import { isDesignReadOnly } from '@/src/lib/designActions'
 import { jobRefusal, tryOnGate, withPhotoRemovedOnRefusal } from '@/src/lib/tryOn'
+import type { TryOnPlacementValue } from '@/src/lib/tryOnPlacement'
 import {
   FALLBACK_ELEMENTS,
   FALLBACK_METALS,
@@ -48,17 +50,15 @@ import {
   elementsFromParameters,
   inspirationUploadFromParameters,
   isNecklaceLength,
-  markersFromCatalog,
   metalFromParameters,
-  metalHexFromCode,
   noteFromParameters,
   placementForIndex,
-  scaleFromSize,
+  ringChartDiameterMm,
   settingCodeFromParameters,
   sizeFromParameters,
   sizePayload,
   stonesFromParameters,
-  tubeFromBandWidthMm,
+  viewerParameters,
   type StudioElement,
   type StudioMetal,
   type StudioSize,
@@ -117,10 +117,14 @@ export function DesignStudioScreen() {
   const [noteDraft, setNoteDraft] = useState<string | null>(null)
   const [jewelerNotesDraft, setJewelerNotesDraft] = useState<string | null>(null)
   const [inspirationUploadDraft, setInspirationUploadDraft] = useState<string | null>(null)
+  /** Signed link of the picture just uploaded (the saved design carries inspirationUrl). */
+  const [inspirationLink, setInspirationLink] = useState<string | null>(null)
   /** Signed link of a model generated in this session (the saved design carries aiOutputUrl). */
   const [aiModelLink, setAiModelLink] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [previewUri, setPreviewUri] = useState<string | null>(null)
+  /** The photo being placed for a try-on (uploaded; removed again if the designer cancels). */
+  const [tryOnPhoto, setTryOnPhoto] = useState<{ uri: string; uploadId: string } | null>(null)
 
   const load = useCallback(
     (signal: AbortSignal) => getDesign(route.params.designId, signal),
@@ -144,7 +148,6 @@ export function DesignStudioScreen() {
   const sizeLocked = Boolean(design?.lockedFields?.includes('size'))
   const savedSize = sizeFromParameters(parameters)
   const previewSize = sizeDraft ?? savedSize
-  const previewMetal = metalDraft ?? metalFromParameters(parameters)
   const previewSetting = settingDraft ?? settingCodeFromParameters(parameters) ?? undefined
   const previewNote = noteDraft ?? noteFromParameters(parameters)
   const previewJewelerNotes = jewelerNotesDraft ?? design?.jewelerNotes ?? ''
@@ -162,14 +165,19 @@ export function DesignStudioScreen() {
     locale === 'en' ? 'en' : 'he',
   )
   const panelConflict = tab === 'size' || tab === 'setting' ? bandConflict : null
-  const markers = useMemo(
+  // What the 3D viewer builds: the saved design with the open tab's choices applied.
+  const previewParameters = useMemo(
     () =>
-      markersFromCatalog(
-        stonesDraft ?? stonesFromParameters(design?.parameters),
-        elementsDraft ?? elementsFromParameters(design?.parameters),
-      ),
-    [stonesDraft, elementsDraft, design?.parameters],
+      viewerParameters(itemType, design?.parameters, {
+        size: sizeDraft,
+        metal: metalDraft,
+        settingCode: settingDraft,
+        stones: stonesDraft,
+        elements: elementsDraft,
+      }),
+    [itemType, design?.parameters, sizeDraft, metalDraft, settingDraft, stonesDraft, elementsDraft],
   )
+  const chartDiameter = ringChartDiameterMm(chartsQuery.data ?? [], previewSize)
 
   const metals =
     (metalsQuery.data ?? []).length > 0 ? (metalsQuery.data ?? []) : FALLBACK_METALS
@@ -427,13 +435,18 @@ export function DesignStudioScreen() {
 
   const onGenerateInspiration = async () => {
     if (!design) return
-    const prompt = (previewNote.trim() || 'Sample jewelry inspiration').slice(0, 500)
+    const note = previewNote.trim()
+    // The AI works from the inspiration picture, or else from the note: one of them is needed.
+    if (!previewInspiration && note.length < 3) {
+      Alert.alert(t('studioInspirationGenerate'), t('studioInspirationNeedInput'))
+      return
+    }
+    // The server reads the picture from the saved design.
+    if (!(await flushDrafts())) return
+    const prompt = (note.length >= 3 ? note : t('studioInspirationPhotoPrompt')).slice(0, 500)
     try {
       setBusy(true)
-      const queued = await createInspiration({
-        designId: design.id,
-        prompt: prompt.length >= 3 ? prompt : 'Sample jewelry inspiration',
-      })
+      const queued = await createInspiration({ designId: design.id, prompt })
       // Remembered until attached: if the wait below ends first (or fails), the next visit
       // attaches the result.
       await rememberPendingAiJob(design.id, queued.id)
@@ -457,6 +470,10 @@ export function DesignStudioScreen() {
         Alert.alert(t('studioInspirationGenerate'), t('studioInspirationStillRunning'))
         return
       }
+      if (apiErrorCode(err) === 'AI_NOT_CONFIGURED') {
+        Alert.alert(t('studioInspirationGenerate'), t('studioInspirationUnavailable'))
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioInspirationGenerateFailed'))
     } finally {
       setBusy(false)
@@ -470,6 +487,7 @@ export function DesignStudioScreen() {
       setBusy(true)
       const upload = await uploadChatFile(file)
       setInspirationUploadDraft(upload.id)
+      setInspirationLink(upload.contentUrl ?? null)
     } catch (err) {
       Alert.alert(t('authErrorTitle'), parseApiError(err) || t('designSaveFailed'))
     } finally {
@@ -507,7 +525,7 @@ export function DesignStudioScreen() {
     if (!design) return
     if (!(await flushDrafts())) return
     navigation.reset({ index: 0, routes: [{ name: 'HomeMain' }] })
-    tabNavigation?.navigate('MyDesigns', { screen: 'DesignDetails', params: { designId: design.id } })
+    tabNavigation?.navigate('MyDesigns', { screen: 'DesignDetails', params: { designId: design.id }, initial: false })
   }
 
   const showPaywall = (message: string) => {
@@ -515,7 +533,7 @@ export function DesignStudioScreen() {
       { text: t('cancel'), style: 'cancel' },
       {
         text: t('studioPaywallCta'),
-        onPress: () => tabNavigation?.navigate('Profile', { screen: 'Pricing' }),
+        onPress: () => tabNavigation?.navigate('Profile', { screen: 'Pricing', initial: false }),
       },
     ])
   }
@@ -551,15 +569,30 @@ export function DesignStudioScreen() {
       return
     }
     try {
-      const file = await pickChatPhoto()
+      const file = await pickTryOnPhoto()
       if (!file) return
       setBusy(true)
       const upload = await uploadChatFile(file)
+      // Next the designer places the piece on the photo (TryOnPlacement), then confirms.
+      setTryOnPhoto({ uri: file.uri, uploadId: upload.id })
+    } catch (err) {
+      Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioTryOnFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onConfirmTryOn = async (placement: TryOnPlacementValue) => {
+    if (!design || !tryOnPhoto) return
+    const photo = tryOnPhoto
+    try {
+      setBusy(true)
       const job = await withPhotoRemovedOnRefusal(
-        upload.id,
-        () => createVisualizationJob({ designId: design.id, inputUploadId: upload.id }),
+        photo.uploadId,
+        () => createVisualizationJob({ designId: design.id, inputUploadId: photo.uploadId, placement }),
         deleteUpload,
       )
+      setTryOnPhoto(null)
       const output = mediaUrl(job.outputUrl)
       if (job.status === 'SUCCEEDED' && output) {
         setPreviewUri(output)
@@ -567,6 +600,7 @@ export function DesignStudioScreen() {
       }
       Alert.alert(t('authErrorTitle'), t('studioTryOnFailed'))
     } catch (err) {
+      setTryOnPhoto(null)
       const refusal = jobRefusal(err)
       if (refusal === 'coming_soon') Alert.alert(t('dzTryOnComingSoonTitle'), t('dzTryOnComingSoon'))
       else if (refusal === 'paywall') showPaywall(t('studioTryOnPaywall'))
@@ -577,12 +611,19 @@ export function DesignStudioScreen() {
     }
   }
 
+  const onCancelTryOn = () => {
+    const photo = tryOnPhoto
+    setTryOnPhoto(null)
+    // The photo was only for this try-on: it does not stay on the server.
+    if (photo) void deleteUpload(photo.uploadId).catch(() => undefined)
+  }
+
   const runExport = async (exportFormat: RenderExportFormat) => {
     if (!design) return
     if (!(await flushDrafts())) return
     try {
       setBusy(true)
-      const job = await createRenderJob({ designId: design.id, exportFormat })
+      const job = await waitForRenderJob(await createRenderJob({ designId: design.id, exportFormat }))
       const uri = mediaUrl(job.outputUrl)
       if (job.status !== 'SUCCEEDED' || !uri) {
         Alert.alert(t('authErrorTitle'), job.errorMessage || t('studioExportFailed'))
@@ -619,6 +660,16 @@ export function DesignStudioScreen() {
   return (
     <View style={[styles.root, { paddingBottom: Math.max(insets.bottom, 8) }]}>
       <HomeHeader backdropColor="#F6F2FF" onBack={() => navigation.goBack()} />
+      {design && tryOnPhoto ? (
+        <TryOnPlacement
+          visible
+          photoUri={tryOnPhoto.uri}
+          loadOverlay={(signal) => getTryOnOverlay(design.id, design.version, signal)}
+          busy={busy}
+          onConfirm={(placement) => void onConfirmTryOn(placement)}
+          onCancel={onCancelTryOn}
+        />
+      ) : null}
 
       {error && !design ? (
         <View style={styles.errorWrap}>
@@ -635,13 +686,8 @@ export function DesignStudioScreen() {
             <View style={styles.viewerSlot}>
             <StudioViewer
               itemType={itemType}
-              metalHex={metalHexFromCode(previewMetal.metalCode)}
-              metalCode={previewMetal.metalCode}
-              purityCode={previewMetal.purityCode}
-              settingCode={previewSetting}
-              scale={scaleFromSize(previewSize)}
-              tube={tubeFromBandWidthMm(previewSize.bandWidthMm)}
-              markers={markers}
+              parameters={previewParameters}
+              ringChartDiameterMm={chartDiameter}
               modelUri={aiModelUri}
             />
             {!tab ? (
@@ -750,6 +796,7 @@ export function DesignStudioScreen() {
                   note={previewNote}
                   jewelerNotes={previewJewelerNotes}
                   hasImage={Boolean(previewInspiration)}
+                  imageUri={mediaUrl(inspirationUploadDraft ? inspirationLink : design?.inspirationUrl)}
                   generating={busy}
                   onChangeNote={setNoteDraft}
                   onChangeJewelerNotes={setJewelerNotesDraft}

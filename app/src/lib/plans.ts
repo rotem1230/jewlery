@@ -39,12 +39,10 @@ const ENTITLEMENTS: Record<string, { he: string; en: string }> = {
 
 const HEBREW = /[֐-׿]/
 
-function bullets(inclusions: unknown): string[] {
-  const list = Array.isArray(inclusions)
-    ? inclusions
-    : inclusions && typeof inclusions === 'object' && Array.isArray((inclusions as { bullets?: unknown }).bullets)
-      ? (inclusions as { bullets: unknown[] }).bullets
-      : []
+/** The admin's own feature texts: `bullets` (Hebrew; older catalogs: any language) and `bulletsEn`. */
+function bullets(inclusions: unknown, key: 'bullets' | 'bulletsEn' = 'bullets'): string[] {
+  const field = inclusions && typeof inclusions === 'object' ? (inclusions as Record<string, unknown>)[key] : undefined
+  const list = Array.isArray(inclusions) && key === 'bullets' ? inclusions : Array.isArray(field) ? field : []
   return list.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
 }
 
@@ -64,10 +62,12 @@ function features(plan: PlanCatalog, locale: Locale): string[] {
     const label = row.entitlement?.key ? ENTITLEMENTS[row.entitlement.key] : undefined
     if (label) lines.push(en ? label.en : label.he)
   }
-  // The admin's own bullets: in the app language, or as they are when nothing else describes the plan.
-  const own = bullets(plan.inclusions)
+  // The admin's own bullets: in the app language, or as they are when nothing else describes the
+  // plan. A line already shown (the same entitlement or lead count) is not repeated.
+  const own = [...bullets(plan.inclusions), ...bullets(plan.inclusions, 'bulletsEn')]
   const inLanguage = own.filter((line) => (en ? !HEBREW.test(line) : HEBREW.test(line)))
-  return [...lines, ...(lines.length === 0 ? own : inLanguage)]
+  const extra = inLanguage.length > 0 || lines.length > 0 ? inLanguage : own
+  return [...new Set([...lines, ...extra])]
 }
 
 export function planCards(

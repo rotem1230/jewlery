@@ -11,6 +11,7 @@ import { GOOGLE_WEB_CLIENT_ID } from '@/src/config/env'
 import { useSocialSignIn } from '@/src/hooks/useSocialSignIn'
 import { parseApiError } from '@/src/lib/api'
 import { splitFullName } from '@/src/lib/format'
+import { ltrIsolate } from '@/src/lib/rtl'
 import { googleSignInConfigured } from '@/src/lib/socialSignIn'
 import { isValidEmail, passwordIssue, toE164Phone } from '@/src/lib/validation'
 import { useTranslation } from '@/src/i18n'
@@ -66,8 +67,9 @@ export function SignupScreen({ navigation, route }: Props) {
         lastName,
         phone: e164 ?? undefined,
       })
-      // No session yet: the account works once the e-mailed link has been opened.
-      Alert.alert(t('authVerifyEmailTitle'), t('authVerifyEmailBody').replace('{{email}}', trimmed), [
+      // No session yet: the account works once the e-mailed link has been opened. The address is
+      // one left-to-right run inside the Hebrew sentence (not split around its dots).
+      Alert.alert(t('authVerifyEmailTitle'), t('authVerifyEmailBody').replace('{{email}}', ltrIsolate(trimmed)), [
         {
           text: t('authResendVerification'),
           onPress: () => {

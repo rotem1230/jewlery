@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { Image, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
@@ -10,14 +10,14 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
 import { getAtelierDesign } from '@/src/api/atelier'
 import { isNotFound, listingExpiry } from '@/src/lib/atelierView'
-import { imageFromUpload } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
+import { mediaUrl } from '@/src/lib/media'
 import { designSpecRows } from '@/src/lib/jewelerOrders'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, spacing } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
 import type { AtelierStackParamList, DesignerTabParamList } from '@/src/navigation/types'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<AtelierStackParamList, 'DesignPreview'>
 type Route = RouteProp<AtelierStackParamList, 'DesignPreview'>
@@ -42,6 +42,8 @@ export function PublicDesignScreen() {
   const specs = useMemo(() => designSpecRows(design), [design])
   const expiry = listingExpiry(design?.expiresAt, locale)
   const ownDesign = design?.ownerUserId === myUserId
+  const picture = designPicture(design)
+  const inspirationUri = mediaUrl(design?.inspirationUrl)
 
   return (
     <View style={styles.root}>
@@ -70,20 +72,27 @@ export function PublicDesignScreen() {
             <>
               <DesignDetailsCard
                 sectionTitle={t('designDetailsShort')}
-                image={imageFromUpload(design.thumbnailUploadId, heroRing)}
+                image={picture.source}
+                imageResizeMode={picture.resizeMode}
                 title={design.title || design.itemType?.labelHe || t('jwUntitledDesign')}
                 quote={design.description || ''}
                 specs={specs}
-                onMaximize={() => {
-                  const source = imageFromUpload(design.thumbnailUploadId, heroRing)
-                  if (typeof source === 'object' && source && 'uri' in source && source.uri) {
-                    setViewerUri(source.uri)
-                    return
-                  }
-                  const resolved = Image.resolveAssetSource(source)
-                  if (resolved?.uri) setViewerUri(resolved.uri)
-                }}
+                onMaximize={picture.uri ? () => setViewerUri(picture.uri ?? null) : undefined}
               />
+              {inspirationUri ? (
+                <View style={styles.inspiration}>
+                  <Text style={styles.inspirationTitle}>{t('jwInspirationTitle')}</Text>
+                  <Pressable
+                    accessibilityRole="imagebutton"
+                    accessibilityLabel={t('jwInspirationTitle')}
+                    onPress={() => setViewerUri(inspirationUri)}
+                  >
+                    <View style={styles.inspirationWrap}>
+                      <Image source={{ uri: inspirationUri }} style={styles.inspirationImage} resizeMode="cover" />
+                    </View>
+                  </Pressable>
+                </View>
+              ) : null}
               {expiry ? (
                 <Text style={styles.expiry}>
                   {t(expiry.expired ? 'jwExpiredOn' : 'jwValidUntil').replace('{{date}}', expiry.date)}
@@ -109,6 +118,7 @@ export function PublicDesignScreen() {
                       .getParent<BottomTabNavigationProp<DesignerTabParamList>>()
                       ?.navigate('MyDesigns', {
                         screen: 'DesignDetails',
+                        initial: false,
                         params: { designId: design.id },
                       })
                   }
@@ -133,6 +143,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   column: { width: '100%', maxWidth: 448, gap: spacing.xl },
+  inspiration: { width: '100%', gap: 8 },
+  inspirationTitle: {
+    width: '100%',
+    fontFamily: 'Heebo',
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  inspirationWrap: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#F1F5F9',
+  },
+  inspirationImage: { width: '100%', height: '100%' },
   expiry: {
     width: '100%',
     fontFamily: 'Heebo',

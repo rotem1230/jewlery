@@ -14,21 +14,21 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { HomeHeader } from '@/src/components/home/HomeHeader'
 import { FilterChip } from '@/src/components/designs/FilterChip'
 import { BrandButton } from '@/src/components/ui/BrandButton'
+import { UserAvatar } from '@/src/components/ui/UserAvatar'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { getMyOrders } from '@/src/api/jewelerProfiles'
 import { getHomeSummary } from '@/src/api/home'
 import { parseApiError } from '@/src/lib/api'
-import { imageFromUpload } from '@/src/lib/format'
+import { designPicture } from '@/src/lib/designPicture'
+import { mediaUrl } from '@/src/lib/media'
 import { ORDER_TABS, boardFromPages, orderBadge, type BadgeTone, type OrdersTab } from '@/src/lib/jewelerOrders'
-import { formatHeTimeAgo } from '@/src/hooks/useMyBusinessProfile'
+import { formatHeTimeAgo, useMyBusinessProfile } from '@/src/hooks/useMyBusinessProfile'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { colors, radii } from '@/src/theme/tokens'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
 import type { DesignRequest, Paginated } from '@/src/types/api'
 import type { MyOrdersStackParamList } from '@/src/navigation/types'
-import jewelerAvatar from '../../../assets/images/designs/jeweler-avatar-1.png'
-import heroRing from '../../../assets/images/home/hero-ring.png'
 
 type Nav = NativeStackNavigationProp<MyOrdersStackParamList, 'OrdersList'>
 type OrdersPage = Paginated<DesignRequest>
@@ -77,6 +77,8 @@ export function MyOrdersScreen() {
     refreshing: homeRefreshing,
     refresh: refreshHome,
   } = useAsyncData((signal) => getHomeSummary(signal), { deps: [accessToken] })
+  // The jeweler's own business: pictured by its logo, else its initials.
+  const { data: business } = useMyBusinessProfile()
 
   // Coming back from an order (declined, quoted, withdrawn): the board and counters are reloaded.
   const firstFocus = useRef(true)
@@ -129,6 +131,7 @@ export function MyOrdersScreen() {
     const badge = orderBadge(order.myStatus)
     const itemType = order.design?.itemType
     const typeLabel = (locale === 'en' ? itemType?.labelEn : itemType?.labelHe) ?? itemType?.labelHe ?? ''
+    const picture = designPicture(order.design)
     return (
       <TouchableOpacity
         key={order.id}
@@ -136,11 +139,7 @@ export function MyOrdersScreen() {
         activeOpacity={0.85}
         onPress={() => navigation.navigate('OrderDetails', { orderId: order.id })}
       >
-        <Image
-          source={imageFromUpload(order.design?.thumbnailUploadId, heroRing)}
-          style={styles.orderImage}
-          resizeMode="cover"
-        />
+        <Image source={picture.source} style={styles.orderImage} resizeMode={picture.resizeMode} />
         <View style={styles.orderInfo}>
           <Text style={styles.orderTitle}>
             {order.design?.title || typeLabel || t('jwUntitledDesign')}
@@ -171,7 +170,11 @@ export function MyOrdersScreen() {
         <View style={styles.column}>
           <View style={styles.greetingCard}>
             <View style={styles.greetingRow}>
-              <Image source={jewelerAvatar} style={styles.avatar} />
+              <UserAvatar
+                uri={mediaUrl(business?.logoUrl)}
+                name={business?.businessName || name}
+                size={48}
+              />
               <Text style={styles.greetingText}>
                 {t(greetingKey())}, {name}
               </Text>
@@ -268,11 +271,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-  },
   greetingText: {
     flex: 1,
     fontFamily: 'Heebo',
@@ -344,6 +342,7 @@ const styles = StyleSheet.create({
     width: 108,
     height: 108,
     borderRadius: radii.md,
+    backgroundColor: '#F1F5F9',
   },
   orderInfo: {
     flex: 1,

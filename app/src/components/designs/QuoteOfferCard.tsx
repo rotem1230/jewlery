@@ -2,13 +2,13 @@ import {
   Image,
   type ImageSourcePropType,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native'
 import Svg, { Path } from 'react-native-svg'
 import { colors, radii } from '@/src/theme/tokens'
+import { PressableBox } from '@/src/components/ui/PressableBox'
 
 type QuoteOfferCardProps = {
   name: string
@@ -67,17 +67,17 @@ export function QuoteOfferCard({
   onPress,
 }: QuoteOfferCardProps) {
   return (
-    <Pressable
+    <PressableBox
       onPress={onPress}
       disabled={!onPress}
       accessibilityRole="button"
-      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+      style={[styles.card]} pressedStyle={styles.pressed}
     >
       <View style={styles.row}>
-        <Pressable
+        <PressableBox
           onPress={onPress}
           accessibilityRole="button"
-          style={({ pressed }) => [styles.chatPressable, pressed && styles.pressed]}
+          style={[styles.chatPressable]} pressedStyle={styles.pressed}
         >
           <View style={styles.chatBtn}>
             <ChatChevron />
@@ -85,7 +85,7 @@ export function QuoteOfferCard({
               {ctaLabel}
             </Text>
           </View>
-        </Pressable>
+        </PressableBox>
 
         <View style={styles.copy}>
           <View style={styles.identity}>
@@ -124,7 +124,7 @@ export function QuoteOfferCard({
           </View>
         </View>
       </View>
-    </Pressable>
+    </PressableBox>
   )
 }
 

@@ -66,6 +66,61 @@ describe('pricing plans from the server (PRD 5.8)', () => {
     expect(cards.map((card) => card.current)).toEqual([false, true])
   })
 
+  describe('the feature texts the catalog carries in both languages', () => {
+    const SEEDED: PlanCatalog[] = [
+      plan({
+        code: 'DESIGNER_FREE',
+        nameHe: 'מעצב/ת - חינם',
+        price: '0',
+        trialDays: 0,
+        sortOrder: 1,
+        entitlements: [],
+        inclusions: {
+          bullets: ['עיצובי טיוטה ללא הגבלה', 'ייצוא רגיל עם סימן מים'],
+          bulletsEn: ['Unlimited draft designs', 'Standard export with watermark'],
+        },
+      }),
+      plan({
+        inclusions: {
+          bullets: ['ייצוא ללא סימן מים', 'ייצוא תמונת HD', 'הדמיה על תמונה אישית'],
+          bulletsEn: ['Exports without a watermark', 'HD image export', 'Try-on on your own photo'],
+        },
+      }),
+      plan({
+        code: 'JEWELER_BASIC',
+        role: 'JEWELER',
+        nameHe: 'צורף/ת - בסיסי',
+        price: '0',
+        leadQuota: 3,
+        trialDays: 0,
+        sortOrder: 1,
+        entitlements: [],
+        inclusions: {
+          bullets: ['3 לידים בחודש', 'הצגה ברשימת הצורפים באטלייה'],
+          bulletsEn: ['3 leads per month', 'Standard profile listing'],
+        },
+      }),
+    ]
+
+    it('the free plan lists its features in Hebrew, not in English', () => {
+      const [free] = planCards(SEEDED, { role: 'DESIGNER', locale: 'he' })
+      expect(free.features).toEqual(['עיצובי טיוטה ללא הגבלה', 'ייצוא רגיל עם סימן מים'])
+    })
+
+    it('in English the English texts are shown', () => {
+      const [free, pro] = planCards(SEEDED, { role: 'DESIGNER', locale: 'en' })
+      expect(free.features).toEqual(['Unlimited draft designs', 'Standard export with watermark'])
+      expect(pro.features).toEqual(['Exports without a watermark', 'HD image export', 'Try-on on your own photo'])
+    })
+
+    it('a feature the plan already shows (entitlement, leads) is not listed twice', () => {
+      const [, pro] = planCards(SEEDED, { role: 'DESIGNER', locale: 'he' })
+      expect(pro.features).toEqual(['ייצוא ללא סימן מים', 'ייצוא תמונת HD', 'הדמיה על תמונה אישית'])
+      const [basic] = planCards(SEEDED, { role: 'JEWELER', locale: 'he' })
+      expect(basic.features).toEqual(['3 לידים בחודש', 'הצגה ברשימת הצורפים באטלייה'])
+    })
+  })
+
   it('names other currencies and billing cycles', () => {
     const [card] = planCards([plan({ currency: 'USD', price: '120', billingCycle: 'ANNUAL', trialDays: 0 })], { role: 'DESIGNER', locale: 'he' })
     expect(card).toMatchObject({ price: '$ 120', period: 'לשנה' })

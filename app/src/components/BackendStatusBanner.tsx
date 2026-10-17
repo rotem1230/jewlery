@@ -14,8 +14,15 @@ const LABEL: Record<string, string> = {
   offline: 'Backend offline',
 }
 
-/** Small dev banner showing local backend connectivity. Non-blocking. */
+/**
+ * Small dev banner showing local backend connectivity. Non-blocking. Development builds only: a
+ * release build shows users nothing (and does not ping the API).
+ */
 export function BackendStatusBanner() {
+  return __DEV__ ? <DevBackendStatus /> : null
+}
+
+function DevBackendStatus() {
   const { status, baseUrl } = useBackendHealth()
   return (
     <View style={styles.wrap} testID="backend-status">

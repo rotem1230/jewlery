@@ -13,6 +13,8 @@ type DesignListCardProps = {
   accentLabel?: string
   accentTone?: DesignBadgeTone
   image: ImageSourcePropType
+  /** `center` draws a small illustration at its own size (a design without a picture). */
+  imageResizeMode?: 'cover' | 'center'
   onPress?: () => void
 }
 
@@ -73,13 +75,14 @@ export function DesignListCard({
   accentLabel,
   accentTone = 'brand',
   image,
+  imageResizeMode = 'cover',
   onPress,
 }: DesignListCardProps) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => pressed && styles.pressed}>
       <View style={styles.card}>
         <View style={styles.row}>
-          <Image source={image} style={styles.thumb} resizeMode="cover" />
+          <Image source={image} style={styles.thumb} resizeMode={imageResizeMode} />
           <View style={styles.copy}>
             <Text style={styles.title} numberOfLines={2}>
               {title}
