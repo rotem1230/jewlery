@@ -50,9 +50,9 @@ export class GeminiImageAiEngineAdapter implements AiEngineAdapter {
       throw new Error('No AI provider is configured (GEMINI_API_KEY)');
     }
     const model = this.config.get<string>('gemini.imageModel') || GEMINI_DEFAULT_IMAGE_MODEL;
-    const input: ContentBlock[] = [{ type: 'text', text: this.prompt(request) }];
+    const content: ContentBlock[] = [{ type: 'text', text: this.prompt(request) }];
     if (request.image) {
-      input.push({ type: 'image', mime_type: request.image.mimeType, data: request.image.bytes.toString('base64') });
+      content.push({ type: 'image', mime_type: request.image.mimeType, data: request.image.bytes.toString('base64') });
     }
     const res = await fetch(GEMINI_INTERACTIONS_URL, {
       method: 'POST',
@@ -60,7 +60,8 @@ export class GeminiImageAiEngineAdapter implements AiEngineAdapter {
       headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        input,
+        // v1 takes a list of steps: the note (and picture) are the content of one user step.
+        input: [{ type: 'user_input', content }],
         response_format: { type: 'image', mime_type: 'image/jpeg', aspect_ratio: '1:1', image_size: '1K' },
         store: false,
       }),

@@ -63,17 +63,23 @@ describe('GeminiImageAiEngineAdapter', () => {
     expect(sent.model).toBe(GEMINI_DEFAULT_IMAGE_MODEL);
     expect(sent.store).toBe(false);
     expect(sent.response_format).toEqual({ type: 'image', mime_type: 'image/jpeg', aspect_ratio: '1:1', image_size: '1K' });
-    const input = sent.input as Array<{ type: string; text?: string }>;
-    expect(input).toHaveLength(1);
-    expect(input[0].type).toBe('text');
-    expect(input[0].text).toContain('twisted band with a small sapphire');
-    expect(input[0].text).toMatch(/ring/i);
+    // Interactions v1: `input` is a list of steps; the prompt is the content of one user step
+    // (a bare content block there is refused: 400 "The value 'text' is not supported for 'type'").
+    const steps = sent.input as Array<{ type: string; content: Array<{ type: string; text?: string }> }>;
+    expect(steps).toHaveLength(1);
+    expect(steps[0].type).toBe('user_input');
+    expect(steps[0].content).toHaveLength(1);
+    expect(steps[0].content[0].type).toBe('text');
+    expect(steps[0].content[0].text).toContain('twisted band with a small sapphire');
+    expect(steps[0].content[0].text).toMatch(/ring/i);
   });
 
   it('works from the inspiration picture when there is one (sent inline with its type)', async () => {
     answer(() => json(interaction([{ type: 'image', mime_type: 'image/jpeg', data: JPEG.toString('base64') }])));
     await adapter().generate({ prompt: 'like this, in rose gold', itemCode: 'NECKLACE', image: { bytes: PNG, mimeType: 'image/png' } });
-    const input = body().input as Array<{ type: string; text?: string; mime_type?: string; data?: string }>;
+    const steps = body().input as Array<{ type: string; content: Array<{ type: string; text?: string; mime_type?: string; data?: string }> }>;
+    expect(steps.map((step) => step.type)).toEqual(['user_input']);
+    const input = steps[0].content;
     expect(input.map((block) => block.type)).toEqual(['text', 'image']);
     expect(input[0].text).toContain('like this, in rose gold');
     expect(input[1].mime_type).toBe('image/png');
