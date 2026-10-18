@@ -8,7 +8,7 @@
 
 ## 0. המצב בשורה אחת
 
-- **שרת (NestJS):** רץ ב-Render על `https://jewlery.onrender.com`, עם PostgreSQL של Render. כל המיגרציות וה-seed רצו.
+- **שרת (NestJS):** מ-18.10 רץ בחשבון ה-Render **של הלקוחה** (בתשלום, פרנקפורט) על `https://api.malinovskyjewelry.com` (דומיין שלה; Render: `https://jewlery-djia.onrender.com`), עם PostgreSQL בתשלום (גיבויים). כל הנתונים הועתקו מהחשבון הישן (pg_dump/pg_restore, ספירות זהות). השירות הישן `jewlery.onrender.com` בחשבון הקודם — לכבות אחרי שהאפליקציות החדשות בחוץ.
 - **אפליקציה (React Native, בלי Expo):** נבנית בענן של Expo (EAS). APK ל-Android, ו-iOS ב-TestFlight.
 - **קוד:** סבב 5 (התאמה מלאה ל-PRD) הושלם ונדחף ל-GitHub. אחריו נוספו: אייקונים, סרגל ניווט RTL, תיקון כפתורים, והתחברות עם Apple.
 - **17.10:** ייצוא STL/OBJ/HD, תמונות התצוגה של העיצובים וההדמיה על תמונה אישית נבנים מהגיאומטריה של העיצוב עצמו — אין יותר תחליפים או מודלי דמה. השרת בפרודקשן עודכן. **האפליקציה צריכה בנייה חדשה ב-EAS כדי שהמשתמשים יקבלו את השינויים** (סעיף 7).
@@ -74,7 +74,9 @@ git log --oneline -5
 | פריט | ערך |
 |---|---|
 | Web Service | `jewlery` (srv-db7nduo473hc73e0gir0), **Free**, Region **Oregon** |
-| כתובת | https://jewlery.onrender.com — API ב-`/api/v1`, בריאות ב-`/api/v1/health` |
+| כתובת | **https://api.malinovskyjewelry.com** (CNAME `api` → `jewlery-djia.onrender.com` ב-cPanel של LiveDNS) — API ב-`/api/v1`, בריאות ב-`/api/v1/health` |
+| חשבון חדש (הלקוחה) | Web Service `srv-dbagi1rrjlhs73a6hadg` (Starter), Postgres `dpg-dbafqs67bikc73eflbgg` (פרנקפורט, בתשלום). כתובת חיצונית מקומית ב-`backend/.env.render-new.local` (gitignored) |
+| חשבון ישן (Free, אורגון) | שירות `jewlery` + מסד `jewelry-db` — **לא להשתמש; לכבות** אחרי המעבר. הנתונים בו קפואים מ-18.10 |
 | בנייה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile` |
 | מסד נתונים | `jewelry-db` (dpg-db7nc2bncjis73eu48eg-a), PostgreSQL 18, **Free**, Oregon |
 | מיגרציות | כולן הוחלו, כולל `20261017130000_design_preview_key` (17.10) |
@@ -115,7 +117,7 @@ git log --oneline -5
 | חשבון Expo | `rotem001` (מחובר ב-CLI במחשב) |
 | פרויקט EAS | `@rotem001/malinvoskyapp`, ID `b41aea9c-d809-42c6-ba73-f508d6169066` |
 | הגדרות | `app/eas.json`: `preview` = APK ל-Android, `production` = iOS לחנות + `ascAppId` |
-| כתובת שרת בבנייה | `API_BASE_URL=https://jewlery.onrender.com/api/v1` (ב-`eas.json`) |
+| כתובת שרת בבנייה | `API_BASE_URL=https://api.malinovskyjewelry.com/api/v1` (ב-`eas.json`; מ-18.10) |
 | Android | `com.malinvoskyapp`, מפתח חתימה מנוהל ב-EAS (נוצר 14.10) |
 | iOS | Bundle `com.malinvoskyapp`, ASC App ID `6822741753`, Team `F9KUCUL58Y` (Rotem Antsel, Individual), Apple ID `antselrotem@gmail.com` |
 | העלאה ל-TestFlight | מפתח ASC API `HDV3Q2YWV4` שמור ב-EAS; קבוצת בודקים פנימית "Team (Expo)" |
