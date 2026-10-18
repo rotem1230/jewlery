@@ -20,6 +20,7 @@ import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { AI_ENGINE_ADAPTER, AiEngineAdapter } from './adapters/ai-engine.adapter';
 import { CreateAiInspirationDto } from './dto/ai.dto';
+import { DesignChoices, describeChoices, loadChoiceCatalog } from './design-choices';
 import { lockUser } from '../database/row-locks';
 
 const DEFAULT_DAILY_PER_USER = 10;
@@ -75,6 +76,7 @@ export class AiService implements OnModuleDestroy {
     }
     let itemCode = 'RING';
     let imageUploadId: string | null = null;
+    let choices: DesignChoices | undefined;
     if (dto.designId) {
       const design = await this.prisma.design.findFirst({
         where: { id: dto.designId, deletedAt: null },
@@ -88,6 +90,8 @@ export class AiService implements OnModuleDestroy {
       }
       itemCode = design.itemType.code;
       imageUploadId = await this.inspirationImage(design.ownerUserId, design.parameters);
+      // The picture follows what the design is made of (metal, stones, setting…).
+      choices = describeChoices(design.parameters, await loadChoiceCatalog(this.prisma));
     }
 
     const limit = await this.dailyLimit();
@@ -131,7 +135,7 @@ export class AiService implements OnModuleDestroy {
       after: toJsonValue(job),
     });
 
-    const work = this.process(job, itemCode, user.id, imageUploadId).catch((err: Error) =>
+    const work = this.process(job, itemCode, user.id, imageUploadId, choices).catch((err: Error) =>
       this.logger.error(`AI job ${job.id} crashed: ${err.message}`),
     );
     this.inFlight.add(work);
@@ -155,7 +159,13 @@ export class AiService implements OnModuleDestroy {
   }
 
   /** The adapter returns the picture's bytes, which are stored as an upload of the requester. */
-  private async process(job: AiGenerationJob, itemCode: string, ownerUserId: string, imageUploadId: string | null): Promise<void> {
+  private async process(
+    job: AiGenerationJob,
+    itemCode: string,
+    ownerUserId: string,
+    imageUploadId: string | null,
+    choices?: DesignChoices,
+  ): Promise<void> {
     // Every transition is conditional on the state this worker expects: once the stale sweep has
     // failed a job (and the user may have started another), a late result must not revive it.
     const started = await this.prisma.aiGenerationJob.updateMany({
@@ -172,7 +182,7 @@ export class AiService implements OnModuleDestroy {
         const bytes = await this.uploads.readBytes(imageUploadId);
         if (upload && bytes) image = { bytes, mimeType: upload.mimeType };
       }
-      const generated = await this.engine.generate({ prompt: job.prompt, itemCode, image });
+      const generated = await this.engine.generate({ prompt: job.prompt, itemCode, image, choices });
       const upload = await this.uploads.createGeneratedLocal(ownerUserId, generated.image, generated.mimeType);
       const finished = await this.prisma.aiGenerationJob.updateMany({
         where: { id: job.id, status: JobStatus.RUNNING },

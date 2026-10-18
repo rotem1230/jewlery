@@ -86,6 +86,27 @@ describe('GeminiImageAiEngineAdapter', () => {
     expect(Buffer.from(input[1].data ?? '', 'base64').equals(PNG)).toBe(true);
   });
 
+  it('the picture follows the design: its metal, stones, setting, finish and elements are in the prompt', async () => {
+    answer(() => json(interaction([{ type: 'image', mime_type: 'image/jpeg', data: JPEG.toString('base64') }])));
+    await adapter().generate({
+      prompt: 'a black sapphire',
+      itemCode: 'RING',
+      choices: { metal: '14K yellow gold', stones: ['sapphire', 'diamond'], setting: '6-prong setting', finish: 'matte finish', elements: ['star'] },
+    });
+    const text = (body().input as Array<{ content: Array<{ text?: string }> }>)[0].content[0].text ?? '';
+    for (const words of ['14K yellow gold', 'sapphire, diamond', '6-prong setting', 'matte finish', 'star']) {
+      expect(text).toContain(words);
+    }
+    expect(text).toContain('a black sapphire');
+  });
+
+  it('without design choices the prompt invents none', async () => {
+    answer(() => json(interaction([{ type: 'image', mime_type: 'image/jpeg', data: JPEG.toString('base64') }])));
+    await adapter().generate({ prompt: 'a twisted band', itemCode: 'RING' });
+    const text = (body().input as Array<{ content: Array<{ text?: string }> }>)[0].content[0].text ?? '';
+    expect(text).not.toMatch(/gold|silver|platinum|setting|finish/i);
+  });
+
   it('the image model can be chosen by configuration (GEMINI_IMAGE_MODEL)', async () => {
     answer(() => json(interaction([{ type: 'image', mime_type: 'image/jpeg', data: JPEG.toString('base64') }])));
     await new GeminiImageAiEngineAdapter(configWith({ 'gemini.imageModel': 'gemini-3-pro-image' })).generate({ prompt: 'x', itemCode: 'RING' });

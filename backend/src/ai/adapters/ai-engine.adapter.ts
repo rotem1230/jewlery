@@ -1,8 +1,12 @@
+import type { DesignChoices } from '../design-choices';
+
 export type AiGenerateRequest = {
   prompt: string;
   itemCode: string;
   /** The designer's inspiration picture: when present the new picture is made from it. */
   image?: { bytes: Buffer; mimeType: string };
+  /** What the design is made of (metal, stones, setting…): the picture follows it. */
+  choices?: DesignChoices;
 };
 
 export type AiGenerateResult = {

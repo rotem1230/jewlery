@@ -97,13 +97,24 @@ export class GeminiImageAiEngineAdapter implements AiEngineAdapter {
     return { image, mimeType, providerRef: `gemini-${interaction.id ?? 'unknown'}` };
   }
 
-  /** The designer's words, framed as a product picture of the chosen kind of piece. */
+  /**
+   * The designer's words, framed as a product picture of the chosen kind of piece and held to what
+   * the design is made of (metal, stones, setting, finish, elements) when those were chosen.
+   */
   private prompt(request: AiGenerateRequest): string {
     const item = ITEM_NAMES[request.itemCode] ?? 'piece of jewelry';
+    const choices = request.choices;
+    const made: string[] = [];
+    if (choices?.metal) made.push(`made of ${choices.metal}`);
+    if (choices?.stones.length) made.push(`with ${choices.stones.join(', ')} stones`);
+    if (choices?.setting) made.push(`in a ${choices.setting}`);
+    if (choices?.finish) made.push(`with a ${choices.finish}`);
+    if (choices?.elements.length) made.push(`decorated with ${choices.elements.join(', ')} elements`);
+    const design = made.length ? ` The piece is ${made.join(', ')}: keep to these choices.` : '';
     const reference = request.image ? ' Use the attached picture as the inspiration.' : '';
     return (
       `A photorealistic product photograph of a handmade ${item}, as a design inspiration for a jeweler.` +
-      `${reference} The designer's note (may be in Hebrew): "${request.prompt}". ` +
+      `${design}${reference} The designer's note (may be in Hebrew): "${request.prompt}". ` +
       'One piece, centered, studio lighting, plain light background, no people, no text or logos.'
     );
   }

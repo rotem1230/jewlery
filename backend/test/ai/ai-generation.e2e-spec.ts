@@ -78,6 +78,28 @@ describe('AI generation is real or refused', () => {
       expect(engine.requests[0].image?.bytes.equals(PNG_BYTES)).toBe(true);
     });
 
+    it('the provider is told the design choices (the catalog names of what the designer picked)', async () => {
+      const user = await registerVerified(t);
+      const design = await createDraftDesign(t, user);
+      await t.http
+        .patch(`${API}/designs/${design.id}`)
+        .set(user.auth)
+        .send({
+          version: 1,
+          parameters: { ...VALID_RING_PARAMETERS, stones: [{ stoneCode: 'SAPPHIRE' }], setting: { settingCode: 'BEZEL' } },
+        })
+        .expect(200);
+      engine.requests.length = 0;
+      const job = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ designId: design.id, prompt: 'delicate' }).expect(202);
+      await finished(t, user.auth, job.body.data.id);
+      expect(engine.requests[0].choices).toEqual({
+        metal: '14K yellow gold',
+        stones: ['sapphire'],
+        setting: 'bezel setting',
+        elements: [],
+      });
+    });
+
     it('the result is an inspiration picture the owner can open (stored as the image it is)', async () => {
       const user = await registerVerified(t);
       const design = await createDraftDesign(t, user);
