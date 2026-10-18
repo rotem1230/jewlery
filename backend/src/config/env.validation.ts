@@ -62,6 +62,10 @@ class EnvironmentVariables {
 
   @IsOptional()
   @IsString()
+  TRIPO_MODEL?: string;
+
+  @IsOptional()
+  @IsString()
   RENDER_ENGINE_URL?: string;
 
   @IsOptional()

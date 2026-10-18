@@ -17,6 +17,12 @@ end
 target 'MalinvoskyApp' do
   config = use_native_modules!
 
+  # Google Sign-In's AppCheckCore (a Swift pod) imports these as modules; built as static
+  # libraries they need module maps, or `pod install` stops. No version constraints here
+  # (react-native-google-signin's iOS setup).
+  pod 'GoogleUtilities', :modular_headers => true
+  pod 'RecaptchaInterop', :modular_headers => true
+
   use_react_native!(
     :path => config[:reactNativePath],
     # An absolute path to your application root.

@@ -119,9 +119,14 @@ media over lowering it).
   `backend/src/bootstrap/configure-app.ts`), longer than the proxies in front of the API keep
   theirs. With Node's 5 s default, a request sent on a connection the server had just closed
   failed without an answer, e.g. the first photo upload after a short pause.
-- **AI inspiration** needs `TRIPO_API_KEY`; without it the request is refused (503
-  `AI_NOT_CONFIGURED`) — no stand-in models. With an inspiration picture the model is made from
-  the picture (image to model), otherwise from the note.
+- **AI inspiration** uses the Tripo API v3 (international region, `openapi.tripo3d.ai`) and needs
+  `TRIPO_API_KEY` (from https://developers.tripo3d.ai/en/keys); without it the request is refused
+  (503 `AI_NOT_CONFIGURED`) — no stand-in models. With an inspiration picture the model is made
+  from the picture (image to model), otherwise from the note. `TRIPO_MODEL` picks the model
+  version (default `v2.5-20250123`; `v3.1-20260211` is the best quality and costs more). Each
+  generation is charged to the Tripo account (top up its credits); every signed-in user may run
+  `ai_limits.dailyPerUser` generations a day (default 10, AppConfig). Generated models are stored
+  like other files (in the database in production), up to `TRIPO_MAX_MODEL_BYTES` each.
 - **Background jobs** (`JOBS_ENABLED=true`): outbox delivery, subscription lifecycle, visualization
   retention purge (also once at start-up), stale AI and render jobs, expiring pending quotes past
   their `validUntil` (every 10 minutes), and rendering design pictures that are missing or out of

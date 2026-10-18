@@ -2,19 +2,31 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiEngineAdapter, AiGenerateRequest, AiGenerateResult } from './ai-engine.adapter';
 
-const TRIPO_BASE = 'https://api.tripo3d.ai/v2/openapi';
+/** Tripo API v3, international region (keys from developers.tripo3d.ai). v2 is being retired. */
+export const TRIPO_BASE = 'https://openapi.tripo3d.ai/v3';
+/** v3 requires a model version; this one keeps v2's default results and price (TRIPO_MODEL overrides). */
+export const TRIPO_DEFAULT_MODEL = 'v2.5-20250123';
+/** Longest prompt the provider accepts. */
+const MAX_PROMPT_CHARS = 1024;
 const POLL_MS = 2_000;
-const MAX_WAIT_MS = 90_000;
+/** 3D tasks take one to ten minutes; under the 15-minute stale-job sweep in AiService. */
+const MAX_WAIT_MS = 10 * 60 * 1000;
 /** No single provider call may hang a worker (the job itself is bounded by MAX_WAIT_MS). */
 const REQUEST_TIMEOUT_MS = 15_000;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_MODEL_BYTES = 50 * 1024 * 1024;
 
+type TripoTask = {
+  status?: string;
+  output?: { model_url?: string };
+  error_code?: number;
+  error_message?: string;
+};
+
 /**
  * Generates a 3D model with Tripo (TRIPO_API_KEY): from the designer's inspiration picture when
  * there is one (image to model), otherwise from the prompt (text to model). The GLB is downloaded
- * at once (provider URLs expire in about 5 minutes). Failures are reported, never papered over
- * with a stand-in model.
+ * at once (provider URLs expire). Failures are reported, never papered over with a stand-in model.
  */
 @Injectable()
 export class TripoAiEngineAdapter implements AiEngineAdapter {
@@ -29,14 +41,17 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
     if (!apiKey) {
       throw new Error('No AI provider is configured (TRIPO_API_KEY)');
     }
-    const task = request.image
-      ? { type: 'image_to_model', file: await this.uploadImage(apiKey, request.image) }
-      : {
-          type: 'text_to_model',
-          prompt: `${request.prompt}. Photorealistic ${request.itemCode.toLowerCase()} jewelry, single object, studio lighting.`,
-        };
-    const created = await this.tripoFetch(apiKey, '/task', { method: 'POST', body: JSON.stringify(task) });
-    const taskId = (created as { data?: { task_id?: string } }).data?.task_id;
+    const model = this.config.get<string>('tripo.model') || TRIPO_DEFAULT_MODEL;
+    const created = request.image
+      ? await this.tripoFetch(apiKey, '/generation/image-to-model', {
+          method: 'POST',
+          body: JSON.stringify({ input: await this.uploadImage(apiKey, request.image), model }),
+        })
+      : await this.tripoFetch(apiKey, '/generation/text-to-model', {
+          method: 'POST',
+          body: JSON.stringify({ prompt: this.prompt(request), model }),
+        });
+    const taskId = (created as { task_id?: string }).task_id;
     if (!taskId) {
       throw new Error('Tripo did not return a task_id');
     }
@@ -44,34 +59,40 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
     const started = Date.now();
     while (Date.now() - started < MAX_WAIT_MS) {
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-      const status = (await this.tripoFetch(apiKey, `/task/${taskId}`)) as {
-        data?: { status?: string; output?: { pbr_model?: string; model?: string } };
-      };
-      const state = status.data?.status;
-      if (state === 'success') {
-        const url = status.data?.output?.pbr_model ?? status.data?.output?.model;
-        if (!url) {
-          throw new Error('Tripo success without a model URL');
-        }
-        if (!url.startsWith('https://')) {
-          throw new Error('Tripo returned a model URL that is not https');
-        }
-        // No redirects: an https link must not bounce the server to another (internal) address.
-        const glbRes = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-        if (!glbRes.ok) {
-          throw new Error(`Failed to download Tripo GLB (${glbRes.status})`);
-        }
-        const glb = await this.readCapped(glbRes, this.config.get<number>('tripo.maxModelBytes') ?? DEFAULT_MAX_MODEL_BYTES);
-        if (glb.length < 100) {
-          throw new Error('Tripo GLB was empty');
-        }
-        return { glb, providerRef: `tripo-${taskId}` };
+      const task = (await this.tripoFetch(apiKey, `/tasks/${taskId}`)) as TripoTask;
+      if (task.status === 'queued' || task.status === 'running') {
+        continue;
       }
-      if (state === 'failed' || state === 'cancelled' || state === 'unknown') {
-        throw new Error(`Tripo task ${state}`);
+      if (task.status !== 'success') {
+        // failed / cancelled, or a state this adapter does not know: never wait on it.
+        const reason = [task.error_code, task.error_message].filter((part) => part !== undefined).join(' ');
+        throw new Error(`Tripo task ${task.status ?? 'without a status'}${reason ? `: ${reason}` : ''}`);
       }
+      const url = task.output?.model_url;
+      if (!url) {
+        throw new Error('Tripo success without a model URL');
+      }
+      if (!url.startsWith('https://')) {
+        throw new Error('Tripo returned a model URL that is not https');
+      }
+      // No redirects: an https link must not bounce the server to another (internal) address.
+      const glbRes = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+      if (!glbRes.ok) {
+        throw new Error(`Failed to download Tripo GLB (${glbRes.status})`);
+      }
+      const glb = await this.readCapped(glbRes, this.config.get<number>('tripo.maxModelBytes') ?? DEFAULT_MAX_MODEL_BYTES);
+      if (glb.length < 100) {
+        throw new Error('Tripo GLB was empty');
+      }
+      return { glb, providerRef: `tripo-${taskId}` };
     }
     throw new Error('Tripo task timed out');
+  }
+
+  /** The designer's words with the jewelry framing, within the provider's prompt limit. */
+  private prompt(request: AiGenerateRequest): string {
+    const suffix = `. Photorealistic ${request.itemCode.toLowerCase()} jewelry, single object, studio lighting.`;
+    return `${request.prompt.slice(0, Math.max(0, MAX_PROMPT_CHARS - suffix.length))}${suffix}`;
   }
 
   /** The response body, refused as soon as it exceeds `maxBytes` (declared or actually sent). */
@@ -100,40 +121,40 @@ export class TripoAiEngineAdapter implements AiEngineAdapter {
     }
   }
 
-  /** Uploads the inspiration picture to Tripo; returns the task's `file` reference. */
-  private async uploadImage(apiKey: string, image: { bytes: Buffer; mimeType: string }): Promise<{ type: string; file_token: string }> {
-    const type = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
+  /** Uploads the inspiration picture to Tripo; returns its `file_token` (the task's `input`). */
+  private async uploadImage(apiKey: string, image: { bytes: Buffer; mimeType: string }): Promise<string> {
+    const extension = image.mimeType === 'image/png' ? 'png' : image.mimeType === 'image/webp' ? 'webp' : 'jpg';
     const form = new FormData();
-    form.append('file', new Blob([new Uint8Array(image.bytes)], { type: image.mimeType }), `inspiration.${type}`);
-    const res = await fetch(`${TRIPO_BASE}/upload`, {
-      method: 'POST',
-      body: form,
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!res.ok) {
-      throw new Error(`Tripo /upload ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    form.append('file', new Blob([new Uint8Array(image.bytes)], { type: image.mimeType }), `inspiration.${extension}`);
+    const data = (await this.tripoFetch(apiKey, '/files', { method: 'POST', body: form }, DOWNLOAD_TIMEOUT_MS)) as {
+      file_token?: string;
+    };
+    if (!data.file_token) {
+      throw new Error('Tripo did not return a file_token');
     }
-    const token = ((await res.json()) as { data?: { image_token?: string } }).data?.image_token;
-    if (!token) {
-      throw new Error('Tripo did not return an image_token');
-    }
-    return { type, file_token: token };
+    return data.file_token;
   }
 
-  private async tripoFetch(apiKey: string, path: string, init?: RequestInit): Promise<unknown> {
+  /** A v3 call: `{ code: 0, data }` on success; anything else is reported with Tripo's code and message. */
+  private async tripoFetch(apiKey: string, path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+    const isForm = init?.body instanceof FormData;
     const res = await fetch(`${TRIPO_BASE}${path}`, {
       ...init,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        // fetch sets the multipart boundary itself.
+        ...(isForm ? {} : { 'Content-Type': 'application/json' }),
         ...(init?.headers ?? {}),
       },
     });
     if (!res.ok) {
       throw new Error(`Tripo ${path} ${res.status}: ${(await res.text()).slice(0, 200)}`);
     }
-    return res.json();
+    const body = (await res.json()) as { code?: number; message?: string; data?: unknown };
+    if (body.code !== 0) {
+      throw new Error(`Tripo ${path} code ${body.code ?? '?'}: ${(body.message ?? '').slice(0, 200)}`);
+    }
+    return body.data ?? {};
   }
 }

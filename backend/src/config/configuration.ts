@@ -61,6 +61,8 @@ export const configuration = () => {
     },
     tripo: {
       apiKey: process.env.TRIPO_API_KEY,
+      /** Model version for 3D generation (Tripo API v3 requires one); empty = v2.5-20250123. */
+      model: process.env.TRIPO_MODEL,
       /** Largest model accepted from the provider (the file is held in memory while stored). */
       maxModelBytes: int(process.env.TRIPO_MAX_MODEL_BYTES, 20 * 1024 * 1024),
     },
