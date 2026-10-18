@@ -268,9 +268,19 @@ export function inspirationUploadFromParameters(parameters: Record<string, unkno
   return typeof id === 'string' ? id : undefined
 }
 
-export function aiOutputUploadFromParameters(parameters: Record<string, unknown> | undefined): string | undefined {
-  const id = parameters?.aiOutputUploadId
-  return typeof id === 'string' ? id : undefined
+/**
+ * The parameters with a picture made by the inspiration AI as the design's inspiration picture
+ * (PRD 5.4 step 7: "upload an inspiration image or generate using AI"), or null when it already
+ * is. A link to a generated 3D model (an earlier version of this feature) is not kept.
+ */
+export function withGeneratedInspiration(
+  parameters: Record<string, unknown>,
+  pictureUploadId: string,
+): Record<string, unknown> | null {
+  if (parameters.inspirationUploadId === pictureUploadId) return null
+  const next: Record<string, unknown> = { ...parameters, inspirationUploadId: pictureUploadId }
+  delete next.aiOutputUploadId
+  return next
 }
 
 export type StudioDrafts = {

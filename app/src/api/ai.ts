@@ -9,7 +9,7 @@ export type AiGenerationJob = {
   prompt: string
   status: AiJobStatus
   outputUploadId: string | null
-  /** Signed link to the generated model (see mediaUrl). */
+  /** Signed link to the generated inspiration picture (see mediaUrl). */
   outputUrl?: string | null
   errorMessage: string | null
 }
@@ -25,8 +25,8 @@ export function getAiJob(id: string): Promise<AiGenerationJob> {
 const sleepFor = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 /**
- * Generation runs in the background on the server (up to ~90 s with the provider): poll until the
- * job finishes or the window ends; the caller shows "still working" for a job that is not done.
+ * Generation runs in the background on the server (usually seconds): poll until the job finishes
+ * or the window ends; the caller shows "still working" for a job that is not done.
  */
 export async function waitForAiJob(
   id: string,

@@ -20,5 +20,5 @@ process.env.SMTP_URL = '';
 process.env.GOOGLE_CLIENT_ID = '';
 process.env.APPLE_CLIENT_ID = '';
 process.env.STRIPE_SECRET_KEY = '';
-process.env.TRIPO_API_KEY = '';
+process.env.GEMINI_API_KEY = '';
 process.env.PAYMENTS_PROVIDER = 'mock';

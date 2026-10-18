@@ -16,8 +16,9 @@ export class AiController {
   @Post('inspiration')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
-    summary: 'Start a text-to-3D generation (asynchronous)',
-    description: 'Returns the QUEUED job; poll GET /ai/jobs/:id until SUCCEEDED (outputUrl) or FAILED.',
+    summary: 'Start generating an inspiration picture (asynchronous)',
+    description:
+      'From the note, and from the design inspiration picture when there is one. Returns the QUEUED job; poll GET /ai/jobs/:id until SUCCEEDED (outputUrl: the picture) or FAILED.',
   })
   @ApiResponse({ status: 202, description: 'Job queued' })
   @ApiResponse({ status: 409, description: 'AI_JOB_IN_PROGRESS: one generation at a time per user' })

@@ -1,6 +1,6 @@
 /**
- * AI generations the studio stopped waiting for. The server does not attach a generated model to
- * the design (the studio does, by saving it into the design parameters), so a generation that
+ * AI generations the studio stopped waiting for. The server does not attach a generated picture to
+ * the design (the studio does, by saving it as the inspiration picture), so a generation that
  * outlives the studio's wait, or whose polling failed, is remembered per design and attached on
  * the next visit instead of being lost (and paid for again from the daily quota).
  */

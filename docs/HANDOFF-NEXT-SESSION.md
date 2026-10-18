@@ -57,7 +57,7 @@ git log --oneline -5
    - **לא מחקתי שום קובץ ב-C:** — המשתמש צריך לפנות מקום בעצמו (רוב התפוסה לא מהפרויקט הזה).
 2. **לא לגעת בפרויקטים אחרים על המכונה** (kuku, RAI על פורט 3100, bot-torim, teachup...). תהליכי postgres — רק לפי הנתיב `E:/claude-work/malinvosky/pgtool`.
 3. **לא להשתמש ב-npx.** מריצים `node node_modules/...`.
-4. **`backend/.env`** — ערכי פיתוח של בעל הפרויקט, כולל `TRIPO_API_KEY` אמיתי (ב-gitignore). לא לדלוף.
+4. **`backend/.env`** — ערכי פיתוח של בעל הפרויקט, כולל מפתח AI אמיתי (ב-gitignore). לא לדלוף.
 5. **`backend/.env.render.local`** — כתובת ה-**External** של מסד הנתונים ב-Render (כולל סיסמה). ב-gitignore (`.env.*.local`). משמש להרצת מיגרציות/שאילתות מהמחשב:
    ```bash
    cd backend; set -a; . ./.env.render.local; set +a
@@ -89,7 +89,7 @@ git log --oneline -5
 **חסר / לבדוק:**
 - `APPLE_CLIENT_ID=com.malinvoskyapp` — **ביקשתי מהמשתמש להוסיף. בלי זה התחברות Apple מחזירה 503 `OAUTH_NOT_CONFIGURED`.**
 - `GOOGLE_CLIENT_ID` — רק כשיוגדרו מזהי Google (סעיף 7).
-- `TRIPO_API_KEY` — **לא מוגדר**. בלעדיו "השראת AI" מחזירה 503 `AI_NOT_CONFIGURED` (אין מודלי דמה). המשתמש מוסיף ב-Render → Environment.
+- `GEMINI_API_KEY` — **לא מוגדר**. בלעדיו "השראת AI" מחזירה 503 `AI_NOT_CONFIGURED` (אין תמונות דמה). מפתח מ-https://aistudio.google.com/apikey על פרויקט עם חיוב (למודלי תמונה אין מסלול חינמי). המשתמש מוסיף ב-Render → Environment.
 
 ### מגבלות ידועות של המסלול החינמי
 - **השרת נרדם** אחרי חוסר פעילות — בקשה ראשונה עד כדקה.
@@ -158,7 +158,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
    - `backend/src/jewelry`: גיאומטריה פרמטרית (טבעת לפי טבלת המידות, פס, ראש שיניים/משבצת/פאווה, אבנים, אלמנטים, שרשראות, עגילים) — אותו קוד רץ בסטודיו של האפליקציה (`app/scripts/sync-jewelry-geometry.cjs` מייצר `jewelryGeometry.generated.ts`; טסט משווה sha256).
    - ייצוא STL/OBJ/PNG_HD אמיתי (STEP נדחה ב-400), תמונות תצוגה לעיצובים (ברקע, לפי מפתח תוכן), הדמיה שמרכיבה את התכשיט על התמונה במקום שהמעצב בחר.
    - קבצים נשמרים ב-PostgreSQL (`upload_blobs`) — שורדים פריסות ב-Render.
-   - AI: רק Tripo (נמחק ה-dummy), image-to-model מתמונת ההשראה.
+   - AI (ענף `feature/google-ai-inspiration-image`): "צור באמצעות AI" יוצר **תמונת השראה** עם Gemini של גוגל (`gemini-3.1-flash-image`), כפי שה-PRD מגדיר (5.4 שלב 7: ספק ליצירת תמונות), מההערה ומתמונת ההשראה אם יש. התמונה נשמרת כתמונת ההשראה של העיצוב ומגיעה לצורף. נקודת חזרה: תג `before-google-ai-image` (גרסת Tripo).
    - **תוקן באמולטור:** שכבת התכשיט בהדמיה לא הוצגה (תמונה ב-Android לא שולחת headers — נטענת עכשיו עם ה-session), והעלאת התמונה הראשונה אחרי הפסקה נכשלה (Node סוגר חיבורים אחרי 5 שניות — עכשיו 65).
 
 ### מצב טסטים אחרון
@@ -181,7 +181,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 
 **קודם כול (17.10):**
 - **לשחרר את האפליקציה:** בנייה חדשה ל-Android (APK) ול-iOS (TestFlight) — עולה כסף ב-EAS, רק באישור המשתמש. אחר כך לעבור על הסטודיו, הייצוא וההדמיה על מכשיר אמיתי מול השרת בפרודקשן.
-- **`TRIPO_API_KEY` ב-Render** — כדי שהשראת AI תעבוד. הקוד עבר ל-Tripo API v3 (18.10; v2 נסגר). מפתח מ-https://developers.tripo3d.ai/en/keys, וצריך קרדיטים בחשבון Tripo. אחרי שהמפתח מוגדר — לבדוק יצירה אחת חיה (עוד לא נבדק מול Tripo).
+- **`GEMINI_API_KEY` ב-Render** — כדי שהשראת AI תעבוד (אחרי מיזוג הענף ל-main). מפתח מ-https://aistudio.google.com/apikey, עם חיוב פעיל; מומלץ התראת תקציב. כ-7 סנט לתמונה. אחרי שהמפתח מוגדר — לבדוק יצירה אחת חיה (עוד לא נבדק מול גוגל).
 
 **ואחר כך:**
 
@@ -195,7 +195,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
    - בשרת: `GOOGLE_CLIENT_ID` ב-Render עם שלושת המזהים.
    - **כלל App Store:** אם יש Google — חובה גם Apple (כבר קיים).
 6. **שדרוג Render:** Web Service ל-Starter (בלי הירדמות; רינדור מהיר יותר), ו-Postgres למסלול בתשלום לפני 13.11.2026 (גם בגלל נפח הקבצים שנשמרים במסד).
-7. **סודות שנחשפו בצ'אט — להחליף:** סיסמת מסד הנתונים ב-Render, מפתח Resend, סיסמת אפליקציה של Gmail (לבטל — כבר לא בשימוש), ומפתח Tripo אם נדרש.
+7. **סודות שנחשפו בצ'אט — להחליף:** סיסמת מסד הנתונים ב-Render, מפתח Resend, סיסמת אפליקציה של Gmail (לבטל — כבר לא בשימוש), ומפתח Tripo (כבר לא בשימוש).
 8. **לפנות מקום ב-C:** (המשתמש).
 9. **החלטות מוצר** D1–D8 ושאלות 🟡 ב-`docs/prd-gap-audit.md`.
 10. **לא נבדק על מכשיר** — רוב מסכי סבב 5 נבדקו רק ב-jest/tsc/lint. עכשיו כשיש TestFlight ו-APK, לעבור על זרימות מלאות על מכשיר.
@@ -232,7 +232,7 @@ node E:/claude-work/malinvosky/tmp/round5/pg-dev.cjs stop
 | כתובת המסד (External) | Render → jewelry-db → Connect; מקומית ב-`backend/.env.render.local` (gitignored) |
 | JWT / TRIAL / UPLOAD secrets | Render Environment (נוצרו ב-Generate) |
 | SMTP (Resend API key) | Render Environment (`SMTP_URL`) |
-| Tripo | `backend/.env` מקומי (gitignored); **עדיין לא ב-Render** — להוסיף כדי שהשראת AI תעבוד |
+| Gemini (גוגל) | Render Environment (`GEMINI_API_KEY`) — **עדיין לא הוגדר** |
 | חתימת Android | EAS (expo.dev → Credentials) |
 | תעודת הפצה / provisioning iOS | EAS; מפתח ASC API `HDV3Q2YWV4` ב-EAS |
 | Apple ID | של המשתמש (`antselrotem@gmail.com`) — רק הוא מקליד סיסמה/קוד |

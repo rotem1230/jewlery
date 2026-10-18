@@ -45,7 +45,6 @@ import {
   STUDIO_MAX_STONES,
   WRIST_MAX_CM,
   WRIST_MIN_CM,
-  aiOutputUploadFromParameters,
   bandWidthConflict,
   elementsFromParameters,
   inspirationUploadFromParameters,
@@ -59,6 +58,7 @@ import {
   sizePayload,
   stonesFromParameters,
   viewerParameters,
+  withGeneratedInspiration,
   type StudioElement,
   type StudioMetal,
   type StudioSize,
@@ -97,8 +97,8 @@ function jewelryCategory(code: string | undefined): JewelryCategory {
 }
 
 /**
- * Figma 3D wizard: local catalog/AI GLB + six live tabs. PATCH parameters on סיימתי.
- * Inspiration generate is the only path that creates an AI job.
+ * Figma 3D wizard: the piece built from its parameters + six live tabs. PATCH parameters on סיימתי.
+ * Inspiration generate is the only path that creates an AI job (an inspiration picture).
  * A completed design (accepted quote) opens in view mode: no edit tabs, nothing is saved.
  */
 export function DesignStudioScreen() {
@@ -117,10 +117,8 @@ export function DesignStudioScreen() {
   const [noteDraft, setNoteDraft] = useState<string | null>(null)
   const [jewelerNotesDraft, setJewelerNotesDraft] = useState<string | null>(null)
   const [inspirationUploadDraft, setInspirationUploadDraft] = useState<string | null>(null)
-  /** Signed link of the picture just uploaded (the saved design carries inspirationUrl). */
+  /** Signed link of the picture just uploaded or generated (the saved design carries inspirationUrl). */
   const [inspirationLink, setInspirationLink] = useState<string | null>(null)
-  /** Signed link of a model generated in this session (the saved design carries aiOutputUrl). */
-  const [aiModelLink, setAiModelLink] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [previewUri, setPreviewUri] = useState<string | null>(null)
   /** The photo being placed for a try-on (uploaded; removed again if the designer cancels). */
@@ -152,10 +150,9 @@ export function DesignStudioScreen() {
   const previewNote = noteDraft ?? noteFromParameters(parameters)
   const previewJewelerNotes = jewelerNotesDraft ?? design?.jewelerNotes ?? ''
   const previewInspiration = inspirationUploadDraft ?? inspirationUploadFromParameters(parameters)
-  const previewAiOutput = aiOutputUploadFromParameters(parameters)
-  // The design's own link is signed at each load; the one kept from the generation only bridges
-  // the moment before the design is reloaded.
-  const aiModelUri = mediaUrl(linkForUpload(previewAiOutput, design?.aiOutputUrl, aiModelLink))
+  // The link that serves the picture in use: the design's own (signed again at each load) once it is
+  // saved, else the one kept from the upload / generation.
+  const inspirationUri = mediaUrl(linkForUpload(previewInspiration, design?.inspirationUrl, inspirationLink))
   // Live check of the server rule: a ring band no narrower than the chosen setting's minimum.
   const bandConflict = bandWidthConflict(
     itemType,
@@ -234,12 +231,13 @@ export function DesignStudioScreen() {
       const job = await takeFinishedAiJob(loadedDesignId)
       if (cancelled || !job?.outputUploadId) return
       const { persist: save, parameters: current, editable } = latestForAi.current
-      if (!editable || current.aiOutputUploadId === job.outputUploadId) {
+      // The finished picture becomes the inspiration picture (nothing to do when it already is).
+      const next = editable ? withGeneratedInspiration(current, job.outputUploadId) : null
+      if (!next) {
         await attachedAiJob(loadedDesignId, job.id)
         return
       }
-      setAiModelLink(job.outputUrl ?? null)
-      if (await save({ ...current, aiOutputUploadId: job.outputUploadId })) {
+      if (await save(next)) {
         await attachedAiJob(loadedDesignId, job.id)
       }
     }
@@ -436,13 +434,25 @@ export function DesignStudioScreen() {
   const onGenerateInspiration = async () => {
     if (!design) return
     const note = previewNote.trim()
-    // The AI works from the inspiration picture, or else from the note: one of them is needed.
+    // The AI works from the note, and from the inspiration picture when there is one: one of them
+    // is needed.
     if (!previewInspiration && note.length < 3) {
       Alert.alert(t('studioInspirationGenerate'), t('studioInspirationNeedInput'))
       return
     }
-    // The server reads the picture from the saved design.
+    // The server reads the picture from the saved design. Saving closes the panel's drafts; they
+    // are opened again with what was saved, so the panel stays while the picture is made.
+    const panel = {
+      note: previewNote,
+      jewelerNotes: previewJewelerNotes,
+      picture: previewInspiration ?? '',
+      link: inspirationLink,
+    }
     if (!(await flushDrafts())) return
+    setNoteDraft(panel.note)
+    setJewelerNotesDraft(panel.jewelerNotes)
+    setInspirationUploadDraft(panel.picture)
+    setInspirationLink(panel.link)
     const prompt = (note.length >= 3 ? note : t('studioInspirationPhotoPrompt')).slice(0, 500)
     try {
       setBusy(true)
@@ -450,12 +460,16 @@ export function DesignStudioScreen() {
       // Remembered until attached: if the wait below ends first (or fails), the next visit
       // attaches the result.
       await rememberPendingAiJob(design.id, queued.id)
-      // Generation runs on the server in the background (up to ~90 s with the provider).
       const job = await waitForAiJob(queued.id)
       if (job.status === 'SUCCEEDED' && job.outputUploadId) {
-        setAiModelLink(job.outputUrl ?? null)
-        if (await persist({ ...parameters, aiOutputUploadId: job.outputUploadId })) {
+        // Saved on the design as it is now: the notes saved above made a newer version than the
+        // one this function started with.
+        const { persist: save, parameters: current } = latestForAi.current
+        const next = withGeneratedInspiration(current, job.outputUploadId)
+        if (!next || (await save(next))) {
           await attachedAiJob(design.id, queued.id)
+          setInspirationUploadDraft(job.outputUploadId)
+          setInspirationLink(job.outputUrl ?? null)
         }
         return
       }
@@ -688,7 +702,6 @@ export function DesignStudioScreen() {
               itemType={itemType}
               parameters={previewParameters}
               ringChartDiameterMm={chartDiameter}
-              modelUri={aiModelUri}
             />
             {!tab ? (
               <Pressable
@@ -796,7 +809,7 @@ export function DesignStudioScreen() {
                   note={previewNote}
                   jewelerNotes={previewJewelerNotes}
                   hasImage={Boolean(previewInspiration)}
-                  imageUri={mediaUrl(inspirationUploadDraft ? inspirationLink : design?.inspirationUrl)}
+                  imageUri={inspirationUri}
                   generating={busy}
                   onChangeNote={setNoteDraft}
                   onChangeJewelerNotes={setJewelerNotesDraft}

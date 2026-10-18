@@ -16,8 +16,6 @@ type StudioViewerProps = {
   /** Inner diameter of the chosen ring size from the size chart (mm), when known. */
   ringChartDiameterMm?: number | null
   interactive?: boolean
-  /** Hosted GLB from our uploads (inspiration AI). The parametric piece is shown when omitted. */
-  modelUri?: string
 }
 
 type StudioWebViewProps = {
@@ -56,7 +54,6 @@ export function StudioViewer({
   parameters,
   ringChartDiameterMm,
   interactive = true,
-  modelUri,
 }: StudioViewerProps) {
   const { t } = useTranslation()
   const ref = useRef<WebViewRef>(null)
@@ -69,8 +66,8 @@ export function StudioViewer({
   const designRef = useRef(design)
   designRef.current = design
 
-  const html = useMemo(() => studioViewerHtml({ itemType, modelUri }), [itemType, modelUri])
-  const htmlRev = `studio-${itemType}-${modelUri ?? 'parametric'}-v21`
+  const html = useMemo(() => studioViewerHtml({ itemType }), [itemType])
+  const htmlRev = `studio-${itemType}-parametric-v22`
   const baseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '')
   const layout = useRef({ width: 0, height: 0 })
 

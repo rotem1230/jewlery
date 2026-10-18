@@ -40,9 +40,11 @@ if (!existsSync(SOURCE)) {
   console.error(`Backend geometry not found at ${SOURCE}`)
   process.exit(1)
 }
-const output = generate(readFileSync(SOURCE, 'utf8'))
+// Line endings do not count: a Windows checkout may turn them into CRLF.
+const lf = (text) => text.replace(/\r\n/g, '\n')
+const output = generate(lf(readFileSync(SOURCE, 'utf8')))
 if (process.argv.includes('--check')) {
-  const current = existsSync(TARGET) ? readFileSync(TARGET, 'utf8') : ''
+  const current = existsSync(TARGET) ? lf(readFileSync(TARGET, 'utf8')) : ''
   if (current !== output) {
     console.error('src/lib/jewelryGeometry.generated.ts is stale: run node scripts/sync-jewelry-geometry.cjs')
     process.exit(1)

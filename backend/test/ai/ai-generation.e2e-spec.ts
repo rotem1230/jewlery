@@ -3,6 +3,9 @@ import { API, createTestApp, TestApp } from '../utils/test-app';
 import { PNG_BYTES, uploadFile } from '../utils/files';
 import { VALID_RING_PARAMETERS, createDraftDesign, registerVerified } from '../utils/factories';
 
+/** A generated inspiration picture (JPEG signature). */
+const PICTURE = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 7)]);
+
 /** Records what the platform asks the provider for; fails on demand. */
 class RecordingEngine {
   requests: AiGenerateRequest[] = [];
@@ -18,7 +21,7 @@ class RecordingEngine {
       this.failNext = false;
       throw new Error('provider down');
     }
-    return { glb: Buffer.alloc(300, 7), providerRef: 'recorded' };
+    return { image: PICTURE, mimeType: 'image/jpeg', providerRef: 'recorded' };
   }
 }
 
@@ -32,7 +35,7 @@ async function finished(t: TestApp, auth: { Authorization: string }, id: string)
 }
 
 describe('AI generation is real or refused', () => {
-  it('without a provider (no TRIPO_API_KEY) the request is refused and no job is made', async () => {
+  it('without a provider (no GEMINI_API_KEY) the request is refused and no job is made', async () => {
     const t = await createTestApp();
     try {
       const user = await registerVerified(t);
@@ -75,6 +78,20 @@ describe('AI generation is real or refused', () => {
       expect(engine.requests[0].image?.bytes.equals(PNG_BYTES)).toBe(true);
     });
 
+    it('the result is an inspiration picture the owner can open (stored as the image it is)', async () => {
+      const user = await registerVerified(t);
+      const design = await createDraftDesign(t, user);
+      const job = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ designId: design.id, prompt: 'a twisted band' }).expect(202);
+      const done = await finished(t, user.auth, job.body.data.id);
+      expect(done.status).toBe('SUCCEEDED');
+      const upload = await t.prisma.upload.findUniqueOrThrow({ where: { id: done.outputUploadId } });
+      expect(upload.mimeType).toBe('image/jpeg');
+      expect(upload.ownerUserId).toBe(user.id);
+      const picture = await t.http.get(`${API}${done.outputUrl}`).buffer(true).expect(200);
+      expect(picture.headers['content-type']).toMatch(/^image\/jpeg/);
+      expect(Buffer.from(picture.body).equals(PICTURE)).toBe(true);
+    });
+
     it('a picture id the design owner does not own is not sent', async () => {
       const owner = await registerVerified(t);
       const other = await registerVerified(t);
@@ -91,7 +108,7 @@ describe('AI generation is real or refused', () => {
       expect(engine.requests[0].prompt).toBe('text only');
     });
 
-    it('a provider failure fails the job with no model attached', async () => {
+    it('a provider failure fails the job with no picture attached', async () => {
       const user = await registerVerified(t);
       engine.failNext = true;
       const job = await t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ prompt: 'will fail' }).expect(202);

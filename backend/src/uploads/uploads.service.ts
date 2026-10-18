@@ -106,6 +106,7 @@ export class UploadsService {
     const map: Record<string, string> = {
       'image/jpeg': 'jpg',
       'image/png': 'png',
+      'image/webp': 'webp',
       'image/gif': 'gif',
       'video/mp4': 'mp4',
       'audio/m4a': 'm4a',

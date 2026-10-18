@@ -240,22 +240,6 @@ export class DesignsService {
     };
   }
 
-  /**
-   * Signed link to the AI model referenced in the design parameters. The owner controls that JSON,
-   * so a link is minted only for an upload the design owner owns.
-   */
-  private async aiOutputUrl(design: Pick<Design, 'ownerUserId' | 'parameters'>): Promise<string | null> {
-    const id = (design.parameters as { aiOutputUploadId?: unknown } | null)?.aiOutputUploadId;
-    if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) {
-      return null;
-    }
-    const upload = await this.prisma.upload.findFirst({
-      where: { id, ownerUserId: design.ownerUserId, deletedAt: null },
-      select: { id: true },
-    });
-    return upload ? this.access.signedContentPath(upload.id) : null;
-  }
-
   /** Signed link to the design's inspiration picture, minted only for an upload its owner owns. */
   private async inspirationUrl(design: Pick<Design, 'ownerUserId' | 'parameters'>): Promise<string | null> {
     const id = (design.parameters as { inspirationUploadId?: unknown } | null)?.inspirationUploadId;
@@ -304,7 +288,6 @@ export class DesignsService {
       ...rest,
       thumbnailUrl: this.access.urlFor(rest.thumbnailUploadId),
       previewUrl: this.access.urlFor(rest.previewUploadId),
-      aiOutputUrl: await this.aiOutputUrl(design),
       inspirationUrl: await this.inspirationUrl(design),
       quoteCount: _count.quotes,
       completedBy: this.completedBy(completedBy),

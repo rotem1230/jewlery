@@ -59,12 +59,11 @@ export const configuration = () => {
       from: process.env.MAIL_FROM ?? 'no-reply@mailnvosky.local',
       smtpUrl: process.env.SMTP_URL,
     },
-    tripo: {
-      apiKey: process.env.TRIPO_API_KEY,
-      /** Model version for 3D generation (Tripo API v3 requires one); empty = v2.5-20250123. */
-      model: process.env.TRIPO_MODEL,
-      /** Largest model accepted from the provider (the file is held in memory while stored). */
-      maxModelBytes: int(process.env.TRIPO_MAX_MODEL_BYTES, 20 * 1024 * 1024),
+    gemini: {
+      /** Google Gemini API key: AI inspiration pictures. Unset: AI inspiration answers 503. */
+      apiKey: process.env.GEMINI_API_KEY,
+      /** Image model; empty = gemini-3.1-flash-image. */
+      imageModel: process.env.GEMINI_IMAGE_MODEL,
     },
     visualization: {
       /** Try-on jobs one user may start per 24 hours (each one stores a generated image). */

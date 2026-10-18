@@ -29,7 +29,8 @@ describe('3D studio geometry', () => {
 
   it('is the backend geometry, unchanged (run scripts/sync-jewelry-geometry.cjs after editing it)', () => {
     if (!existsSync(backendSource)) return // app-only checkout (e.g. a cloud build)
-    const sha = createHash('sha256').update(readFileSync(backendSource, 'utf8')).digest('hex')
+    // Line endings do not count (a Windows checkout may turn them into CRLF).
+    const sha = createHash('sha256').update(readFileSync(backendSource, 'utf8').replace(/\r\n/g, '\n')).digest('hex')
     expect(JEWELRY_GEOMETRY_SOURCE_SHA256).toBe(sha)
   })
 
@@ -48,12 +49,9 @@ describe('3D studio geometry', () => {
     expect(max[0] - min[0]).toBeCloseTo(21.7, 0)
   })
 
-  it('the viewer page embeds the geometry and loads no stand-in model', () => {
+  it('the viewer page shows only the piece built from its parameters (no other model is loaded)', () => {
     const html = studioViewerHtml({ itemType: 'RING' })
     expect(html).toContain('window.JewelryGeometry = exports')
-    expect(html).not.toMatch(/\.glb/)
-    expect(studioViewerHtml({ itemType: 'RING', modelUri: 'https://api.example/uploads/x/content' })).toContain(
-      'https://api.example/uploads/x/content',
-    )
+    expect(html).not.toMatch(/\.glb|GLTFLoader/)
   })
 })

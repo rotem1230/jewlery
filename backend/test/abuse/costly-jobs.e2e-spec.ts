@@ -3,7 +3,7 @@ import { AiService } from '../../src/ai/ai.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { createDraftDesign, registerVerified, TestUser } from '../utils/factories';
 
-const GLB = Buffer.concat([Buffer.from('glTF', 'latin1'), Buffer.alloc(200, 7)]);
+const PICTURE = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 7)]);
 
 /**
  * AI engine fake: generations wait at a gate the test opens. Opening releases calls that are
@@ -23,7 +23,7 @@ class GatedAiEngine {
     if (!this.isOpen) {
       await new Promise<void>((resolve) => this.waiting.push(resolve));
     }
-    return { glb: GLB, providerRef: 'fake' };
+    return { image: PICTURE, mimeType: 'image/jpeg', providerRef: 'fake' };
   }
 
   open() {

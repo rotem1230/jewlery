@@ -76,7 +76,7 @@ Also set:
 Tunable limits (defaults in `.env.example`): `DESIGN_REQUESTS_PER_DAY` (per designer),
 `ATELIER_BROADCAST_FANOUT` (jewelers one broadcast reaches), `LEAD_OVERAGE_CAP` (overage charges
 per subscription within a rolling billing cycle), `VISUALIZATION_JOBS_PER_DAY` (try-on jobs per
-user), `TRIPO_MAX_MODEL_BYTES` (largest AI model accepted), `MEDIA_THROTTLE_LIMIT` (media requests
+user), `MEDIA_THROTTLE_LIMIT` (media requests
 per client IP and minute; many users behind one carrier NAT share it — prefer a CDN in front of
 media over lowering it).
 
@@ -119,14 +119,15 @@ media over lowering it).
   `backend/src/bootstrap/configure-app.ts`), longer than the proxies in front of the API keep
   theirs. With Node's 5 s default, a request sent on a connection the server had just closed
   failed without an answer, e.g. the first photo upload after a short pause.
-- **AI inspiration** uses the Tripo API v3 (international region, `openapi.tripo3d.ai`) and needs
-  `TRIPO_API_KEY` (from https://developers.tripo3d.ai/en/keys); without it the request is refused
-  (503 `AI_NOT_CONFIGURED`) — no stand-in models. With an inspiration picture the model is made
-  from the picture (image to model), otherwise from the note. `TRIPO_MODEL` picks the model
-  version (default `v2.5-20250123`; `v3.1-20260211` is the best quality and costs more). Each
-  generation is charged to the Tripo account (top up its credits); every signed-in user may run
-  `ai_limits.dailyPerUser` generations a day (default 10, AppConfig). Generated models are stored
-  like other files (in the database in production), up to `TRIPO_MAX_MODEL_BYTES` each.
+- **AI inspiration** (PRD 5.4 step 7: "upload an inspiration image or generate using AI") makes an
+  inspiration picture with Google's Gemini image model (Interactions API v1,
+  `GEMINI_IMAGE_MODEL`, default `gemini-3.1-flash-image`, about $0.07 per 1K picture), from the
+  note and from the design's inspiration picture when there is one. It needs `GEMINI_API_KEY`
+  (https://aistudio.google.com/apikey, on a project with billing: image models have no free tier);
+  without it the request is refused (503 `AI_NOT_CONFIGURED`) — no stand-in pictures. Requests are
+  sent with `store: false`. The app saves the picture as the design's inspiration picture (the one
+  jewelers see once the design is published). Every signed-in user may run
+  `ai_limits.dailyPerUser` generations a day (default 10, AppConfig).
 - **Background jobs** (`JOBS_ENABLED=true`): outbox delivery, subscription lifecycle, visualization
   retention purge (also once at start-up), stale AI and render jobs, expiring pending quotes past
   their `validUntil` (every 10 minutes), and rendering design pictures that are missing or out of

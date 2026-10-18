@@ -49,7 +49,7 @@ const EVENT_COPY: Record<string, (payload: unknown) => MailCopy> = {
     subject: 'בקשה חדשה להצעת מחיר',
     body: 'מעצב/ת שלח/ה לך בקשה להצעת מחיר על עיצוב.',
   }),
-  'ai.completed': () => ({ subject: 'מודל ההשראה מוכן', body: 'מודל ההשראה שלך מוכן לצפייה.' }),
+  'ai.completed': () => ({ subject: 'תמונת ההשראה מוכנה', body: 'תמונת ההשראה שלך מוכנה לצפייה.' }),
   'render.completed': () => ({ subject: 'קובץ הייצוא מוכן', body: 'קובץ הייצוא שלך מוכן להורדה.' }),
   'visualization.completed': () => ({ subject: 'ההדמיה מוכנה', body: 'ההדמיה שלך מוכנה לצפייה.' }),
 };

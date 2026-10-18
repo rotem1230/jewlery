@@ -58,11 +58,11 @@ class EnvironmentVariables {
 
   @IsOptional()
   @IsString()
-  TRIPO_API_KEY?: string;
+  GEMINI_API_KEY?: string;
 
   @IsOptional()
   @IsString()
-  TRIPO_MODEL?: string;
+  GEMINI_IMAGE_MODEL?: string;
 
   @IsOptional()
   @IsString()

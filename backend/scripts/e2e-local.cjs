@@ -159,7 +159,7 @@ async function main() {
     PAYMENTS_PROVIDER: 'mock',
     // The API also reads backend/.env: a developer's real keys there must not turn the smoke run
     // into paid AI calls or real e-mail.
-    TRIPO_API_KEY: '',
+    GEMINI_API_KEY: '',
     SMTP_URL: '',
   };
   const prismaCli = require.resolve('prisma/build/index.js', { paths: [ROOT] });

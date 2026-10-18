@@ -66,7 +66,7 @@ const EVENT_TITLES: Record<string, { he: string; en: string }> = {
   'quote.accepted': { he: 'הצעת המחיר אושרה', en: 'Quote accepted' },
   'quote.declined': { he: 'הצעת המחיר נדחתה', en: 'Quote declined' },
   'quote.withdrawn': { he: 'הצעת מחיר נמשכה', en: 'Quote withdrawn' },
-  'ai.completed': { he: 'מודל ההשראה מוכן', en: 'AI inspiration ready' },
+  'ai.completed': { he: 'תמונת ההשראה מוכנה', en: 'AI inspiration ready' },
   'render.completed': { he: 'קובץ הייצוא מוכן', en: 'Export ready' },
   'visualization.completed': { he: 'ההדמיה מוכנה', en: 'Try-on ready' },
 }

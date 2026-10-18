@@ -13,7 +13,7 @@ const EVENTS: Array<[string, string, string]> = [
   ['handoff.created', 'Handoff ready', 'WhatsApp handoff is ready for the accepted quote.'],
   ['design.published', 'Design published', 'Your design is live in the Atelier marketplace.'],
   ['design_request.delivered', 'New design request', 'A designer sent you a request to quote.'],
-  ['ai.completed', 'AI inspiration ready', 'Your inspiration model is ready to preview.'],
+  ['ai.completed', 'AI inspiration ready', 'Your inspiration picture is ready to view.'],
   ['render.completed', 'Export ready', 'Your render/export file is ready to download.'],
   ['visualization.completed', 'Try-on ready', 'Your visualization overlay is ready.'],
   ['message.new', 'New message', 'You have a new message'],
@@ -29,6 +29,12 @@ describe('notification e-mails are Hebrew first', () => {
     expect(firstLine).not.toMatch(LATIN_WORD);
     // The English original follows the Hebrew text (amounts and details included).
     expect(mail.body.indexOf(body)).toBeGreaterThan(mail.body.indexOf(firstLine));
+  });
+
+  it('the AI inspiration is a picture (not a 3D model)', () => {
+    const mail = notificationMail('ai.completed', 'AI inspiration ready', 'Your inspiration picture is ready to view.');
+    expect(mail.subject).toBe('תמונת ההשראה מוכנה');
+    expect(mail.body).not.toMatch(/מודל|model/i);
   });
 
   it('a new message names its sender and design', () => {

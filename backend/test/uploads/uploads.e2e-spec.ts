@@ -587,7 +587,7 @@ describe('public jeweler logo for unpublished profiles', () => {
   });
 });
 
-describe('AI model of a saved design', () => {
+describe('AI inspiration picture of a saved design', () => {
   let t: TestApp;
 
   beforeAll(async () => {
@@ -598,24 +598,18 @@ describe('AI model of a saved design', () => {
     await t.close();
   });
 
-  it('the owner gets a working signed link to the design AI model, never to someone else upload', async () => {
+  it('a generated picture saved as the inspiration image opens for its owner (no separate AI model link)', async () => {
     const owner = await registerVerified(t);
     const design = await createDraftDesign(t, owner);
-    const own = await t.app.get(UploadsService).createGeneratedLocal(owner.id, PNG_BYTES, 'image/png');
-    await t.prisma.design.update({ where: { id: design.id }, data: { parameters: { aiOutputUploadId: own.id } } });
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(64, 1)]);
+    const generated = await t.app.get(UploadsService).createGeneratedLocal(owner.id, jpeg, 'image/jpeg');
+    await t.prisma.design.update({ where: { id: design.id }, data: { parameters: { inspirationUploadId: generated.id } } });
 
     const res = await t.http.get(`${API}/designs/${design.id}`).set(owner.auth).expect(200);
-    expect(res.body.data.aiOutputUrl).toMatch(/^\/uploads\/.+\/content\?exp=/);
-    await t.http.get(`${API}${res.body.data.aiOutputUrl}`).expect(200);
-
-    const victim = await registerVerified(t);
-    const foreign = await uploadFile(t, victim, PNG_BYTES, 'image/png').expect(201);
-    await t.prisma.design.update({
-      where: { id: design.id },
-      data: { parameters: { aiOutputUploadId: foreign.body.data.id } },
-    });
-    const forged = await t.http.get(`${API}/designs/${design.id}`).set(owner.auth).expect(200);
-    expect(forged.body.data.aiOutputUrl).toBeNull();
+    expect(res.body.data.inspirationUrl).toMatch(/^\/uploads\/.+\/content\?exp=/);
+    expect(res.body.data).not.toHaveProperty('aiOutputUrl');
+    const picture = await t.http.get(`${API}${res.body.data.inspirationUrl}`).expect(200);
+    expect(picture.headers['content-type']).toMatch(/^image\/jpeg/);
   });
 });
 

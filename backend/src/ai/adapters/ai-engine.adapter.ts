@@ -1,16 +1,18 @@
 export type AiGenerateRequest = {
   prompt: string;
   itemCode: string;
-  /** The designer's inspiration picture: when present the model is made from it (image to 3D). */
+  /** The designer's inspiration picture: when present the new picture is made from it. */
   image?: { bytes: Buffer; mimeType: string };
 };
 
 export type AiGenerateResult = {
-  glb: Buffer;
+  /** The generated inspiration picture. */
+  image: Buffer;
+  mimeType: string;
   providerRef: string;
 };
 
-/** Boundary for text / image to 3D providers (Tripo). */
+/** Boundary for the image-generation provider of the inspiration step (PRD 5.4 step 7). */
 export interface AiEngineAdapter {
   /** Whether a provider is configured; without one generation is refused up front. */
   isConfigured(): boolean;

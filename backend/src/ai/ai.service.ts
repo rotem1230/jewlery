@@ -22,7 +22,6 @@ import { AI_ENGINE_ADAPTER, AiEngineAdapter } from './adapters/ai-engine.adapter
 import { CreateAiInspirationDto } from './dto/ai.dto';
 import { lockUser } from '../database/row-locks';
 
-const GLB_MIME = 'model/gltf-binary';
 const DEFAULT_DAILY_PER_USER = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Jobs stuck longer than this (e.g. the process restarted mid-generation) are failed. */
@@ -34,10 +33,11 @@ export type AiJobView = AiGenerationJob & { outputUrl: string | null };
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 /**
- * 3D generation (from the design's inspiration picture, or from the prompt) calls a paid provider
- * and can take minutes, so it is asynchronous (the request returns 202 with a QUEUED job that the
- * app polls) and bounded per user: one job in flight and a daily quota (AppConfig
- * `ai_limits.dailyPerUser`). Without a configured provider the request is refused up front.
+ * Inspiration pictures (PRD 5.4 step 7: "generate using AI"), made from the note and from the
+ * design's inspiration picture when there is one, by a paid provider. Asynchronous (the request
+ * returns 202 with a QUEUED job that the app polls) and bounded per user: one job in flight and a
+ * daily quota (AppConfig `ai_limits.dailyPerUser`). Without a configured provider the request is
+ * refused up front. The app saves a finished picture as the design's inspiration picture.
  */
 @Injectable()
 export class AiService implements OnModuleDestroy {
@@ -154,10 +154,7 @@ export class AiService implements OnModuleDestroy {
     return upload && IMAGE_TYPES.has(upload.mimeType) ? upload.id : null;
   }
 
-  /**
-   * Adapter returns a GLB we host in Uploads. Provider URLs are downloaded immediately
-   * (they expire) and never returned to the client.
-   */
+  /** The adapter returns the picture's bytes, which are stored as an upload of the requester. */
   private async process(job: AiGenerationJob, itemCode: string, ownerUserId: string, imageUploadId: string | null): Promise<void> {
     // Every transition is conditional on the state this worker expects: once the stale sweep has
     // failed a job (and the user may have started another), a late result must not revive it.
@@ -176,7 +173,7 @@ export class AiService implements OnModuleDestroy {
         if (upload && bytes) image = { bytes, mimeType: upload.mimeType };
       }
       const generated = await this.engine.generate({ prompt: job.prompt, itemCode, image });
-      const upload = await this.uploads.createGeneratedLocal(ownerUserId, generated.glb, GLB_MIME);
+      const upload = await this.uploads.createGeneratedLocal(ownerUserId, generated.image, generated.mimeType);
       const finished = await this.prisma.aiGenerationJob.updateMany({
         where: { id: job.id, status: JobStatus.RUNNING },
         data: { status: JobStatus.SUCCEEDED, outputUploadId: upload.id, finishedAt: new Date() },

@@ -231,7 +231,7 @@ export class OutboxProcessor {
       userId = job?.design.ownerUserId;
     }
     const titles: Record<string, { title: string; body: string }> = {
-      'ai.completed': { title: 'AI inspiration ready', body: 'Your inspiration model is ready to preview.' },
+      'ai.completed': { title: 'AI inspiration ready', body: 'Your inspiration picture is ready to view.' },
       'render.completed': { title: 'Export ready', body: 'Your render/export file is ready to download.' },
       'visualization.completed': { title: 'Try-on ready', body: 'Your visualization overlay is ready.' },
     };

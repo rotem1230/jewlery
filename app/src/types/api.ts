@@ -325,8 +325,6 @@ export type DesignDetail = DesignListItem & {
   jewelerNotes?: string | null
   lockedFields?: string[]
   lockedAt?: string | null
-  /** Signed link to the design's generated AI model, for the owner. */
-  aiOutputUrl?: string | null
   versions?: Array<{ id: string; versionNumber: number; status: string; createdAt: string }>
 }
 
