@@ -9,6 +9,8 @@ export type JewelryPaymentIntent = {
   quoteId: string | null
   clientSecret: string
   provider?: string
+  /** The Cardcom page the app opens (card payments). */
+  paymentUrl?: string | null
   createdAt: string
 }
 

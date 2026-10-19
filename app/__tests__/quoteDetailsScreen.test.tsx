@@ -1,6 +1,8 @@
-import { Image, Text } from 'react-native'
+import { Alert, Image, Text } from 'react-native'
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer'
+import { createJewelryPaymentIntent, getJewelryPaymentIntent } from '../src/api/jewelryPayments'
 import { getQuote } from '../src/api/quotes'
+import { ApiError } from '../src/lib/api'
 import { getFeatureFlags } from '../src/api/visualization'
 import { t } from '../src/i18n'
 import { QuoteDetailsScreen } from '../src/screens/shared/QuoteDetailsScreen'
@@ -22,7 +24,12 @@ jest.mock('@react-navigation/native', () => {
 })
 jest.mock('../src/api/quotes', () => ({ getQuote: jest.fn(), acceptQuote: jest.fn(), declineQuote: jest.fn() }))
 jest.mock('../src/api/visualization', () => ({ getFeatureFlags: jest.fn() }))
-jest.mock('../src/api/jewelryPayments', () => ({ createJewelryPaymentIntent: jest.fn() }))
+jest.mock('../src/api/jewelryPayments', () => ({ createJewelryPaymentIntent: jest.fn(), getJewelryPaymentIntent: jest.fn() }))
+// The Cardcom page is a WebView: it draws nothing here; the test drives its props.
+jest.mock('react-native-webview', () => {
+  const MockWebView = () => null
+  return { __esModule: true, default: MockWebView, WebView: MockWebView }
+})
 jest.mock('../src/store/hooks', () => ({
   useAppSelector: (select: (state: unknown) => unknown) =>
     select({ auth: { accessToken: 'token-1', user: { id: 'designer-1' } } }),
@@ -108,6 +115,79 @@ describe('an accepted quote, for the designer', () => {
     ;(getQuote as jest.Mock).mockResolvedValue({ ...ACCEPTED, notes: null })
     const tree = await open()
     expect(texts(tree)).not.toContain(t('quoteNotesTitle'))
+    await act(async () => tree.unmount())
+  })
+})
+
+describe('paying the accepted quote by card, inside the app', () => {
+  it('opens the Cardcom page, closes it on the return page and confirms the payment with the server', async () => {
+    ;(getFeatureFlags as jest.Mock).mockResolvedValue({ phase3_jewelry_pay: true })
+    ;(createJewelryPaymentIntent as jest.Mock).mockResolvedValue({
+      id: 'jp-1',
+      status: 'requires_confirmation',
+      amount: 4500,
+      currency: 'ILS',
+      paymentUrl: 'https://secure.cardcom.solutions/EA/EA5/jewelry',
+      provider: 'cardcom',
+    })
+    ;(getJewelryPaymentIntent as jest.Mock).mockResolvedValue({ id: 'jp-1', status: 'succeeded' })
+    const alerts: string[] = []
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, message) => {
+      alerts.push(String(message))
+    })
+    const tree = await open()
+    const pay = tree.root.findAll((node) => node.props.label === t('quotePayInApp') && typeof node.props.onPress === 'function')[0]
+    await act(async () => pay.props.onPress())
+    expect(createJewelryPaymentIntent).toHaveBeenCalledWith({ quoteId: 'quote-1' })
+    const page = tree.root.findAll((node) => typeof node.props.onShouldStartLoadWithRequest === 'function' && Boolean(node.props.source))[0]
+    expect(page.props.source).toEqual({ uri: 'https://secure.cardcom.solutions/EA/EA5/jewelry' })
+    await act(async () => {
+      page.props.onShouldStartLoadWithRequest({ url: 'https://api.malinovskyjewelry.com/api/v1/payments/cardcom/return?jewelry=jp-1&result=success' })
+    })
+    expect(getJewelryPaymentIntent).toHaveBeenCalledWith('jp-1')
+    expect(alerts).toContain(t('quotePaidInApp'))
+    await act(async () => tree.unmount())
+  })
+
+  it('a quote that was already paid says so (the server refuses a second payment)', async () => {
+    ;(getFeatureFlags as jest.Mock).mockResolvedValue({ phase3_jewelry_pay: true })
+    ;(createJewelryPaymentIntent as jest.Mock).mockRejectedValue(
+      new ApiError(409, '/jewelry-payments/intents', JSON.stringify({ code: 'QUOTE_ALREADY_PAID', message: 'This quote was already paid' })),
+    )
+    const alerts: string[] = []
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, message) => {
+      alerts.push(String(message))
+    })
+    const tree = await open()
+    const pay = tree.root.findAll((node) => node.props.label === t('quotePayInApp') && typeof node.props.onPress === 'function')[0]
+    await act(async () => pay.props.onPress())
+    expect(alerts).toEqual([t('quoteAlreadyPaid')])
+    await act(async () => tree.unmount())
+  })
+
+  it('closing the payment page asks the server nothing and says the payment was not completed', async () => {
+    ;(getFeatureFlags as jest.Mock).mockResolvedValue({ phase3_jewelry_pay: true })
+    ;(createJewelryPaymentIntent as jest.Mock).mockResolvedValue({
+      id: 'jp-2',
+      status: 'requires_confirmation',
+      amount: 4500,
+      currency: 'ILS',
+      paymentUrl: 'https://secure.cardcom.solutions/EA/EA5/jewelry-2',
+      provider: 'cardcom',
+    })
+    ;(getJewelryPaymentIntent as jest.Mock).mockClear()
+    const alerts: string[] = []
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, message) => {
+      alerts.push(String(message))
+    })
+    const tree = await open()
+    const pay = tree.root.findAll((node) => node.props.label === t('quotePayInApp') && typeof node.props.onPress === 'function')[0]
+    await act(async () => pay.props.onPress())
+    const sheet = tree.root.findAll((node) => typeof node.props.onRequestClose === 'function' && node.props.visible === true && node.props.presentationStyle === 'fullScreen')[0]
+    await act(async () => sheet.props.onRequestClose())
+    expect(getJewelryPaymentIntent).not.toHaveBeenCalled()
+    expect(alerts).toContain(t('paymentNotCompleted'))
+    expect(tree.root.findAll((node) => typeof node.props.onShouldStartLoadWithRequest === 'function' && Boolean(node.props.source))).toHaveLength(0)
     await act(async () => tree.unmount())
   })
 })

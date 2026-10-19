@@ -62,6 +62,14 @@ export type ProfileStackParamList = {
     gallery: Array<{ id: string; uri?: string; title?: string; uploadId?: string; persisted?: boolean }>
   }
   BusinessProfileView: undefined
+  AdminHome: undefined
+  AdminPlans: undefined
+  AdminPlanEdit: { code?: string; role?: 'DESIGNER' | 'JEWELER' }
+  AdminFinance: undefined
+  AdminUsage: undefined
+  AdminPayments: undefined
+  AdminJewelry: undefined
+  AdminReview: undefined
 }
 
 export type DesignerTabParamList = {

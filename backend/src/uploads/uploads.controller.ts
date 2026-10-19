@@ -33,6 +33,7 @@ import { PrismaService } from '../database/prisma.service';
 import { ConfirmUploadDto, CreatePresignDto } from './dto/upload.dto';
 import { sendBytes } from './send-bytes';
 import { UploadAccessService } from './upload-access.service';
+import { MediaTrafficService } from './media-traffic.service';
 import { UploadsService } from './uploads.service';
 
 type AuthedRequest = Request & { user: User };
@@ -52,6 +53,7 @@ export class UploadsController {
     private readonly prisma: PrismaService,
     private readonly limiter: RateLimiterService,
     private readonly config: ConfigService,
+    private readonly traffic: MediaTrafficService,
   ) {}
 
   @Post('presign')
@@ -141,6 +143,12 @@ export class UploadsController {
       throw notFound();
     }
 
+    // Traffic of the files' owner (for the cost reports), counted once the response is sent.
+    res.on('finish', () => {
+      if (res.statusCode === 200 || res.statusCode === 206) {
+        void this.traffic.record(upload.ownerUserId, Number(res.getHeader('Content-Length') ?? 0));
+      }
+    });
     res.setHeader('Content-Type', upload.mimeType);
     const inline = INLINE_PREFIXES.some((prefix) => upload.mimeType.startsWith(prefix));
     res.setHeader('Content-Disposition', inline ? 'inline' : `attachment; filename="${upload.id}"`);

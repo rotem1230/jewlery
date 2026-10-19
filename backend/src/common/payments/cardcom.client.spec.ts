@@ -127,6 +127,8 @@ describe('CardcomClient', () => {
       expect(calls[0].body).toEqual({ TerminalNumber: 1000, ApiName: 'api-name', LowProfileId: 'a1b2c3d4-0000-4000-8000-000000000001' });
       expect(result).toEqual({
         paid: true,
+        tokenSaved: true,
+        cardLast4: null,
         description: 'OK',
         terminalNumber: 1000,
         returnValue: page.returnValue,
@@ -207,6 +209,94 @@ describe('CardcomClient', () => {
 
       reply = () => json({ ResponseCode: 1, Description: 'Not found' });
       expect(await client().findTransaction('renewal:sub-1:1767225600:1')).toBeNull();
+    });
+  });
+
+  describe('other payment page operations', () => {
+    it('saving a new card only (CreateTokenOnly): a J2 card check, no charge and no receipt', async () => {
+      reply = () => json({ ResponseCode: 0, LowProfileId: 'a1b2c3d4-0000-4000-8000-000000000001', Url: 'https://x' });
+      await client().createPaymentPage({ ...page, operation: 'CreateTokenOnly' });
+      expect(calls[0].body.Operation).toBe('CreateTokenOnly');
+      expect(calls[0].body.Document).toBeUndefined();
+      expect(calls[0].body.AdvancedDefinition).toEqual({ MaxNumOfPayments: 1, JValidateType: 2 });
+    });
+
+    it('a one-off charge with no saved card (ChargeOnly), with its receipt', async () => {
+      reply = () => json({ ResponseCode: 0, LowProfileId: 'a1b2c3d4-0000-4000-8000-000000000001', Url: 'https://x' });
+      await client().createPaymentPage({ ...page, operation: 'ChargeOnly' });
+      expect(calls[0].body.Operation).toBe('ChargeOnly');
+      expect(calls[0].body.Document).toBeDefined();
+    });
+
+    it('a saved card from a token-only page is read (no transaction), with the last digits of a charged card', async () => {
+      reply = () =>
+        json({
+          ResponseCode: 0,
+          TerminalNumber: 1000,
+          LowProfileId: 'a1b2c3d4-0000-4000-8000-000000000001',
+          ReturnValue: 'upd-1',
+          Operation: 'CreateTokenOnly',
+          TokenInfo: { Token: 'c4c4c4c4-5555-4666-8777-888899990000', TokenExDate: '20301130', CardYear: 30, CardMonth: 11 },
+        });
+      const saved = await client().getPaymentPageResult('a1b2c3d4-0000-4000-8000-000000000001');
+      expect(saved).toMatchObject({ paid: false, tokenSaved: true, cardLast4: null });
+      expect(saved.token).toEqual({ token: 'c4c4c4c4-5555-4666-8777-888899990000', cardExpiryMMYY: '1130', expiresAt: new Date(Date.UTC(2030, 10, 30)) });
+
+      reply = () =>
+        json({
+          ResponseCode: 0,
+          TerminalNumber: 1000,
+          LowProfileId: 'a1b2c3d4-0000-4000-8000-000000000001',
+          ReturnValue: 'chk',
+          TranzactionInfo: { ResponseCode: 0, TranzactionId: 1, Amount: 45, CoinId: 1, Last4CardDigitsString: '4580' },
+        });
+      expect((await client().getPaymentPageResult('a1b2c3d4-0000-4000-8000-000000000001')).cardLast4).toBe('4580');
+    });
+
+    it('a token-only page that failed saved nothing', async () => {
+      reply = () => json({ ResponseCode: 3, Description: 'Card refused', TokenInfo: null });
+      expect(await client().getPaymentPageResult('a1b2c3d4-0000-4000-8000-000000000001')).toMatchObject({ tokenSaved: false, token: null });
+    });
+  });
+
+  describe('refunds (Transactions/RefundByTransactionId)', () => {
+    const withPassword = { 'cardcom.apiPassword': 'api-password' };
+
+    it('refunds a whole transaction with the API password, under the refund id', async () => {
+      reply = () => json({ ResponseCode: 0, NewTranzactionId: 1001 });
+      const result = await client(withPassword).refund({ transactionId: '987', externalRefundId: 'refund-1' });
+      expect(calls[0].url).toBe('https://secure.cardcom.solutions/api/v11/Transactions/RefundByTransactionId');
+      expect(calls[0].body).toEqual({
+        ApiName: 'api-name',
+        ApiPassword: 'api-password',
+        TransactionId: 987,
+        ExternalRefundDealId: 'refund-1',
+        AllowMultipleRefunds: true,
+      });
+      expect(result).toEqual({ status: 'REFUNDED', refundTransactionId: '1001', description: '' });
+    });
+
+    it('a part of it with the partial sum', async () => {
+      reply = () => json({ ResponseCode: 0, NewTranzactionId: 1002 });
+      await client(withPassword).refund({ transactionId: '987', amount: 20, externalRefundId: 'refund-2' });
+      expect(calls[0].body).toMatchObject({ PartialSum: 20 });
+    });
+
+    it('a refusal is REFUSED with its reason; without the API password there are no refunds', async () => {
+      reply = () => json({ ResponseCode: 5001, Description: 'Already refunded' });
+      expect(await client(withPassword).refund({ transactionId: '987', externalRefundId: 'r' })).toEqual({
+        status: 'REFUSED',
+        refundTransactionId: null,
+        description: 'Already refunded',
+      });
+      expect(client().canRefund()).toBe(false);
+      expect(client(withPassword).canRefund()).toBe(true);
+      await expect(client().refund({ transactionId: '987', externalRefundId: 'r' })).rejects.toThrow(CardcomRequestError);
+    });
+
+    it('an unreachable Cardcom is unavailable (the refund may or may not have happened)', async () => {
+      reply = () => Promise.reject(new TypeError('fetch failed'));
+      await expect(client(withPassword).refund({ transactionId: '987', externalRefundId: 'r' })).rejects.toThrow(CardcomUnavailableError);
     });
   });
 

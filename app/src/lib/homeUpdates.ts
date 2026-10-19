@@ -69,6 +69,7 @@ const EVENT_TITLES: Record<string, { he: string; en: string }> = {
   'ai.completed': { he: 'תמונת ההשראה מוכנה', en: 'AI inspiration ready' },
   'render.completed': { he: 'קובץ הייצוא מוכן', en: 'Export ready' },
   'visualization.completed': { he: 'ההדמיה מוכנה', en: 'Try-on ready' },
+  'jewelry_payment.received': { he: 'התקבל תשלום על הזמנה', en: 'Payment received for an order' },
 }
 
 /** The update's title in the app language; an event the app does not know keeps its stored title. */

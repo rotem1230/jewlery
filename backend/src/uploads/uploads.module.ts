@@ -5,6 +5,7 @@ import { jwtModuleOptions } from '../auth/jwt-options';
 import { CmsModule } from '../cms/cms.module';
 import { UploadAccessService } from './upload-access.service';
 import { UploadsController } from './uploads.controller';
+import { MediaTrafficService } from './media-traffic.service';
 import { UploadsService } from './uploads.service';
 
 @Module({
@@ -17,7 +18,7 @@ import { UploadsService } from './uploads.service';
     }),
   ],
   controllers: [UploadsController],
-  providers: [UploadsService, UploadAccessService],
+  providers: [UploadsService, UploadAccessService, MediaTrafficService],
   exports: [UploadsService, UploadAccessService],
 })
 export class UploadsModule {}

@@ -1,9 +1,14 @@
 import { Alert, Text } from 'react-native'
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer'
 import {
+  changePlan,
+  clearPlanChange,
+  getCardUpdate,
   getCheckout,
   getMySubscription,
+  getPaymentMethod,
   listPlans,
+  startCardUpdate,
   startCheckout,
   subscribeToPlan,
 } from '../src/api/subscriptions'
@@ -35,6 +40,11 @@ jest.mock('../src/api/subscriptions', () => ({
   cancelSubscription: jest.fn(),
   startCheckout: jest.fn(),
   getCheckout: jest.fn(),
+  getPaymentMethod: jest.fn(),
+  startCardUpdate: jest.fn(),
+  getCardUpdate: jest.fn(),
+  changePlan: jest.fn(),
+  clearPlanChange: jest.fn(),
 }))
 jest.mock('../src/store/hooks', () => ({
   useAppSelector: (select: (state: unknown) => unknown) =>
@@ -98,6 +108,7 @@ beforeEach(() => {
     alerts.push(String(message))
   })
   ;(listPlans as jest.Mock).mockResolvedValue(PLANS)
+  ;(getPaymentMethod as jest.Mock).mockResolvedValue(null)
   ;(startCheckout as jest.Mock).mockResolvedValue({
     id: 'chk-1',
     planCode: 'DESIGNER_PREMIUM_QUARTERLY',
@@ -173,5 +184,48 @@ describe('paying for a plan by card (Cardcom) inside the app', () => {
     const tree = await open()
     expect(planButtons(tree).map((button) => button.props.disabled)).toEqual([true, true])
     await act(async () => tree.unmount())
+  })
+})
+
+describe('a paid plan: its card and the next plan', () => {
+  const ANNUAL = plan({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149', billingCycle: 'ANNUAL', sortOrder: 3 })
+  const textsOf = (tree: ReactTestRenderer) => tree.root.findAllByType(Text).map((node) => [node.props.children].flat().join(''))
+  const buttonWith = (tree: ReactTestRenderer, label: string) => tree.root.findAllByType(Button).find((button) => button.props.children === label)
+
+  it('shows the card the plan renews with, and replaces it on a Cardcom page that only saves the card', async () => {
+    ;(getMySubscription as jest.Mock).mockResolvedValue({ id: 's1', status: 'ACTIVE', plan: PLANS[1] })
+    ;(getPaymentMethod as jest.Mock).mockResolvedValue({ provider: 'cardcom', cardExpiry: '03/29', cardLast4: '4580' })
+    ;(startCardUpdate as jest.Mock).mockResolvedValue({ id: 'upd-1', status: 'OPEN', paymentUrl: 'https://secure.cardcom.solutions/EA/EA5/card' })
+    ;(getCardUpdate as jest.Mock).mockResolvedValue({ id: 'upd-1', status: 'COMPLETED' })
+    const tree = await open()
+    expect(textsOf(tree).some((text) => text.includes('4580') && text.includes('03/29'))).toBe(true)
+
+    await act(async () => buttonWith(tree, t('pricingReplaceCard'))?.props.onPress())
+    expect(webView(tree).props.source).toEqual({ uri: 'https://secure.cardcom.solutions/EA/EA5/card' })
+    await act(async () => {
+      webView(tree).props.onShouldStartLoadWithRequest({ url: 'https://api.malinovskyjewelry.com/api/v1/payments/cardcom/return?card=upd-1&result=success' })
+    })
+    expect(getCardUpdate).toHaveBeenCalledWith('upd-1')
+    expect(alerts).toContain(t('pricingCardReplaced'))
+    await act(async () => tree.unmount())
+  })
+
+  it('another paid plan is chosen for the next renewal, and the choice can be withdrawn', async () => {
+    ;(listPlans as jest.Mock).mockResolvedValue([...PLANS, ANNUAL])
+    ;(getMySubscription as jest.Mock).mockResolvedValue({ id: 's1', status: 'ACTIVE', plan: PLANS[1], currentPeriodEnd: '2027-01-18T10:00:00.000Z' })
+    ;(changePlan as jest.Mock).mockResolvedValue({ id: 's1', status: 'ACTIVE', plan: PLANS[1], pendingPlan: ANNUAL })
+    const tree = await open()
+    await act(async () => buttonWith(tree, t('pricingSwitchAtRenewal'))?.props.onPress())
+    expect(changePlan).toHaveBeenCalledWith('DESIGNER_PREMIUM_ANNUAL')
+    expect(alerts.some((text) => text.startsWith(t('pricingSwitchScheduled')))).toBe(true)
+    await act(async () => tree.unmount())
+
+    ;(getMySubscription as jest.Mock).mockResolvedValue({ id: 's1', status: 'ACTIVE', plan: PLANS[1], pendingPlan: ANNUAL })
+    ;(clearPlanChange as jest.Mock).mockResolvedValue({ id: 's1', status: 'ACTIVE', plan: PLANS[1], pendingPlan: null })
+    const again = await open()
+    expect(textsOf(again).some((text) => text.includes(ANNUAL.nameHe) && text.includes(t('pricingNextPlan')))).toBe(true)
+    await act(async () => buttonWith(again, t('pricingSwitchCancel'))?.props.onPress())
+    expect(clearPlanChange).toHaveBeenCalled()
+    await act(async () => again.unmount())
   })
 })

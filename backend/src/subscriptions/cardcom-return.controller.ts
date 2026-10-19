@@ -30,12 +30,20 @@ export class CardcomReturnController {
   @ApiOperation({ summary: 'Return page after the Cardcom payment page (success / failed / cancel)' })
   async back(
     @Query('checkout') checkout: string | undefined,
+    @Query('card') card: string | undefined,
+    @Query('jewelry') jewelry: string | undefined,
     @Query('result') result: string | undefined,
     @Res() res: Response,
   ): Promise<void> {
     const succeeded = result === 'success';
     if (succeeded && typeof checkout === 'string' && GUID.test(checkout)) {
       await this.cardcom.confirmCheckout(checkout);
+    }
+    if (succeeded && typeof card === 'string' && GUID.test(card)) {
+      await this.cardcom.confirmCardUpdateQuietly(card);
+    }
+    if (succeeded && typeof jewelry === 'string' && GUID.test(jewelry)) {
+      await this.cardcom.confirmReturn('jewelry', jewelry);
     }
     res
       .status(200)

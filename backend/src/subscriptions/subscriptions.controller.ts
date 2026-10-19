@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
@@ -69,6 +69,36 @@ export class SubscriptionsController {
     }
     await this.cardcom.confirmCheckout(id);
     return this.checkout.find(req.user, id);
+  }
+
+  @Get('payment-method')
+  @ApiOperation({ summary: 'The card my paid plan renews with (expiry and last digits; never the token), or null' })
+  paymentMethod(@Req() req: AuthedRequest) {
+    return this.cardcom.paymentMethod(req.user);
+  }
+
+  @Post('payment-method/update')
+  @ApiOperation({ summary: 'Replace the card: opens a Cardcom page that only saves a new card (paymentUrl)' })
+  startCardUpdate(@Req() req: AuthedRequest) {
+    return this.cardcom.startCardUpdate(req.user);
+  }
+
+  @Get('payment-method/updates/:id')
+  @ApiOperation({ summary: 'Follow my card update (OPEN / COMPLETED / CANCELLED); an open one is confirmed with Cardcom' })
+  cardUpdate(@Param('id', ParseUUIDPipe) id: string, @Req() req: AuthedRequest) {
+    return this.cardcom.findCardUpdate(req.user, id);
+  }
+
+  @Post('change-plan')
+  @ApiOperation({ summary: 'Choose the plan my paid plan becomes at its next renewal (charged at its price then)' })
+  changePlan(@Body() dto: SubscribeDto, @Req() req: AuthedRequest) {
+    return this.subscriptions.changePlan(req.user, dto.planCode);
+  }
+
+  @Delete('change-plan')
+  @ApiOperation({ summary: 'Withdraw the plan chosen for the next renewal' })
+  clearPlanChange(@Req() req: AuthedRequest) {
+    return this.subscriptions.clearPlanChange(req.user);
   }
 
   @Post('cancel')

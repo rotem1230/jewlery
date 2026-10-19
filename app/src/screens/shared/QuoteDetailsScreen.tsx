@@ -9,7 +9,9 @@ import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { QuoteApproveSuccessModal } from '@/src/components/ui/QuoteApproveSuccessModal'
 import { acceptQuote, declineQuote, getQuote } from '@/src/api/quotes'
-import { createJewelryPaymentIntent } from '@/src/api/jewelryPayments'
+import { createJewelryPaymentIntent, getJewelryPaymentIntent } from '@/src/api/jewelryPayments'
+import { PaymentSheet } from '@/src/components/payments/PaymentSheet'
+import { jewelryCheckoutStatus, waitForCheckout, type PaymentResult } from '@/src/lib/payments'
 import { getFeatureFlags } from '@/src/api/visualization'
 import { apiErrorCode, parseApiError } from '@/src/lib/api'
 import { contentBodyText, currencySymbol, displayName, formatMoney } from '@/src/lib/format'
@@ -37,6 +39,7 @@ export function QuoteDetailsScreen() {
   const accessToken = useAppSelector((s) => s.auth.accessToken)
   const [successVisible, setSuccessVisible] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [jewelryPayment, setJewelryPayment] = useState<{ url: string; intentId: string } | null>(null)
 
   const load = useCallback(
     (signal: AbortSignal) => getQuote(route.params.quoteId, signal),
@@ -131,14 +134,46 @@ export function QuoteDetailsScreen() {
     if (!quote) return
     setBusy(true)
     try {
-      await createJewelryPaymentIntent({ quoteId: quote.id })
+      const intent = await createJewelryPaymentIntent({ quoteId: quote.id })
+      if (intent.paymentUrl) {
+        // The card payment page opens inside the app; the result is confirmed by the server.
+        setJewelryPayment({ url: intent.paymentUrl, intentId: intent.id })
+        return
+      }
       Alert.alert(t('quotePayInApp'), t('quotePayInAppDone'))
+      setBusy(false)
     } catch (err) {
-      if (apiErrorCode(err) === 'PAYMENT_PROVIDER_NOT_CONFIGURED') {
+      setBusy(false)
+      const code = apiErrorCode(err)
+      if (code === 'PAYMENT_PROVIDER_NOT_CONFIGURED' || code === 'PAYMENT_PROVIDER_UNAVAILABLE') {
         Alert.alert(t('quotePayInApp'), t('paymentsUnavailable'))
         return
       }
+      if (code === 'QUOTE_ALREADY_PAID') {
+        Alert.alert(t('quotePayInApp'), t('quoteAlreadyPaid'))
+        return
+      }
       Alert.alert(t('authErrorTitle'), parseApiError(err))
+    }
+  }
+
+  /** Back from the card payment page: the payment counts once the server has confirmed it. */
+  const onJewelryPaymentDone = async (result: PaymentResult) => {
+    const current = jewelryPayment
+    setJewelryPayment(null)
+    if (!current || result !== 'success') {
+      setBusy(false)
+      if (current) Alert.alert(t('quotePayInApp'), t('paymentNotCompleted'))
+      return
+    }
+    try {
+      const outcome = await waitForCheckout(current.intentId, {
+        get: async (id) => ({ status: jewelryCheckoutStatus((await getJewelryPaymentIntent(id)).status) }),
+      })
+      Alert.alert(
+        t('quotePayInApp'),
+        outcome === 'COMPLETED' ? t('quotePaidInApp') : outcome === 'PENDING' ? t('paymentPending') : t('paymentNotCompleted'),
+      )
     } finally {
       setBusy(false)
     }
@@ -266,6 +301,7 @@ export function QuoteDetailsScreen() {
         onCta={goToChat}
         onRequestClose={() => setSuccessVisible(false)}
       />
+      <PaymentSheet url={jewelryPayment?.url ?? null} onDone={(result) => void onJewelryPaymentDone(result)} />
     </View>
   )
 }

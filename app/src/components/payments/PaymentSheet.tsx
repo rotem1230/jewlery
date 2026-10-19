@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native'
 import WebView from 'react-native-webview'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -13,21 +14,32 @@ import { useTranslation } from '@/src/i18n'
 export function PaymentSheet({ url, onDone }: { url: string | null; onDone: (result: PaymentResult) => void }) {
   const { t } = useTranslation()
   const insets = useSafeAreaInsets()
+  // Android may report the return page twice (both callbacks below); one page is reported once.
+  const reported = useRef(false)
+  useEffect(() => {
+    reported.current = false
+  }, [url])
+
+  const finish = (result: PaymentResult) => {
+    if (reported.current) return
+    reported.current = true
+    onDone(result)
+  }
 
   const intercept = (target: string): boolean => {
     const result = paymentReturn(target)
     if (result) {
-      onDone(result)
+      finish(result)
       return false
     }
     return true
   }
 
   return (
-    <Modal visible={Boolean(url)} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => onDone('cancel')}>
+    <Modal visible={Boolean(url)} animationType="slide" presentationStyle="fullScreen" onRequestClose={() => finish('cancel')}>
       <View style={[styles.root, { paddingTop: insets.top }]}>
         <View style={styles.header}>
-          <Pressable accessibilityRole="button" accessibilityLabel={t('cancel')} hitSlop={12} onPress={() => onDone('cancel')}>
+          <Pressable accessibilityRole="button" accessibilityLabel={t('cancel')} hitSlop={12} onPress={() => finish('cancel')}>
             <X size={24} color={colors.ink} strokeWidth={1.5} />
           </Pressable>
           <Text style={styles.title}>{t('paymentSheetTitle')}</Text>

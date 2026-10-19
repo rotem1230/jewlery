@@ -1,5 +1,5 @@
 import { ApiError } from '../src/lib/api'
-import { checkoutErrorMessage, paymentReturn, paymentUnavailableMessage, planAction, waitForCheckout } from '../src/lib/payments'
+import { checkoutErrorMessage, jewelryCheckoutStatus, paymentReturn, paymentUnavailableMessage, planAction, waitForCheckout } from '../src/lib/payments'
 
 describe('the Cardcom return page', () => {
   const back = 'https://api.malinovskyjewelry.com/api/v1/payments/cardcom/return?checkout=6f0b5c1e-1111-4222-8333-444455556666'
@@ -69,10 +69,30 @@ describe('what a plan card offers', () => {
     expect(planAction(free, onFree)).toBe('current')
   })
 
-  it('on a paid plan: nothing (cancel first), its own card says current', () => {
+  it('on a paid plan: another paid plan is switched to at the next renewal; the free plan is not offered', () => {
     const paying = { status: 'ACTIVE', plan: { code: 'DESIGNER_PREMIUM_QUARTERLY', price: '45' } }
     expect(planAction(paid, paying)).toBe('current')
-    expect(planAction({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149' }, paying)).toBe('none')
+    expect(planAction({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149' }, paying)).toBe('switch')
+    expect(planAction(free, paying)).toBe('none')
+  })
+
+  it('the plan chosen for the next renewal can be withdrawn; a plan on its way out switches nothing', () => {
+    const switching = { status: 'ACTIVE', plan: { code: 'DESIGNER_PREMIUM_QUARTERLY', price: '45' }, pendingPlan: { code: 'DESIGNER_PREMIUM_ANNUAL', price: '149' } }
+    expect(planAction({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149' }, switching)).toBe('scheduled')
+    const leaving = { status: 'ACTIVE', cancelAtPeriodEnd: true, plan: { code: 'DESIGNER_PREMIUM_QUARTERLY', price: '45' } }
+    expect(planAction({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149' }, leaving)).toBe('none')
+    const late = { status: 'PAST_DUE', plan: { code: 'DESIGNER_PREMIUM_QUARTERLY', price: '45' } }
+    expect(planAction({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149' }, late)).toBe('none')
+  })
+})
+
+describe('a jewelry payment, followed until the server confirms it', () => {
+  it('maps its status to the wait', () => {
+    expect(jewelryCheckoutStatus('succeeded')).toBe('COMPLETED')
+    expect(jewelryCheckoutStatus('requires_confirmation')).toBe('OPEN')
+    expect(jewelryCheckoutStatus('cancelled')).toBe('CANCELLED')
+    expect(jewelryCheckoutStatus('failed')).toBe('CANCELLED')
+    expect(jewelryCheckoutStatus('refunded')).toBe('CANCELLED')
   })
 })
 

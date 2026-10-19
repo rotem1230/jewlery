@@ -128,12 +128,13 @@ export class PaymentWebhookService {
    * Records a payment event and applies its effect in one transaction keyed by (provider,
    * providerEventId): applied exactly once however often it arrives. For events whose truth was
    * already established — a signed webhook, or a result read from the provider itself (Cardcom).
-   * `afterApply` runs in the same transaction (e.g. keeping the card a checkout saved), so a failure
-   * there leaves nothing applied and the event is kept for review.
+   * `hooks` run in the same transaction: `before` the effect (e.g. moving a renewal to the plan chosen
+   * for it), `after` it with its outcome (e.g. keeping the card a checkout saved). A failure there
+   * leaves nothing applied and the event is kept for review.
    */
   async record(
     dto: PaymentWebhookDto,
-    afterApply?: (tx: Tx, applied: AppliedEvent) => Promise<void>,
+    hooks: { before?: (tx: Tx) => Promise<void>; after?: (tx: Tx, applied: AppliedEvent) => Promise<void> } = {},
   ): Promise<PaymentEvent> {
     let event: PaymentEvent;
     try {
@@ -143,9 +144,12 @@ export class PaymentWebhookService {
           const created = await tx.paymentEvent.create({
             data: { ...this.eventFields(dto), outcome: 'NEEDS_REVIEW', note: 'Being applied' },
           });
+          if (hooks.before) {
+            await hooks.before(tx);
+          }
           const applied = await this.collapseRepeatedReview(tx, created.id, dto, await this.apply(tx, dto));
-          if (afterApply) {
-            await afterApply(tx, applied);
+          if (hooks.after) {
+            await hooks.after(tx, applied);
           }
           return tx.paymentEvent.update({
             where: { id: created.id },
@@ -444,6 +448,7 @@ export class PaymentWebhookService {
     await tx.subscriptionInvoice.create({
       data: {
         subscriptionId,
+        provider: dto.provider,
         providerInvoiceId: dto.invoiceId,
         amount: new Prisma.Decimal(dto.amount as number),
         currency: (dto.currency as string).toUpperCase(),

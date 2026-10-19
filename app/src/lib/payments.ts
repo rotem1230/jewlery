@@ -54,16 +54,17 @@ export async function waitForCheckout(
 }
 
 type PlanLike = { code: string; price: string | number }
-type SubscriptionLike = { status: string; plan?: PlanLike | null } | null | undefined
+type SubscriptionLike = { status: string; plan?: PlanLike | null; pendingPlan?: PlanLike | null; cancelAtPeriodEnd?: boolean } | null | undefined
 
 const LIVE = ['TRIALING', 'ACTIVE', 'PAST_DUE']
 
 /**
  * What a plan card offers: `choose` (no plan yet: a trial or the free plan, payment when needed),
- * `pay` (from a trial or a free plan to a paid plan), `current`, or `none` (a paid plan is live:
- * cancel it first).
+ * `pay` (from a trial or a free plan to a paid plan), `current`, `switch` (from a paid plan to another
+ * paid plan, at the next renewal), `scheduled` (the plan chosen for the next renewal: can be
+ * withdrawn) or `none`.
  */
-export function planAction(plan: PlanLike, subscription: SubscriptionLike): 'choose' | 'pay' | 'current' | 'none' {
+export function planAction(plan: PlanLike, subscription: SubscriptionLike): 'choose' | 'pay' | 'current' | 'switch' | 'scheduled' | 'none' {
   const live = subscription && LIVE.includes(subscription.status) ? subscription : null
   if (!live) return 'choose'
   const paidPlan = Number(plan.price) > 0
@@ -71,7 +72,16 @@ export function planAction(plan: PlanLike, subscription: SubscriptionLike): 'cho
   const onFree = !onTrial && Number(live.plan?.price ?? 0) === 0
   if (live.plan?.code === plan.code && !onTrial) return 'current'
   if ((onTrial || onFree) && paidPlan) return 'pay'
+  if (live.pendingPlan?.code === plan.code) return 'scheduled'
+  if (live.status === 'ACTIVE' && !live.cancelAtPeriodEnd && paidPlan) return 'switch'
   return 'none'
+}
+
+/** A jewelry payment's status, as the wait for the server's confirmation reads it. */
+export function jewelryCheckoutStatus(status: string): 'COMPLETED' | 'CANCELLED' | 'OPEN' {
+  if (status === 'succeeded') return 'COMPLETED'
+  if (status === 'cancelled' || status === 'failed' || status === 'refunded') return 'CANCELLED'
+  return 'OPEN'
 }
 
 /** Payment cannot be taken right now (the provider is unreachable or not set up). */

@@ -50,6 +50,10 @@ const EVENT_COPY: Record<string, (payload: unknown) => MailCopy> = {
     body: 'מעצב/ת שלח/ה לך בקשה להצעת מחיר על עיצוב.',
   }),
   'ai.completed': () => ({ subject: 'תמונת ההשראה מוכנה', body: 'תמונת ההשראה שלך מוכנה לצפייה.' }),
+  'jewelry_payment.received': () => ({
+    subject: 'התקבל תשלום על הזמנה',
+    body: 'המעצב/ת שילם/ה באפליקציה על הצעת המחיר שלך. הסכום יועבר אליך לאחר העיבוד.',
+  }),
   'render.completed': () => ({ subject: 'קובץ הייצוא מוכן', body: 'קובץ הייצוא שלך מוכן להורדה.' }),
   'visualization.completed': () => ({ subject: 'ההדמיה מוכנה', body: 'ההדמיה שלך מוכנה לצפייה.' }),
 };

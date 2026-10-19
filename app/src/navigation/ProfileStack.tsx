@@ -6,6 +6,14 @@ import { PricingScreen } from '../screens/designer/PricingScreen'
 import { BusinessProfileFormScreen } from '../screens/shared/BusinessProfileFormScreen'
 import { BusinessProfilePreviewScreen } from '../screens/shared/BusinessProfilePreviewScreen'
 import { BusinessProfileViewScreen } from '../screens/shared/BusinessProfileViewScreen'
+import { AdminFinanceScreen } from '../screens/admin/AdminFinanceScreen'
+import { AdminHomeScreen } from '../screens/admin/AdminHomeScreen'
+import { AdminJewelryScreen } from '../screens/admin/AdminJewelryScreen'
+import { AdminPaymentsScreen } from '../screens/admin/AdminPaymentsScreen'
+import { AdminPlanEditScreen } from '../screens/admin/AdminPlanEditScreen'
+import { AdminPlansScreen } from '../screens/admin/AdminPlansScreen'
+import { AdminReviewScreen } from '../screens/admin/AdminReviewScreen'
+import { AdminUsageScreen } from '../screens/admin/AdminUsageScreen'
 import { useAppSelector } from '../store/hooks'
 import type { ProfileStackParamList } from './types'
 
@@ -30,6 +38,14 @@ export function ProfileStack() {
       />
       <Stack.Screen name="BusinessProfilePreview" component={BusinessProfilePreviewScreen} />
       <Stack.Screen name="BusinessProfileView" component={BusinessProfileViewScreen} />
+      <Stack.Screen name="AdminHome" component={AdminHomeScreen} />
+      <Stack.Screen name="AdminPlans" component={AdminPlansScreen} />
+      <Stack.Screen name="AdminPlanEdit" component={AdminPlanEditScreen} />
+      <Stack.Screen name="AdminFinance" component={AdminFinanceScreen} />
+      <Stack.Screen name="AdminUsage" component={AdminUsageScreen} />
+      <Stack.Screen name="AdminPayments" component={AdminPaymentsScreen} />
+      <Stack.Screen name="AdminJewelry" component={AdminJewelryScreen} />
+      <Stack.Screen name="AdminReview" component={AdminReviewScreen} />
     </Stack.Navigator>
   )
 }

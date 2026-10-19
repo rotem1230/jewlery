@@ -63,6 +63,13 @@ describe('profile menu', () => {
     expect(profileMenuItems('JEWELER').map((item) => item.route)).toContain('Pricing')
     expect(profileMenuItems('DESIGNER').map((item) => item.route)).toContain('Pricing')
   })
+
+  it('only an admin sees the admin entry', () => {
+    expect(profileMenuItems('DESIGNER', ['DESIGNER', 'ADMIN']).map((item) => item.route)).toContain('AdminHome')
+    expect(profileMenuItems('JEWELER', ['JEWELER', 'ADMIN']).map((item) => item.route)).toContain('AdminHome')
+    expect(profileMenuItems('DESIGNER', ['DESIGNER']).map((item) => item.route)).not.toContain('AdminHome')
+    expect(profileMenuItems('DESIGNER').map((item) => item.route)).not.toContain('AdminHome')
+  })
 })
 
 describe('adding a role to the signed-in account', () => {

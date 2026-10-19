@@ -39,6 +39,7 @@ import { RedisModule } from './redis/redis.module';
 import { RenderJobsModule } from './render-jobs/render-jobs.module';
 import { ReviewsModule } from './reviews/reviews.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { ReportsModule } from './reports/reports.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { UsersModule } from './users/users.module';
 import { VisualizationModule } from './visualization/visualization.module';
@@ -109,6 +110,7 @@ import { WizardModule } from './wizard/wizard.module';
     PromotionsModule,
     VisualizationModule,
     JewelryPaymentsModule,
+    ReportsModule,
     AtelierModule,
     AdminModule,
     JobsModule,

@@ -37,7 +37,7 @@ export function ProfileScreen() {
   const dispatch = useAppDispatch()
 
   const isJeweler = user?.activeRole === 'JEWELER'
-  const menuItems = profileMenuItems(user?.activeRole)
+  const menuItems = profileMenuItems(user?.activeRole, user?.roles)
   const isDemo = user?.id === 'demo'
   const displayName = isDemo
     ? t(isJeweler ? 'profileDemoNameJeweler' : 'profileDemoName')

@@ -11,6 +11,7 @@ import { PaymentWebhookDto, SubscribeDto } from './dto/subscription.dto';
 import { describeMoney, isExactPayment } from './money';
 import type { AppliedEvent } from './payment-webhook.service';
 import { SubscriptionsService } from './subscriptions.service';
+import { cardcomUrls } from './cardcom-urls';
 import { paymentProviderUnavailable } from './payment-provider-errors';
 
 type Tx = Prisma.TransactionClient;
@@ -123,18 +124,13 @@ export class CheckoutService {
    * result, the receipt to the buyer. When Cardcom cannot open it, the checkout is withdrawn.
    */
   private async openCardcomPage(session: CheckoutSession, plan: PlanCatalog, user: User): Promise<CheckoutSession> {
-    const base = `${this.config.get<string>('apiPublicUrl')}/${this.config.get<string>('apiPrefix') ?? 'api/v1'}`;
-    const back = (result: string) => `${base}/payments/cardcom/return?checkout=${session.id}&result=${result}`;
     let page;
     try {
       page = await this.cardcom.createPaymentPage({
         amount: Number(session.amount),
         currency: session.currency,
         returnValue: session.id,
-        successUrl: back('success'),
-        failedUrl: back('failed'),
-        cancelUrl: back('cancel'),
-        webhookUrl: `${base}/webhooks/cardcom`,
+        ...cardcomUrls(this.config, 'checkout', session.id),
         productName: plan.nameHe,
         customer: { name: [user.firstName, user.lastName].filter(Boolean).join(' '), email: user.email },
       });
@@ -256,6 +252,7 @@ export class CheckoutService {
     await tx.subscriptionInvoice.create({
       data: {
         subscriptionId: subscription.id,
+        provider: dto.provider,
         providerInvoiceId: dto.invoiceId,
         amount: session.amount,
         currency: session.currency,

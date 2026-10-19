@@ -68,6 +68,12 @@ describe('update titles by event (titles are stored in English)', () => {
     expect(title('quote.accepted')).toBe('הצעת המחיר אושרה')
   })
 
+  it('a jeweler paid in the app gets a Hebrew title (the server stores an English one)', () => {
+    const paid = { eventKey: 'jewelry_payment.received', title: 'Payment received for an order', payload: { quoteId: 'q1' } }
+    expect(notificationTitle(paid, 'he')).toBe('התקבל תשלום על הזמנה')
+    expect(notificationTitle(paid, 'en')).toBe('Payment received for an order')
+  })
+
   it('an unknown event falls back to the stored title', () => {
     expect(notificationTitle({ eventKey: 'something.new', title: 'Stored title', payload: null }, 'he')).toBe('Stored title')
   })

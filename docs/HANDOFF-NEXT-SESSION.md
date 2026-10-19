@@ -1,6 +1,6 @@
 # Handoff לסשן הבא — Malinvosky (צילה תכשיטים)
 
-נכתב: 2026-10-15, עודכן 2026-10-17 (QA חי מקצה לקצה ותיקונים לפרודקשן). המסמך הזה הוא נקודת הפתיחה לסשן הבא. ההיסטוריה המלאה של סבבי ההקשחה (1–5) נמצאת ב-`docs/HANDOFF.md`, ומעקב הפערים מול ה-PRD ב-`docs/prd-gap-audit.md`.
+נכתב: 2026-10-15, עודכן 2026-10-17 (QA חי מקצה לקצה ותיקונים לפרודקשן), 2026-10-19/20 (מסלולים, סליקת Cardcom, החזרים, ניהול ודוחות). המסמך הזה הוא נקודת הפתיחה לסשן הבא. ההיסטוריה המלאה של סבבי ההקשחה (1–5) נמצאת ב-`docs/HANDOFF.md`, ומעקב הפערים מול ה-PRD ב-`docs/prd-gap-audit.md`.
 
 > **אין במסמך הזה סיסמאות או מפתחות.** איפה כל סוד יושב — בסעיף 9.
 
@@ -166,6 +166,8 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
    - **תוקן באמולטור:** שכבת התכשיט בהדמיה לא הוצגה (תמונה ב-Android לא שולחת headers — נטענת עכשיו עם ה-session), והעלאת התמונה הראשונה אחרי הפסקה נכשלה (Node סוגר חיבורים אחרי 5 שניות — עכשיו 65).
 
 ### מצב טסטים אחרון
+- **אפליקציה (20.10):** 61 קבצים, **342/342**, tsc 0, lint 0 שגיאות.
+- **שרת (20.10):** 70 קבצים, **773/773** בריצה מלאה (כולל `test/migrations`, Cardcom מול `test/utils/fake-cardcom.ts`).
 - **אפליקציה (17.10):** 55 קבצים, **293/293**, tsc 0, lint 0 שגיאות (84 אזהרות).
 - **שרת (17.10):** 63 קבצים, **653/653** בריצה מלאה (כולל `test/migrations`).
 
@@ -199,7 +201,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 - מכסת AI: הרשאה `ai_renders` (ה-`limitValue` הוא המכסה לתקופת החיוב). בלי מסלול שקובע — מכסת `DESIGNER_FREE` על 30 הימים האחרונים. יצירה שנכשלה לא נספרת. המגבלה היומית (`ai_limits.dailyPerUser`, 10) נשארת בנוסף. קוד שגיאה `AI_PLAN_QUOTA_EXCEEDED`.
 - **עלות AI אמיתית:** `gemini-3.1-flash-image` ב-1K = $0.067 לתמונה (≈0.25 ₪), פי 10 מההנחה בטבלה (0.7 סנט). בשנתי 600 יצירות ≈ 149 ₪ — כל המחיר. נמסר למשתמש.
 - רבעון = 91 ימים (`billingCyclePeriodMs`).
-- **אין עדיין:** עריכת מסלולים מממשק הניהול, דוח הכנסות/הוצאות, מדידת אחסון למשתמש — סעיף 3 בטבלה של הלקוחה.
+- סעיף 3 בטבלה של הלקוחה (ניהול מסלולים, דוחות, עלויות, שימוש הוגן) — מומש, ראו "החזרים, כרטיס, מעבר מסלול, תכשיטים, ניהול ודוחות" למטה.
 
 ### סליקה — Cardcom (19.10, בקוד; מחכה לפרטי המסוף)
 המשתמש התחבר ל-Cardcom וביקש סליקה בתוך האפליקציה (הוסבר לו הסיכון ב-App Store למינויים דיגיטליים; בחר בתוך האפליקציה). התיעוד נלקח מה-OpenAPI הרשמי: `https://secure.cardcom.solutions/swagger/v11/swagger.json` (עותק מקומי ב-`E:/claude-work/malinvosky/cardcom-docs/`).
@@ -208,13 +210,31 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 - **אישור:** ההתראה של Cardcom (`POST /webhooks/cardcom`) **לא חתומה** — לוקחים ממנה רק `LowProfileId` ומאמתים מול Cardcom (`LowProfile/GetLpResult`). רק עסקה שאושרה, בסכום ובמטבע של ה-checkout, ובמסוף שלנו — מפעילה את המסלול (דרך `PaymentWebhookService.record`, פעם אחת בלבד). אחרת: נשמר לבדיקה (`NEEDS_REVIEW`). גם דף החזרה (`GET /payments/cardcom/return`) ו-`GET /subscriptions/checkout/:id` מאמתים מול Cardcom — המסלול מתחיל גם אם ההתראה מתעכבת.
 - **הכרטיס:** הטוקן נשמר בטבלה נפרדת `payment_methods` (לא חלק מתשובות ה-API, לא בלוגים, לא ב-payload של האירועים).
 - **חידושים:** ב-sweep של מחזור החיים — 12 שעות לפני סוף התקופה, חיוב הטוקן (`Transactions/Transaction`) עם `ExternalUniqTranId=renewal:<sub>:<סוף תקופה>:<ניסיון>`; לפני כל חיוב בודקים אם ניסיון קודם כבר עבר (`GetTransactionByExternalUniqTran`) — אין חיוב כפול גם כשתשובה אבדה. סירוב → past due, ניסיון חוזר פעם ביום עד סוף תקופת החסד (7 ימים). מנוי שבוטל — לא מחויב.
-- **תשלומי תכשיטים (`jewelry-payments`)** — אין להם מימוש Cardcom: נשארים סגורים גם כש-`PAYMENTS_PROVIDER=cardcom`.
 - **להפעלה בפרודקשן:** (1) מיגרציה `20261019180000_cardcom_payments` למסד **לפני** פריסת הקוד (עמודות חדשות שהקוד קורא); (2) ב-Render: `PAYMENTS_PROVIDER=cardcom`, `CARDCOM_TERMINAL_NUMBER`, `CARDCOM_API_NAME` (ו-`CARDCOM_DOCUMENTS=false` אם אין מודול מסמכים); (3) בדיקה אמיתית: רכישה בסכום קטן ← הפעלה ← החזר מממשק Cardcom.
-- **עוד לא:** החזרים (`RefundByTransactionId`, דורש `ApiPassword`) מתוך המערכת, החלפת כרטיס, תשלומי תכשיטים דרך Cardcom.
+
+### החזרים, כרטיס, מעבר מסלול, תכשיטים, ניהול ודוחות (19–20.10)
+המשתמש ביקש להשלים הכול מקצה לקצה עם TDD, ובחר: כסף התכשיטים נכנס **לחשבון הפלטפורמה** ומועבר לצורף **ידנית**; ניהול = **מסכים בתוך האפליקציה** (תפקיד `ADMIN`); מעבר בין מסלולים בתשלום — **בסוף התקופה הנוכחית**.
+
+- **מיגרציה:** `20261020100000_payments_admin_reports` — `payment_refunds`, `payment_method_updates`, `jeweler_payouts`, `media_traffic_daily`, `usage_alerts`, ועמודות: `subscriptions.pendingPlanId`, `payment_methods.cardLast4`, `subscription_invoices.provider`, `ai_generation_jobs.costIls`, ובתשלומי תכשיטים `paymentUrl`/`transactionId`/`paidAt` + סטטוס `REFUNDED`. **להריץ על המסד לפני פריסת הקוד.**
+- **החזרים** (`RefundsService`, `Transactions/RefundByTransactionId`): `POST /admin/payments/invoices/:id/refunds` (מלא או חלקי, סיבה חובה, `requestId` — לחיצה כפולה = אותו החזר; `endSubscription` מסיים את המנוי). שורת `PENDING` נשמרת תחת נעילה לפני הפנייה ל-Cardcom, כך שסכום ההחזרים לא עובר את הסכום ששולם. תשובה שאבדה = `UNKNOWN` → נבדק ידנית בממשק Cardcom ונסגר ב-`POST /admin/refunds/:id/resolve`. תור לבדיקה: `GET /admin/payments/review`. **דורש `CARDCOM_API_PASSWORD`** — בלעדיו `REFUNDS_NOT_CONFIGURED` (תשלומים וחידושים ממשיכים לעבוד).
+- **החלפת כרטיס:** `POST /subscriptions/payment-method/update` פותח דף Cardcom ששומר כרטיס בלבד (`CreateTokenOnly`, J2 — בלי חיוב); `GET /subscriptions/payment-method` מחזיר 4 ספרות + תוקף (לא את הטוקן). אחרי אישור — הטוקן הישן נמחק, ומנוי שתקופתו כבר נגמרה (past due) מחויב מיד בכרטיס החדש. מחיקת חשבון מוחקת את הטוקנים.
+- **מעבר מסלול:** `POST/DELETE /subscriptions/change-plan` — המסלול נרשם כ-`pendingPlan` ומתחלף **באותה טרנזקציה של חיוב החידוש** (סירוב = נשאר המסלול הישן). ביטול מנוי מבטל גם את המעבר.
+- **תשלומי תכשיטים דרך Cardcom** (דגל `phase3_jewelry_pay`): המעצב משלם הצעה שאושרה בדף Cardcom בתוך האפליקציה (`ChargeOnly`); אישור כמו במסלולים (`GetLpResult`, פעם אחת). נוצר `JewelerPayout` (ברוטו, עמלה לפי `JEWELRY_COMMISSION_PERCENT`, נטו) והצורף מקבל התראה ומייל. הצעה ששולמה — `QUOTE_ALREADY_PAID`. ניהול: `GET /admin/jewelry-payments`, החזר `POST /admin/jewelry-payments/:id/refunds` (מקטין/מבטל את התשלום לצורף), `GET /admin/jewelry-payouts`, `POST /admin/jewelry-payouts/:id/mark-paid` (אחרי העברה ידנית, עם אסמכתה).
+- **ניהול מסלולים:** `GET/POST /admin/plans`, `PATCH /admin/plans/:code`, `GET /admin/plans/features` — מחיר, מחזור, ניסיון, הרשאות ומכסות. מחיר חדש חל על מנויים חדשים (ועל מעבר מסלול); מנויים קיימים שומרים את המחיר שהסכימו לו. מכסות והרשאות חלות מיד.
+- **דוחות:** `GET /admin/reports/usage` (לכל משתמש: יצירות AI ועלותן, אחסון, תעבורה, הכנסה, התראות) ו-`GET /admin/reports/finance` (לכל מסלול: הכנסות, החזרים, עלויות, עמלת סליקה, רווח). סכומים מחושבים באגורות. עלויות לפי `AI_IMAGE_COST_USD`, `USD_TO_ILS`, `STORAGE_COST_ILS_PER_GB_MONTH`, `TRAFFIC_COST_ILS_PER_GB`, `CARD_FEE_PERCENT` (ברירות מחדל ב-`.env.example`). תעבורה נמדדת בהורדת קבצים (`media_traffic_daily`).
+- **שימוש הוגן:** התראות `AI_QUOTA_80`, `AI_QUOTA_REACHED`, `AI_DAILY_LIMIT` — פעם אחת לתקופה (`usage_alerts`), מוצגות בדוח השימוש.
+- **אפליקציה:** בפרופיל של משתמש `ADMIN` — "ניהול": מסלולים (עריכה/הוספה), כספים, שימוש, תשלומים והחזרים, תכשיטים ותשלומים לצורפים, בדיקה ידנית. במסך המסלולים: הכרטיס השמור + "החלפת כרטיס", ומעבר למסלול אחר בחידוש הבא (וביטולו). במסך הצעת המחיר: תשלום בכרטיס בדף Cardcom, ואישור מול השרת לפני הודעת הצלחה.
+- **טסטים:** `test/billing/refunds-cards-plan-change.e2e-spec.ts`, `test/billing/jewelry-cardcom.e2e-spec.ts`, `test/admin/admin-plans-reports.e2e-spec.ts` (מול `test/utils/fake-cardcom.ts`); באפליקציה `adminLib`, `adminScreens`, `pricingPayment`, `quoteDetailsScreen`, `paymentSheet`.
 
 ---
 
 ## 7. מה פתוח — לפי סדר עדיפות
+
+**קודם כול (20.10) — להפעלת הסליקה:**
+- **פרטי Cardcom ב-Render** (המשתמש מביא): `PAYMENTS_PROVIDER=cardcom`, `CARDCOM_TERMINAL_NUMBER`, `CARDCOM_API_NAME`, `CARDCOM_API_PASSWORD` (להחזרים), `CARDCOM_DOCUMENTS=false` אם אין מודול מסמכים, `JEWELRY_COMMISSION_PERCENT`. ואז בדיקה אמיתית בסכום קטן: מסלול ← חידוש ← החלפת כרטיס ← החזר מתוך האפליקציה; תשלום הצעת תכשיט ← סימון העברה לצורף.
+- **משתמש ADMIN** — לשאול את המשתמש איזה מייל מקבל את התפקיד.
+- **הדגל `phase3_jewelry_pay`** — להדליק כשרוצים תשלומי תכשיטים באפליקציה.
+- **בנייה חדשה של האפליקציה** (מסכי הניהול, החלפת כרטיס, תשלום תכשיטים) — עולה כסף ב-EAS, רק באישור.
 
 **קודם כול (17.10):**
 - **לשחרר את האפליקציה:** בנייה חדשה ל-Android (APK) ול-iOS (TestFlight) — עולה כסף ב-EAS, רק באישור המשתמש. אחר כך לעבור על הסטודיו, הייצוא וההדמיה על מכשיר אמיתי מול השרת בפרודקשן.

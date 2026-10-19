@@ -106,11 +106,25 @@ export const configuration = () => {
       /** HMAC secret shared with the payment provider for webhook signatures. */
       webhookSecret: process.env.PAYMENT_WEBHOOK_SECRET ?? '',
       webhookToleranceSeconds: int(process.env.PAYMENT_WEBHOOK_TOLERANCE_SECONDS, 300),
+      /** The platform's share of a jewelry payment, in percent (the rest is owed to the jeweler). */
+      jewelryCommissionPercent: Number(process.env.JEWELRY_COMMISSION_PERCENT ?? 0) || 0,
+    },
+    costs: {
+      /** The AI image provider's price per picture (USD) and the exchange rate (for costs in ILS). */
+      aiImageUsd: Number(process.env.AI_IMAGE_COST_USD ?? 0.067) || 0,
+      usdToIls: Number(process.env.USD_TO_ILS ?? 3.7) || 0,
+      /** Storage and traffic prices (ILS), for the cost reports. */
+      storageIlsPerGbMonth: Number(process.env.STORAGE_COST_ILS_PER_GB_MONTH ?? 1.1) || 0,
+      trafficIlsPerGb: Number(process.env.TRAFFIC_COST_ILS_PER_GB ?? 0.37) || 0,
+      /** The card processor's fee, in percent of each payment. */
+      cardFeePercent: Number(process.env.CARD_FEE_PERCENT ?? 0) || 0,
     },
     cardcom: {
       /** Cardcom terminal ("מסוף") and API name: they authenticate every call. */
       terminalNumber: process.env.CARDCOM_TERMINAL_NUMBER ? int(process.env.CARDCOM_TERMINAL_NUMBER, 0) : undefined,
       apiName: process.env.CARDCOM_API_NAME ?? '',
+      /** Needed only for refunds (Cardcom asks for it on every refund). */
+      apiPassword: process.env.CARDCOM_API_PASSWORD ?? '',
       baseUrl: process.env.CARDCOM_BASE_URL || 'https://secure.cardcom.solutions',
       /** Tax documents (invoice / receipt) with each charge; "false" when the terminal has no documents module. */
       documents: process.env.CARDCOM_DOCUMENTS !== 'false',

@@ -11,6 +11,11 @@ const COIN_IDS: Record<string, number> = { ILS: 1, USD: 2 };
 /** Document fields Cardcom limits to 50 characters. */
 const DOCUMENT_FIELD_MAX = 50;
 const PRODUCT_DESCRIPTION_MAX = 250;
+/** Cardcom's JValidateType 2 (J2): a simple card check, nothing charged or held. */
+const J2_CARD_CHECK = 2;
+
+/** What a payment page does: charge and keep the card, charge once, or only keep the card. */
+export type CardcomPageOperation = 'ChargeAndCreateToken' | 'ChargeOnly' | 'CreateTokenOnly';
 
 export type CardcomCustomer = { name: string; email?: string | null };
 
@@ -21,6 +26,10 @@ export type CardcomToken = { token: string; cardExpiryMMYY: string; expiresAt: D
 export type CardcomPageResult = {
   /** The card was charged: the deal and its transaction both succeeded. */
   paid: boolean;
+  /** A card was saved (the deal succeeded and returned a token): what a token-only page is for. */
+  tokenSaved: boolean;
+  /** The last four digits of the charged card, when Cardcom reports them. */
+  cardLast4: string | null;
   description: string;
   terminalNumber: number | null;
   /** What was sent as ReturnValue (the checkout id). */
@@ -30,6 +39,12 @@ export type CardcomPageResult = {
   /** Null for a coin this platform does not know. */
   currency: string | null;
   token: CardcomToken | null;
+};
+
+export type CardcomRefund = {
+  status: 'REFUNDED' | 'REFUSED';
+  refundTransactionId: string | null;
+  description: string;
 };
 
 export type CardcomCharge = {
@@ -96,8 +111,18 @@ export class CardcomClient {
     return typeof terminal === 'number' && terminal > 0 && Boolean(this.config.get<string>('cardcom.apiName'));
   }
 
-  /** A payment page that charges the amount and keeps a token for the renewals (ChargeAndCreateToken). */
+  /** Refunds need the API password as well (Cardcom asks for it on every refund). */
+  canRefund(): boolean {
+    return Boolean(this.config.get<string>('cardcom.apiName') && this.config.get<string>('cardcom.apiPassword'));
+  }
+
+  /**
+   * A payment page: by default it charges the amount and keeps a token for the renewals
+   * (ChargeAndCreateToken); ChargeOnly charges once; CreateTokenOnly only keeps a new card (a J2
+   * card check, nothing charged, no receipt).
+   */
   async createPaymentPage(input: {
+    operation?: CardcomPageOperation;
     amount: number;
     currency: string;
     returnValue: string;
@@ -108,9 +133,10 @@ export class CardcomClient {
     productName: string;
     customer: CardcomCustomer;
   }): Promise<CardcomPaymentPage> {
+    const operation = input.operation ?? 'ChargeAndCreateToken';
     const body: Json = {
       ...this.auth(),
-      Operation: 'ChargeAndCreateToken',
+      Operation: operation,
       ReturnValue: input.returnValue,
       Amount: input.amount,
       ...this.coinId(input.currency),
@@ -120,9 +146,13 @@ export class CardcomClient {
       CancelRedirectUrl: input.cancelUrl,
       WebHookUrl: input.webhookUrl,
       ProductName: input.productName.slice(0, PRODUCT_DESCRIPTION_MAX),
-      AdvancedDefinition: { MaxNumOfPayments: 1, ...this.coinName(input.currency) },
+      AdvancedDefinition: {
+        MaxNumOfPayments: 1,
+        ...this.coinName(input.currency),
+        ...(operation === 'CreateTokenOnly' ? { JValidateType: J2_CARD_CHECK } : {}),
+      },
     };
-    const document = this.document(input.amount, input.productName, input.customer);
+    const document = operation === 'CreateTokenOnly' ? null : this.document(input.amount, input.productName, input.customer);
     if (document) body.Document = document;
 
     const res = await this.post('LowProfile/Create', body);
@@ -143,15 +173,43 @@ export class CardcomClient {
     const tokenValue = text(token?.Token);
     const cardExpiry = expiryMMYY(token?.CardMonth, token?.CardYear);
     const coin = num(transaction?.CoinId);
+    const savedToken = tokenValue && cardExpiry ? { token: tokenValue, cardExpiryMMYY: cardExpiry, expiresAt: tokenExpiry(token?.TokenExDate) } : null;
     return {
       paid: num(res.ResponseCode) === 0 && transaction !== null && num(transaction.ResponseCode) === 0,
+      tokenSaved: num(res.ResponseCode) === 0 && savedToken !== null,
+      cardLast4: text(transaction?.Last4CardDigitsString),
       description: text(res.Description) ?? '',
       terminalNumber: num(res.TerminalNumber),
       returnValue: text(res.ReturnValue),
       transactionId: this.id(transaction?.TranzactionId ?? res.TranzactionId),
       amount: num(transaction?.Amount),
       currency: coin === null ? null : (COINS[coin] ?? null),
-      token: tokenValue && cardExpiry ? { token: tokenValue, cardExpiryMMYY: cardExpiry, expiresAt: tokenExpiry(token?.TokenExDate) } : null,
+      token: savedToken,
+    };
+  }
+
+  /**
+   * Refunds a card transaction (in full, or `amount` of it). Cardcom asks for the API password on
+   * every refund. `externalRefundId` names the refund on Cardcom's side.
+   */
+  async refund(input: { transactionId: string; amount?: number; externalRefundId: string }): Promise<CardcomRefund> {
+    const password = this.config.get<string>('cardcom.apiPassword');
+    if (!password) {
+      throw new CardcomRequestError(-1, 'Refunds need the Cardcom API password (CARDCOM_API_PASSWORD)');
+    }
+    const res = await this.post('Transactions/RefundByTransactionId', {
+      ApiName: this.config.get<string>('cardcom.apiName'),
+      ApiPassword: password,
+      TransactionId: Number(input.transactionId),
+      ...(input.amount !== undefined ? { PartialSum: input.amount } : {}),
+      ExternalRefundDealId: input.externalRefundId,
+      AllowMultipleRefunds: true,
+    });
+    const refunded = num(res.ResponseCode) === 0;
+    return {
+      status: refunded ? 'REFUNDED' : 'REFUSED',
+      refundTransactionId: refunded ? this.id(res.NewTranzactionId) : null,
+      description: text(res.Description) ?? '',
     };
   }
 

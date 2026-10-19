@@ -172,6 +172,8 @@ enum JewelryPaymentStatus {
   SUCCEEDED
   FAILED
   CANCELLED
+  /// Paid, then refunded in full.
+  REFUNDED
 }
 
 enum ContentPageStatus {
@@ -222,6 +224,11 @@ model User {
   subscriptions           Subscription[]
   checkoutSessions        CheckoutSession[]
   paymentMethods          PaymentMethod[]
+  paymentMethodUpdates    PaymentMethodUpdate[]
+  refundsRequested        PaymentRefund[]       @relation("RefundRequester")
+  payoutsOwed             JewelerPayout[]       @relation("PayoutJeweler")
+  mediaTraffic            MediaTrafficDaily[]
+  usageAlerts             UsageAlert[]
   notifications           Notification[]
   reviewsAuthored         Review[]                  @relation("ReviewAuthor")
   requestCreated          DesignRequest[]           @relation("RequestRequester")
@@ -879,6 +886,8 @@ model AiGenerationJob {
   errorMessage   String?
   createdAt      DateTime  @default(now())
   finishedAt     DateTime?
+  /// What the picture cost (ILS) at the provider's price then (AI_IMAGE_COST_USD × USD_TO_ILS).
+  costIls     Decimal?  @db.Decimal(10, 4)
 
   design       Design? @relation(fields: [designId], references: [id], onDelete: SetNull)
   outputUpload Upload? @relation("AiOutput", fields: [outputUploadId], references: [id], onDelete: SetNull)
@@ -1232,6 +1241,7 @@ model PlanCatalog {
 
   entitlements     PlanEntitlement[]
   subscriptions    Subscription[]
+  pendingFor       Subscription[]    @relation("PendingPlan")
   checkoutSessions CheckoutSession[]
 
   @@index([role, isActive])
@@ -1267,6 +1277,8 @@ model Subscription {
   paymentProviderRef String?
   /// The saved card the renewals are charged to (Cardcom token), when the plan was paid by card.
   paymentMethodId    String?            @db.Uuid
+  /// The plan chosen to replace this one at the next renewal (charged at its price then).
+  pendingPlanId      String?            @db.Uuid
   cancelAtPeriodEnd  Boolean            @default(false)
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
@@ -1274,7 +1286,9 @@ model Subscription {
   user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   plan             PlanCatalog           @relation(fields: [planId], references: [id], onDelete: Restrict)
   paymentMethod    PaymentMethod?        @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+  pendingPlan      PlanCatalog?          @relation("PendingPlan", fields: [pendingPlanId], references: [id], onDelete: SetNull)
   leads            Lead[]
+  cardUpdates      PaymentMethodUpdate[]
   overageCharges   LeadOverageCharge[]
   paymentEvents    PaymentEvent[]
   invoices         SubscriptionInvoice[]
@@ -1362,13 +1376,20 @@ model JewelryPaymentIntent {
   status       JewelryPaymentStatus @default(REQUIRES_CONFIRMATION)
   clientSecret String
   provider     String
-  providerRef  String?
+  /// The provider's id for the payment page (Cardcom LowProfileId).
+  providerRef  String?              @unique
+  /// The Cardcom page the app opens, and the card transaction once paid.
+  paymentUrl    String?
+  transactionId String?
+  paidAt        DateTime?
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt
 
-  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  quote  Quote?         @relation(fields: [quoteId], references: [id], onDelete: SetNull)
-  events PaymentEvent[]
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quote   Quote?          @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  events  PaymentEvent[]
+  refunds PaymentRefund[]
+  payout  JewelerPayout?
 
   @@index([userId, createdAt])
   @@index([quoteId])
@@ -1433,6 +1454,8 @@ model PaymentMethod {
   token          String
   /// Card expiry as MMYY, which a token charge needs.
   cardExpiry     String
+  /// Last four digits of the card, when the provider reported them (shown to the owner).
+  cardLast4      String?
   /// When the provider deletes the token.
   tokenExpiresAt DateTime?
   createdAt      DateTime  @default(now())
@@ -1447,6 +1470,8 @@ model PaymentMethod {
 model SubscriptionInvoice {
   id                String   @id @default(uuid()) @db.Uuid
   subscriptionId    String   @db.Uuid
+  /// Who took the money (cardcom: providerInvoiceId is the Cardcom transaction, refundable).
+  provider          String?
   providerInvoiceId String
   amount            Decimal  @db.Decimal(12, 2)
   currency          String   @db.Char(3)
@@ -1454,10 +1479,123 @@ model SubscriptionInvoice {
   periodEnd         DateTime
   paidAt            DateTime @default(now())
 
-  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  subscription Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  refunds      PaymentRefund[]
 
   @@unique([subscriptionId, providerInvoiceId])
+  @@index([paidAt])
   @@map("subscription_invoices")
+}
+
+/// A refund an admin made of a card payment (a plan invoice, or later a jewelry payment).
+/// PENDING while Cardcom is asked; UNKNOWN when its answer was lost (to check in Cardcom's panel).
+model PaymentRefund {
+  id                    String    @id @default(uuid()) @db.Uuid
+  provider              String
+  subscriptionInvoiceId String?   @db.Uuid
+  jewelryPaymentIntentId String?  @db.Uuid
+  /// The refunded transaction at the provider.
+  transactionId         String
+  amount                Decimal   @db.Decimal(12, 2)
+  currency              String    @db.Char(3)
+  reason                String
+  status                String // PENDING | SUCCEEDED | FAILED | UNKNOWN
+  providerRefundId      String?
+  failureReason         String?
+  requestedById         String?   @db.Uuid
+  /// The admin screen's id for this request: the same request sent twice is one refund.
+  requestId             String?   @unique
+  createdAt             DateTime  @default(now())
+  completedAt           DateTime?
+
+  subscriptionInvoice  SubscriptionInvoice?  @relation(fields: [subscriptionInvoiceId], references: [id], onDelete: Restrict)
+  jewelryPaymentIntent JewelryPaymentIntent? @relation(fields: [jewelryPaymentIntentId], references: [id], onDelete: Restrict)
+  requestedBy          User?                 @relation("RefundRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([subscriptionInvoiceId])
+  @@index([jewelryPaymentIntentId])
+  @@index([createdAt])
+  @@map("payment_refunds")
+}
+
+/// What the platform owes a jeweler for a jewelry payment it took (transferred by hand, then marked
+/// PAID with the transfer's reference). Refunds of the payment reduce what is due; a payment refunded
+/// in full before the transfer is CANCELLED.
+model JewelerPayout {
+  id                     String    @id @default(uuid()) @db.Uuid
+  jewelryPaymentIntentId String    @unique @db.Uuid
+  jewelerUserId          String    @db.Uuid
+  quoteId                String?   @db.Uuid
+  grossAmount            Decimal   @db.Decimal(12, 2)
+  commissionAmount       Decimal   @db.Decimal(12, 2)
+  /// What the jeweler is owed: the payment less the commission.
+  netAmount              Decimal   @db.Decimal(12, 2)
+  /// Refunded to the designer since (taken off what is due).
+  refundedAmount         Decimal   @default(0) @db.Decimal(12, 2)
+  currency               String    @db.Char(3)
+  status                 String // OWED | PAID | CANCELLED
+  paidAt                 DateTime?
+  paidReference          String?
+  markedById             String?   @db.Uuid
+  createdAt              DateTime  @default(now())
+
+  jewelryPaymentIntent JewelryPaymentIntent @relation(fields: [jewelryPaymentIntentId], references: [id], onDelete: Restrict)
+  jeweler              User                 @relation("PayoutJeweler", fields: [jewelerUserId], references: [id], onDelete: Restrict)
+
+  @@index([jewelerUserId, status])
+  @@index([status, createdAt])
+  @@map("jeweler_payouts")
+}
+
+/// Media bytes served per day, by the owner of the files (traffic cost per user).
+model MediaTrafficDaily {
+  ownerUserId String   @db.Uuid
+  day         DateTime @db.Date
+  bytes       BigInt   @default(0)
+  requests    Int      @default(0)
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@id([ownerUserId, day])
+  @@index([day])
+  @@map("media_traffic_daily")
+}
+
+/// Fair use: a user nearing or reaching a usage cap (once per kind and period), for the admin.
+model UsageAlert {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  /// AI_QUOTA_80 | AI_QUOTA_REACHED | AI_DAILY_LIMIT
+  kind      String
+  /// The period the alert is about (its start), so it is raised once per period.
+  periodKey String
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind, periodKey])
+  @@index([createdAt])
+  @@map("usage_alerts")
+}
+
+/// A card replacement: a Cardcom page that only saves a new card for a subscription's renewals.
+model PaymentMethodUpdate {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @db.Uuid
+  subscriptionId String    @db.Uuid
+  provider       String
+  providerRef    String?   @unique
+  paymentUrl     String?
+  status         String // OPEN | COMPLETED | CANCELLED
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("payment_method_updates")
 }
 
 /// Trials already granted to an e-mail address (keyed by a keyed hash, so it survives account

@@ -40,8 +40,10 @@ const SHARED_MENU_ITEMS: ProfileMenuItem[] = [
 ]
 
 /** Both roles reach the plans screen (jewelers subscribe too); "about" is designer copy. */
-export function profileMenuItems(activeRole: UserRole | undefined): ProfileMenuItem[] {
+export function profileMenuItems(activeRole: UserRole | undefined, roles: readonly UserRole[] = []): ProfileMenuItem[] {
   const pricing: ProfileMenuItem = { id: 'pricing', labelKey: 'profilePricing', route: 'Pricing' }
-  if (activeRole === 'JEWELER') return [pricing, ...SHARED_MENU_ITEMS]
-  return [pricing, { id: 'about', labelKey: 'profileAbout', route: 'Terms' }, ...SHARED_MENU_ITEMS]
+  // The admin screens (plans, reports, refunds, payouts), for an account with the admin role.
+  const admin: ProfileMenuItem[] = roles.includes('ADMIN') ? [{ id: 'admin', labelKey: 'profileAdmin', route: 'AdminHome' }] : []
+  if (activeRole === 'JEWELER') return [...admin, pricing, ...SHARED_MENU_ITEMS]
+  return [...admin, pricing, { id: 'about', labelKey: 'profileAbout', route: 'Terms' }, ...SHARED_MENU_ITEMS]
 }

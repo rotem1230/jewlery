@@ -165,6 +165,12 @@ export function validateEnv(config: Record<string, unknown>) {
       problems.push('CARDCOM_API_NAME must be set when PAYMENTS_PROVIDER=cardcom');
     }
   }
+  if (config.JEWELRY_COMMISSION_PERCENT !== undefined && config.JEWELRY_COMMISSION_PERCENT !== '') {
+    const pct = Number(config.JEWELRY_COMMISSION_PERCENT);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      problems.push('JEWELRY_COMMISSION_PERCENT must be a number from 0 to 100');
+    }
+  }
   if (config.CARDCOM_BASE_URL && !String(config.CARDCOM_BASE_URL).startsWith('https://')) {
     problems.push('CARDCOM_BASE_URL must be an https address (the API credentials travel to it)');
   }

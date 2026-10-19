@@ -52,8 +52,41 @@ export class SubscriptionsService {
     return this.prisma.subscription.findFirst({
       where: { userId, status: { in: LIVE_STATUSES } },
       orderBy: { createdAt: 'desc' },
-      include: { plan: true },
+      include: { plan: true, pendingPlan: true },
     });
+  }
+
+  /**
+   * Chooses the plan a paid plan becomes at its next renewal (charged at the new plan's price
+   * then; no partial charges). Only another active paid plan of the same role, from a paid plan
+   * that is not on its way out.
+   */
+  async changePlan(user: User, planCode: string) {
+    const invalid = (message: string) => new BadRequestException({ success: false, message, code: 'PLAN_CHANGE_INVALID' });
+    await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const sub = await tx.subscription.findFirst({
+        where: { userId: user.id, status: SubscriptionStatus.ACTIVE, price: { gt: 0 }, cancelAtPeriodEnd: false },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!sub) throw invalid('Plans are changed from a paid plan (a trial or a free plan buys the new plan instead)');
+      const plan = await tx.planCatalog.findUnique({ where: { code: planCode } });
+      if (!plan || !plan.isActive || plan.role !== sub.role || plan.price.lte(0) || plan.id === sub.planId) {
+        throw invalid('Choose another paid plan of the same kind');
+      }
+      await tx.subscription.update({ where: { id: sub.id }, data: { pendingPlanId: plan.id } });
+    });
+    await this.eventLog.record('subscription.plan_change_scheduled', 'User', user.id, { planCode });
+    return this.me(user.id);
+  }
+
+  /** Withdraws the plan chosen for the next renewal. */
+  async clearPlanChange(user: User) {
+    await this.prisma.subscription.updateMany({
+      where: { userId: user.id, status: { in: LIVE_STATUSES }, pendingPlanId: { not: null } },
+      data: { pendingPlanId: null },
+    });
+    return this.me(user.id);
   }
 
   async entitlementsMe(userId: string) {
@@ -278,12 +311,13 @@ export class SubscriptionsService {
       if (current.status !== SubscriptionStatus.PAST_DUE && current.cancelAtPeriodEnd) {
         return { subscription: current, updated: null };
       }
+      // Nothing renews a cancelled plan: a plan chosen for the next renewal is withdrawn too.
       const changed = await tx.subscription.update({
         where: { id: current.id },
         data:
           current.status === SubscriptionStatus.PAST_DUE
-            ? { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true }
-            : { cancelAtPeriodEnd: true },
+            ? { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true, pendingPlanId: null }
+            : { cancelAtPeriodEnd: true, pendingPlanId: null },
       });
       await this.outbox.enqueue('subscription.cancelled', { subscriptionId: current.id, userId: user.id }, tx);
       return { subscription: current, updated: changed };
@@ -302,7 +336,8 @@ export class SubscriptionsService {
   /**
    * Account deletion: live subscriptions end now and unpaid checkouts are cancelled, so a payment
    * that still arrives for them is held for review instead of activating a plan for a deleted
-   * account. A subscription.cancelled outbox event asks for the provider-side cancellation.
+   * account. A subscription.cancelled outbox event asks for the provider-side cancellation. The
+   * saved cards (provider tokens) are deleted.
    */
   async endForDeletedAccount(tx: Tx, userId: string): Promise<void> {
     const live = await tx.subscription.findMany({
@@ -312,7 +347,7 @@ export class SubscriptionsService {
     if (live.length > 0) {
       await tx.subscription.updateMany({
         where: { id: { in: live.map((sub) => sub.id) } },
-        data: { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true },
+        data: { status: SubscriptionStatus.CANCELLED, cancelAtPeriodEnd: true, pendingPlanId: null },
       });
       for (const sub of live) {
         await this.outbox.enqueue('subscription.cancelled', { subscriptionId: sub.id, userId, reason: 'account_deleted' }, tx);
@@ -322,6 +357,9 @@ export class SubscriptionsService {
       where: { userId, status: CheckoutStatus.OPEN },
       data: { status: CheckoutStatus.CANCELLED },
     });
+    // The saved cards (provider tokens) go with the account; nothing is charged to them again.
+    await tx.paymentMethodUpdate.updateMany({ where: { userId, status: 'OPEN' }, data: { status: 'CANCELLED' } });
+    await tx.paymentMethod.deleteMany({ where: { userId } });
   }
 
   /** Whether the user has a subscription that entitles them to anything right now. */

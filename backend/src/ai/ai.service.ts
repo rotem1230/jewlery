@@ -10,6 +10,7 @@ import {
   OnModuleDestroy,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AiGenerationJob, JobStatus, Prisma, User, UserRole } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
@@ -33,6 +34,9 @@ const AI_RENDERS = 'ai_renders';
 const FREE_PLAN_CODE = 'DESIGNER_FREE';
 const FREE_PLAN_WINDOW_MS = 30 * DAY_MS;
 const DEFAULT_FREE_PLAN_RENDERS = 10;
+/** Share of the plan's quota at which a fair-use alert is raised. */
+const NEAR_QUOTA = 0.8;
+
 /** Creations that use the quota: everything but a failed or cancelled one. */
 const COUNTED_STATUSES = [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED];
 
@@ -65,6 +69,7 @@ export class AiService implements OnModuleDestroy {
     private readonly uploads: UploadsService,
     private readonly access: UploadAccessService,
     private readonly appConfig: AppConfigService,
+    private readonly config: ConfigService,
     @Inject(AI_ENGINE_ADAPTER)
     private readonly engine: AiEngineAdapter,
   ) {}
@@ -84,7 +89,7 @@ export class AiService implements OnModuleDestroy {
    * they are entitled to (its `ai_renders` cap, over the billing period that holds now), else the
    * free designer plan's (over the last 30 days). A plan whose cap is null has none.
    */
-  private async planQuota(tx: Tx, userId: string, now: Date): Promise<{ limit: number | null; since: Date }> {
+  private async planQuota(tx: Tx, userId: string, now: Date): Promise<{ limit: number | null; since: Date; periodKey: string }> {
     const subscriptions = await tx.subscription.findMany({
       where: entitledSubscriptionWhere(userId, now),
       orderBy: { createdAt: 'desc' },
@@ -98,7 +103,7 @@ export class AiService implements OnModuleDestroy {
           sub.currentPeriodStart <= now
             ? sub.currentPeriodStart
             : new Date(sub.currentPeriodStart.getTime() - billingCyclePeriodMs(sub.billingCycle));
-        return { limit: cap.limitValue, since };
+        return { limit: cap.limitValue, since, periodKey: `sub:${sub.id}:${since.toISOString()}` };
       }
     }
     const free = await tx.planEntitlement.findFirst({
@@ -107,7 +112,27 @@ export class AiService implements OnModuleDestroy {
     return {
       limit: free ? free.limitValue : DEFAULT_FREE_PLAN_RENDERS,
       since: new Date(now.getTime() - FREE_PLAN_WINDOW_MS),
+      // The free window slides: its alerts are kept to one per calendar month.
+      periodKey: `free:${now.toISOString().slice(0, 7)}`,
     };
+  }
+
+  /** A fair-use alert for the admin, raised once per kind and period. */
+  private async alert(userId: string, kind: string, periodKey: string, detail: Record<string, unknown>): Promise<void> {
+    await this.prisma.usageAlert
+      .upsert({
+        where: { userId_kind_periodKey: { userId, kind, periodKey } },
+        update: {},
+        create: { userId, kind, periodKey, detail: detail as Prisma.InputJsonValue },
+      })
+      .catch((err: Error) => this.logger.warn(`Usage alert ${kind} for ${userId} not recorded: ${err.message}`));
+  }
+
+  /** What one picture costs, in ILS (AI_IMAGE_COST_USD × USD_TO_ILS). */
+  private pictureCostIls(): Prisma.Decimal {
+    const usd = this.config.get<number>('costs.aiImageUsd') ?? 0;
+    const rate = this.config.get<number>('costs.usdToIls') ?? 0;
+    return new Prisma.Decimal((usd * rate).toFixed(4));
   }
 
   async createInspiration(user: User, dto: CreateAiInspirationDto): Promise<AiJobView> {
@@ -139,7 +164,7 @@ export class AiService implements OnModuleDestroy {
     }
 
     const limit = await this.dailyLimit();
-    const job = await this.prisma.$transaction(async (tx) => {
+    const { created: job, quota, usedBefore } = await this.prisma.$transaction(async (tx) => {
       // Per-user lock: the in-flight and daily checks cannot be raced by parallel requests.
       await lockUser(tx, user.id);
       const running = await tx.aiGenerationJob.count({
@@ -153,11 +178,13 @@ export class AiService implements OnModuleDestroy {
         });
       }
       const quota = await this.planQuota(tx, user.id, new Date());
+      let usedBefore = 0;
       if (quota.limit !== null) {
         const used = await tx.aiGenerationJob.count({
           where: { requestedById: user.id, status: { in: COUNTED_STATUSES }, createdAt: { gte: quota.since } },
         });
         if (used >= quota.limit) {
+          await this.alert(user.id, 'AI_QUOTA_REACHED', quota.periodKey, { limit: quota.limit, used });
           throw new HttpException(
             {
               success: false,
@@ -167,17 +194,19 @@ export class AiService implements OnModuleDestroy {
             HttpStatus.TOO_MANY_REQUESTS,
           );
         }
+        usedBefore = used;
       }
       const today = await tx.aiGenerationJob.count({
         where: { requestedById: user.id, createdAt: { gt: new Date(Date.now() - DAY_MS) } },
       });
       if (today >= limit) {
+        await this.alert(user.id, 'AI_DAILY_LIMIT', `day:${new Date().toISOString().slice(0, 10)}`, { limit, today });
         throw new HttpException(
           { success: false, message: 'Daily generation limit reached', code: 'AI_QUOTA_EXCEEDED' },
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
-      return tx.aiGenerationJob.create({
+      const created = await tx.aiGenerationJob.create({
         data: {
           designId: dto.designId ?? null,
           requestedById: user.id,
@@ -185,7 +214,12 @@ export class AiService implements OnModuleDestroy {
           status: JobStatus.QUEUED,
         },
       });
+      return { created, quota, usedBefore };
     });
+    // Fair use: nearing the plan's quota is told to the admin (once per period).
+    if (quota.limit !== null && quota.limit > 0 && usedBefore + 1 >= Math.ceil(quota.limit * NEAR_QUOTA)) {
+      await this.alert(user.id, 'AI_QUOTA_80', quota.periodKey, { limit: quota.limit, used: usedBefore + 1 });
+    }
 
     await this.audit.log({
       actorUserId: user.id,
@@ -246,7 +280,7 @@ export class AiService implements OnModuleDestroy {
       const upload = await this.uploads.createGeneratedLocal(ownerUserId, generated.image, generated.mimeType);
       const finished = await this.prisma.aiGenerationJob.updateMany({
         where: { id: job.id, status: JobStatus.RUNNING },
-        data: { status: JobStatus.SUCCEEDED, outputUploadId: upload.id, finishedAt: new Date() },
+        data: { status: JobStatus.SUCCEEDED, outputUploadId: upload.id, finishedAt: new Date(), costIls: this.pictureCostIls() },
       });
       if (finished.count !== 1) {
         this.logger.warn(`AI job ${job.id} finished after it was given up; result discarded`);

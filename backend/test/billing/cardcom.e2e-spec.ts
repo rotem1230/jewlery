@@ -1,10 +1,6 @@
 import { randomUUID } from 'crypto';
-import {
-  CardcomCharge,
-  CardcomClient,
-  CardcomPageResult,
-  CardcomUnavailableError,
-} from '../../src/common/payments/cardcom.client';
+import { CardcomClient } from '../../src/common/payments/cardcom.client';
+import { FakeCardcom } from '../utils/fake-cardcom';
 import { SubscriptionLifecycleService } from '../../src/subscriptions/subscription-lifecycle.service';
 import { API, createTestApp, TestApp } from '../utils/test-app';
 import { registerVerified, TestUser } from '../utils/factories';
@@ -12,82 +8,6 @@ import { registerVerified, TestUser } from '../utils/factories';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const QUARTER_MS = 91 * DAY_MS;
 const PUBLIC_URL = 'https://api.example.test';
-
-type PageInput = Parameters<CardcomClient['createPaymentPage']>[0];
-type ChargeInput = Parameters<CardcomClient['chargeToken']>[0];
-
-/** Cardcom as its API answers: payment pages, their results, token charges and lookups. */
-class FakeCardcom {
-  pages = new Map<string, { input: PageInput; result: CardcomPageResult }>();
-  resultCalls: string[] = [];
-  charges: ChargeInput[] = [];
-  /** What the next token charges answer (APPROVED by default). */
-  chargeAnswers: Array<CardcomCharge | 'UNAVAILABLE'> = [];
-  /** Charges Cardcom has on record, by ExternalUniqTranId. */
-  onRecord = new Map<string, CardcomCharge>();
-  failCreate = false;
-  unavailable = false;
-  private nextTransaction = 5000;
-
-  isConfigured() {
-    return true;
-  }
-
-  async createPaymentPage(input: PageInput) {
-    if (this.failCreate) throw new CardcomUnavailableError('Cardcom LowProfile/Create could not be reached');
-    const lowProfileId = randomUUID();
-    this.pages.set(lowProfileId, {
-      input,
-      result: { paid: false, description: 'Not paid yet', terminalNumber: 1000, returnValue: input.returnValue, transactionId: null, amount: null, currency: null, token: null },
-    });
-    return { lowProfileId, url: `https://secure.cardcom.solutions/pay/${lowProfileId}` };
-  }
-
-  /** The card holder paid on the page. */
-  pay(lowProfileId: string, overrides: Partial<CardcomPageResult> = {}) {
-    const page = this.pages.get(lowProfileId);
-    if (!page) throw new Error('no such page');
-    page.result = {
-      paid: true,
-      description: 'OK',
-      terminalNumber: 1000,
-      returnValue: page.input.returnValue,
-      transactionId: String(this.nextTransaction++),
-      amount: page.input.amount,
-      currency: 'ILS',
-      token: { token: randomUUID(), cardExpiryMMYY: '0329', expiresAt: new Date(Date.UTC(2029, 11, 31)) },
-      ...overrides,
-    };
-  }
-
-  async getPaymentPageResult(lowProfileId: string) {
-    this.resultCalls.push(lowProfileId);
-    if (this.unavailable) throw new CardcomUnavailableError('Cardcom LowProfile/GetLpResult could not be reached');
-    const page = this.pages.get(lowProfileId);
-    if (!page) return { paid: false, description: 'Unknown', terminalNumber: 1000, returnValue: null, transactionId: null, amount: null, currency: null, token: null };
-    return page.result;
-  }
-
-  async chargeToken(input: ChargeInput): Promise<CardcomCharge> {
-    this.charges.push(input);
-    const answer = this.chargeAnswers.shift() ?? { status: 'APPROVED', transactionId: null, amount: input.amount, currency: 'ILS', description: 'OK' };
-    if (answer === 'UNAVAILABLE') {
-      // The charge went through at Cardcom, but the answer never arrived.
-      this.onRecord.set(input.externalUniqTranId, { status: 'APPROVED', transactionId: String(this.nextTransaction++), amount: input.amount, currency: 'ILS', description: 'OK' });
-      throw new CardcomUnavailableError('Cardcom Transactions/Transaction could not be reached');
-    }
-    if (this.onRecord.has(input.externalUniqTranId)) {
-      return { status: 'DUPLICATE', transactionId: null, amount: null, currency: null, description: 'Duplicate' };
-    }
-    const settled = answer.status === 'APPROVED' ? { ...answer, transactionId: answer.transactionId ?? String(this.nextTransaction++) } : answer;
-    if (settled.status === 'APPROVED') this.onRecord.set(input.externalUniqTranId, settled);
-    return settled;
-  }
-
-  async findTransaction(externalUniqTranId: string) {
-    return this.onRecord.get(externalUniqTranId) ?? null;
-  }
-}
 
 describe('card payments through Cardcom', () => {
   let t: TestApp;

@@ -1,5 +1,5 @@
 /** Subscriptions + CMS content. */
-import { ApiError, apiGet, apiPost, buildQuery } from '@/src/lib/api'
+import { ApiError, apiDelete, apiGet, apiPost, buildQuery } from '@/src/lib/api'
 import type { ContentPage, PlanCatalog, SubscriptionMe } from '@/src/types/api'
 import type { UserRole } from '@/src/constants/roles'
 
@@ -39,6 +39,31 @@ export function startCheckout(planCode: string): Promise<CheckoutView> {
 /** The checkout as the server knows it (an open Cardcom one is confirmed with Cardcom first). */
 export function getCheckout(checkoutId: string, signal?: AbortSignal): Promise<CheckoutView> {
   return apiGet<CheckoutView>(`/subscriptions/checkout/${encodeURIComponent(checkoutId)}`, { signal })
+}
+
+/** The card my paid plan renews with (never the token itself), or null. */
+export type PaymentMethodView = { provider: string; cardExpiry: string; cardLast4: string | null }
+
+export function getPaymentMethod(signal?: AbortSignal): Promise<PaymentMethodView | null> {
+  return apiGet<PaymentMethodView | null>('/subscriptions/payment-method', { signal })
+}
+
+/** Replacing the card: a Cardcom page that only saves the new card. */
+export function startCardUpdate(): Promise<{ id: string; status: string; paymentUrl: string | null }> {
+  return apiPost('/subscriptions/payment-method/update', {})
+}
+
+export function getCardUpdate(id: string, signal?: AbortSignal): Promise<{ id: string; status: string }> {
+  return apiGet(`/subscriptions/payment-method/updates/${encodeURIComponent(id)}`, { signal })
+}
+
+/** Chooses the plan my paid plan becomes at its next renewal. */
+export function changePlan(planCode: string): Promise<SubscriptionMe> {
+  return apiPost<SubscriptionMe>('/subscriptions/change-plan', { planCode })
+}
+
+export function clearPlanChange(): Promise<SubscriptionMe> {
+  return apiDelete<SubscriptionMe>('/subscriptions/change-plan')
 }
 
 export function cancelSubscription(): Promise<unknown> {

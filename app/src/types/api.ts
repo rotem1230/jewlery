@@ -452,6 +452,9 @@ export type SubscriptionMe = {
   id: string
   status: string
   plan?: PlanCatalog | null
+  /** The plan chosen for the next renewal. */
+  pendingPlan?: PlanCatalog | null
+  cancelAtPeriodEnd?: boolean
   currentPeriodEnd?: string | null
   trialEndsAt?: string | null
 } | null
