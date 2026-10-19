@@ -21,6 +21,27 @@ async function setLeadPolicy(t: TestApp, enforceQuota: boolean) {
   });
 }
 
+/** A jeweler plan that sells extra leads (no plan of the catalog does since the pricing table of 19.10). */
+async function overagePlan(t: TestApp): Promise<string> {
+  const code = `TEST_OVERAGE_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  await t.prisma.planCatalog.create({
+    data: {
+      code,
+      role: 'JEWELER',
+      nameHe: 'בדיקה',
+      nameEn: 'Test overage',
+      billingCycle: 'MONTHLY',
+      price: 199,
+      currency: 'ILS',
+      leadQuota: 15,
+      extraLeadPrice: 25,
+      trialDays: 14,
+      inclusions: { bullets: [] },
+    },
+  });
+  return code;
+}
+
 async function requestQuote(t: TestApp, designer: TestUser, jeweler: TestJeweler, designId?: string) {
   const id = designId ?? (await createPublishedDesign(t, designer)).id;
   return t.http
@@ -45,9 +66,12 @@ describe('lead metering on design-request delivery', () => {
     await t.close();
   });
 
-  async function subscribedJeweler(planCode = 'JEWELER_BASIC') {
+  /** A published jeweler on a plan: a new jeweler starts on the free trial plan (3 leads). */
+  async function subscribedJeweler(planCode = 'JEWELER_TRIAL') {
     const jeweler = await createPublishedJeweler(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode }).expect(201);
+    if (planCode !== 'JEWELER_TRIAL') {
+      await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode }).expect(201);
+    }
     return jeweler;
   }
 
@@ -150,7 +174,7 @@ describe('lead metering on design-request delivery', () => {
   });
 
   it('with enforcement off, delivery never records an overage charge', async () => {
-    const jeweler = await subscribedJeweler('JEWELER_ACTIVE');
+    const jeweler = await subscribedJeweler(await overagePlan(t));
     await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
     const designer = await registerVerified(t);
     expect((await requestQuote(t, designer, jeweler)).status).toBe(201);
@@ -161,7 +185,7 @@ describe('lead metering on design-request delivery', () => {
     await setLeadPolicy(t, true);
     const jeweler = await subscribedJeweler();
     await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
-    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_BASIC' } });
+    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_TRIAL' } });
     await t.prisma.planCatalog.update({ where: { id: plan.id }, data: { extraLeadPrice: 0 } });
     try {
       const designer = await registerVerified(t);
@@ -191,9 +215,21 @@ describe('lead metering on design-request delivery', () => {
     expect(sources.filter((s) => results.some((r) => r.body.data.id === s))).toHaveLength(1);
   });
 
-  it('with enforcement on, a jeweler with no leads is not delivered to', async () => {
+  it("with enforcement on, a jeweler whose quarter's leads are used is not delivered to (no extra leads are sold)", async () => {
+    await setLeadPolicy(t, true);
+    const jeweler = await subscribedJeweler();
+    await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
+    const designer = await registerVerified(t);
+    const res = await requestQuote(t, designer, jeweler);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('NO_ELIGIBLE_JEWELERS');
+    expect(await t.prisma.leadOverageCharge.count({ where: { subscription: { userId: jeweler.id } } })).toBe(0);
+  });
+
+  it('with enforcement on, a jeweler with no plan is not delivered to', async () => {
     await setLeadPolicy(t, true);
     const jeweler = await createPublishedJeweler(t);
+    await t.prisma.subscription.updateMany({ where: { userId: jeweler.id }, data: { status: 'CANCELLED' } });
     const designer = await registerVerified(t);
     const res = await requestQuote(t, designer, jeweler);
     expect(res.status).toBe(409);
@@ -202,7 +238,7 @@ describe('lead metering on design-request delivery', () => {
 
   it('with enforcement on, a plan with an overage price delivers and records the charge', async () => {
     await setLeadPolicy(t, true);
-    const jeweler = await subscribedJeweler('JEWELER_ACTIVE');
+    const jeweler = await subscribedJeweler(await overagePlan(t));
     await t.prisma.lead.updateMany({
       where: { subscription: { userId: jeweler.id } },
       data: { status: 'CONSUMED', consumedAt: new Date() },
@@ -257,7 +293,7 @@ describe('lead drain protection', () => {
   it('the overage cap holds under simultaneous deliveries', async () => {
     await setLeadPolicy(t, true);
     const jeweler = await createPublishedJeweler(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_ACTIVE' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: await overagePlan(t) }).expect(201);
     await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
     const designers = await Promise.all([registerVerified(t), registerVerified(t), registerVerified(t)]);
     const results = await Promise.all(designers.map((designer) => requestQuote(t, designer, jeweler)));
@@ -269,7 +305,7 @@ describe('lead drain protection', () => {
     await setLeadPolicy(t, true);
     const jeweler = await createPublishedJeweler(t);
     const sub = (
-      await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_ACTIVE' }).expect(201)
+      await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: await overagePlan(t) }).expect(201)
     ).body.data as { id: string };
     await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
     // The next period was paid ahead of time, so the recorded period starts in the future.
@@ -290,7 +326,7 @@ describe('lead drain protection', () => {
   it('overage charges are capped per billing period', async () => {
     await setLeadPolicy(t, true);
     const jeweler = await createPublishedJeweler(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_ACTIVE' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: await overagePlan(t) }).expect(201);
     await t.prisma.lead.updateMany({ where: { subscription: { userId: jeweler.id } }, data: { status: 'CONSUMED' } });
 
     expect((await requestQuote(t, await registerVerified(t), jeweler)).status).toBe(201);

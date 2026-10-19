@@ -57,7 +57,7 @@ describe('payment webhooks', () => {
     await t.close();
   });
 
-  async function trialingSubscription(user?: TestUser, planCode = 'DESIGNER_PRO') {
+  async function trialingSubscription(user?: TestUser, planCode = 'DESIGNER_PREMIUM_QUARTERLY') {
     const designer = user ?? (await registerVerified(t));
     const res = await t.http
       .post(`${API}/subscriptions/subscribe`)
@@ -190,7 +190,7 @@ describe('payment webhooks', () => {
 
   it('an unrecognised event that reports money is held for review', async () => {
     const { sub } = await trialingSubscription();
-    const body = event({ subscriptionId: sub.id, type: 'charge.succeeded', amount: 49.9, currency: 'ILS' });
+    const body = event({ subscriptionId: sub.id, type: 'charge.succeeded', amount: 45, currency: 'ILS' });
     await deliver(body).expect(201);
     expect(await outcomeOf(body)).toBe('NEEDS_REVIEW');
     expect((await stored(sub.id)).status).toBe('TRIALING');
@@ -248,7 +248,7 @@ describe('payment webhooks', () => {
     expect(results.every((r) => r.status === 201)).toBe(true);
     expect(await t.prisma.paymentEvent.count({ where: { subscriptionId: sub.id } })).toBe(1);
     expect((await stored(sub.id)).currentPeriodEnd.getTime()).toBeLessThan(
-      new Date(sub.currentPeriodEnd).getTime() + 31 * DAY_MS,
+      new Date(sub.currentPeriodEnd).getTime() + 92 * DAY_MS, // one quarterly period, not two
     );
   });
 
@@ -260,7 +260,7 @@ describe('payment webhooks', () => {
     await deliver(second).expect(201);
     expect(await outcomeOf(second)).toBe('IGNORED');
     expect((await stored(sub.id)).currentPeriodEnd.getTime()).toBeLessThan(
-      new Date(sub.currentPeriodEnd).getTime() + 31 * DAY_MS,
+      new Date(sub.currentPeriodEnd).getTime() + 92 * DAY_MS, // one quarterly period, not two
     );
     expect(await t.prisma.subscriptionInvoice.count({ where: { subscriptionId: sub.id } })).toBe(1);
   });
@@ -286,16 +286,16 @@ describe('payment webhooks', () => {
 
   it('renewals are charged at the price agreed when the subscription started, not at a later catalog price', async () => {
     const { sub } = await trialingSubscription();
-    await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PRO' }, data: { price: 59.9 } });
+    await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PREMIUM_QUARTERLY' }, data: { price: 59.9 } });
     try {
       const atCatalogPrice = event({ subscriptionId: sub.id, invoiceId: `in_${randomUUID()}`, amount: 59.9, currency: 'ILS' });
       await deliver(atCatalogPrice).expect(201);
       expect(await outcomeOf(atCatalogPrice)).toBe('NEEDS_REVIEW');
-      const atAgreedPrice = event({ subscriptionId: sub.id, invoiceId: `in_${randomUUID()}`, amount: 49.9, currency: 'ILS' });
+      const atAgreedPrice = event({ subscriptionId: sub.id, invoiceId: `in_${randomUUID()}`, amount: 45, currency: 'ILS' });
       await deliver(atAgreedPrice).expect(201);
       expect(await outcomeOf(atAgreedPrice)).toBe('APPLIED');
     } finally {
-      await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PRO' }, data: { price: 49.9 } });
+      await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PREMIUM_QUARTERLY' }, data: { price: 45 } });
     }
   });
 
@@ -375,8 +375,8 @@ describe('payment webhooks', () => {
 
   it("a jeweler's paid renewal allocates the leads of the period it pays for", async () => {
     const jeweler = await registerVerified(t, { roles: ['JEWELER'] });
-    const { sub } = await trialingSubscription(jeweler, 'JEWELER_ACTIVE');
-    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_ACTIVE' } });
+    const { sub } = await trialingSubscription(jeweler, 'JEWELER_PROFESSIONAL');
+    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_PROFESSIONAL' } });
     await deliver(await invoiceFor(sub.id)).expect(201);
     const row = await stored(sub.id);
     expect(
@@ -434,7 +434,7 @@ describe('payment webhooks', () => {
   });
 
   it('an event for an unknown subscription changes nothing and is held for review', async () => {
-    const body = event({ subscriptionId: randomUUID(), invoiceId: 'in_x', amount: 49.9, currency: 'ILS' });
+    const body = event({ subscriptionId: randomUUID(), invoiceId: 'in_x', amount: 45, currency: 'ILS' });
     await deliver(body).expect(201);
     expect(await outcomeOf(body)).toBe('NEEDS_REVIEW');
   });

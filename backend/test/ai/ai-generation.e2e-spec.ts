@@ -139,5 +139,63 @@ describe('AI generation is real or refused', () => {
       expect(done.outputUploadId).toBeNull();
       expect(done.outputUrl).toBeNull();
     });
+
+    describe('AI creations per plan (pricing table of 19.10)', () => {
+      const DAY = 24 * 60 * 60 * 1000;
+      /** Earlier creations of the user, made `daysAgo` days ago (outside the daily limit's day). */
+      const madeBefore = (userId: string, count: number, status: 'SUCCEEDED' | 'FAILED', daysAgo: number) =>
+        t.prisma.aiGenerationJob.createMany({
+          data: Array.from({ length: count }, () => ({
+            requestedById: userId,
+            prompt: 'earlier',
+            status,
+            createdAt: new Date(Date.now() - daysAgo * DAY),
+          })),
+        });
+      const generate = (user: { auth: { Authorization: string } }, prompt: string) =>
+        t.http.post(`${API}/ai/inspiration`).set(user.auth).send({ prompt });
+
+      it('without a plan: the free plan gives 10 a month; failed creations and older ones are not counted', async () => {
+        const user = await registerVerified(t);
+        await madeBefore(user.id, 9, 'SUCCEEDED', 2);
+        await madeBefore(user.id, 5, 'FAILED', 2);
+        await madeBefore(user.id, 20, 'SUCCEEDED', 31);
+
+        const tenth = await generate(user, 'the tenth').expect(202);
+        expect((await finished(t, user.auth, tenth.body.data.id)).status).toBe('SUCCEEDED');
+
+        const refused = await generate(user, 'one too many').expect(429);
+        expect(refused.body.code).toBe('AI_PLAN_QUOTA_EXCEEDED');
+        expect(await t.prisma.aiGenerationJob.count({ where: { requestedById: user.id, prompt: 'one too many' } })).toBe(0);
+      });
+
+      it("a plan's quota is counted from its own period, at the number the plan sets", async () => {
+        const user = await registerVerified(t);
+        await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
+        // Made before the plan's period: the free plan's 10 would be used up, the plan's are not.
+        await madeBefore(user.id, 12, 'SUCCEEDED', 2);
+
+        const first = await generate(user, 'on the plan').expect(202);
+        expect((await finished(t, user.auth, first.body.data.id)).status).toBe('SUCCEEDED');
+
+        const quota = await t.prisma.planEntitlement.findFirstOrThrow({
+          where: { plan: { code: 'DESIGNER_PREMIUM_QUARTERLY' }, entitlement: { key: 'ai_renders' } },
+        });
+        expect(quota.limitValue).toBe(150);
+        await t.prisma.planEntitlement.update({
+          where: { planId_entitlementId: { planId: quota.planId, entitlementId: quota.entitlementId } },
+          data: { limitValue: 1 },
+        });
+        try {
+          const refused = await generate(user, 'over the plan').expect(429);
+          expect(refused.body.code).toBe('AI_PLAN_QUOTA_EXCEEDED');
+        } finally {
+          await t.prisma.planEntitlement.update({
+            where: { planId_entitlementId: { planId: quota.planId, entitlementId: quota.entitlementId } },
+            data: { limitValue: 150 },
+          });
+        }
+      });
+    });
   });
 });

@@ -2,7 +2,7 @@ import { OutboxProcessor } from '../../src/common/outbox/outbox.processor';
 import { SubscriptionLifecycleService } from '../../src/subscriptions/subscription-lifecycle.service';
 import { lockRow, waitForLockWaiters } from '../utils/db-locks';
 import { API, createTestApp, TestApp } from '../utils/test-app';
-import { registerVerified, TestUser } from '../utils/factories';
+import { createPublishedJeweler, registerVerified, TestUser } from '../utils/factories';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -57,7 +57,7 @@ describe('subscriptions', () => {
 
   it('a trial plan starts a time-boxed trial', async () => {
     const designer = await registerVerified(t);
-    const res = await subscribe(designer, 'DESIGNER_PRO').expect(201);
+    const res = await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
     expect(res.body.data.status).toBe('TRIALING');
     const trialEnds = new Date(res.body.data.trialEndsAt).getTime();
     expect(trialEnds - Date.now()).toBeGreaterThan(13 * DAY_MS);
@@ -74,10 +74,10 @@ describe('subscriptions', () => {
 
   it('a trial cannot be restarted after it was used', async () => {
     const designer = await registerVerified(t);
-    const first = await subscribe(designer, 'DESIGNER_PRO').expect(201);
+    const first = await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
     await t.prisma.subscription.update({ where: { id: first.body.data.id }, data: { status: 'EXPIRED' } });
 
-    const again = await subscribe(designer, 'DESIGNER_PRO').expect(402);
+    const again = await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(402);
     expect(again.body.code).toBe('PAYMENT_REQUIRED');
   });
 
@@ -91,7 +91,7 @@ describe('subscriptions', () => {
 
   it('entitlements stop when the trial ends, even before the sweep runs', async () => {
     const designer = await registerVerified(t);
-    const sub = await subscribe(designer, 'DESIGNER_PRO').expect(201);
+    const sub = await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
     expect(await entitlementKeys(designer)).toContain('personal_visualization');
 
     await t.prisma.subscription.update({
@@ -103,7 +103,7 @@ describe('subscriptions', () => {
 
   it('cancelling keeps access until the end of the paid-for period', async () => {
     const designer = await registerVerified(t);
-    await subscribe(designer, 'DESIGNER_PRO').expect(201);
+    await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
     const cancelled = await t.http.post(`${API}/subscriptions/cancel`).set(designer.auth).send({}).expect(201);
     expect(cancelled.body.data.cancelAtPeriodEnd).toBe(true);
     expect(cancelled.body.data.status).toBe('TRIALING');
@@ -112,7 +112,7 @@ describe('subscriptions', () => {
 
   it('a paid period that ended grants nothing, even before the sweep runs', async () => {
     const designer = await registerVerified(t);
-    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    const sub = (await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201)).body.data as { id: string };
     await t.prisma.subscription.update({
       where: { id: sub.id },
       data: { status: 'ACTIVE', trialEndsAt: null, currentPeriodEnd: new Date(Date.now() - 60_000) },
@@ -124,7 +124,7 @@ describe('subscriptions', () => {
 
   it('a cancellation that the payment provider must also apply is recorded for an operator, not silently dropped', async () => {
     const designer = await registerVerified(t);
-    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    const sub = (await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201)).body.data as { id: string };
     await t.http.post(`${API}/subscriptions/cancel`).set(designer.auth).send({}).expect(201);
     // Earlier tests leave events behind (jobs are off in tests): deliver everything that is due.
     const outbox = t.app.get(OutboxProcessor);
@@ -139,16 +139,16 @@ describe('subscriptions', () => {
 
   it('a trial is granted once per role, but the other role still has its own', async () => {
     const both = await registerVerified(t, { roles: ['DESIGNER', 'JEWELER'] });
-    const trial = (await subscribe(both, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    const trial = (await subscribe(both, 'DESIGNER_PREMIUM_QUARTERLY').expect(201)).body.data as { id: string };
     await t.prisma.subscription.update({ where: { id: trial.id }, data: { status: 'EXPIRED' } });
-    await subscribe(both, 'DESIGNER_PRO').expect(402);
-    const jewelerTrial = await subscribe(both, 'JEWELER_ACTIVE').expect(201);
+    await subscribe(both, 'DESIGNER_PREMIUM_QUARTERLY').expect(402);
+    const jewelerTrial = await subscribe(both, 'JEWELER_PROFESSIONAL').expect(201);
     expect(jewelerTrial.body.data.status).toBe('TRIALING');
   });
 
   it('a past-due subscription can be cancelled at once, so another plan can be chosen', async () => {
     const designer = await registerVerified(t);
-    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    const sub = (await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201)).body.data as { id: string };
     await t.prisma.subscription.update({
       where: { id: sub.id },
       data: { status: 'PAST_DUE', currentPeriodEnd: new Date(Date.now() - DAY_MS) },
@@ -160,7 +160,7 @@ describe('subscriptions', () => {
 
   it('cancelling while a renewal payment is being applied keeps the renewed plan (cancel waits for it and re-reads)', async () => {
     const designer = await registerVerified(t);
-    const sub = (await subscribe(designer, 'DESIGNER_PRO').expect(201)).body.data as { id: string };
+    const sub = (await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201)).body.data as { id: string };
     await t.prisma.subscription.update({
       where: { id: sub.id },
       data: { status: 'PAST_DUE', trialEndsAt: null, currentPeriodEnd: new Date(Date.now() - DAY_MS) },
@@ -185,7 +185,7 @@ describe('subscriptions', () => {
 
   it('a trial taken before trials were recorded separately is still remembered when the account is deleted', async () => {
     const first = await registerVerified(t);
-    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'DESIGNER_PRO' } });
+    const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'DESIGNER_PREMIUM_QUARTERLY' } });
     // Legacy trial: a subscription row only, no trial grant.
     await t.prisma.subscription.create({
       data: {
@@ -204,25 +204,25 @@ describe('subscriptions', () => {
     await t.http.delete(`${API}/users/me`).set(first.auth).expect(200);
 
     const again = await registerVerified(t, { email: first.email });
-    await subscribe(again, 'DESIGNER_PRO').expect(402);
+    await subscribe(again, 'DESIGNER_PREMIUM_QUARTERLY').expect(402);
   });
 
   it('deleting the account and registering again does not grant another trial', async () => {
     const first = await registerVerified(t);
-    await subscribe(first, 'DESIGNER_PRO').expect(201);
+    await subscribe(first, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
     await t.http.delete(`${API}/users/me`).set(first.auth).expect(200);
 
     const again = await registerVerified(t, { email: first.email });
-    const res = await subscribe(again, 'DESIGNER_PRO').expect(402);
+    const res = await subscribe(again, 'DESIGNER_PREMIUM_QUARTERLY').expect(402);
     expect(res.body.code).toBe('PAYMENT_REQUIRED');
   });
 
   it('an address alias (+tag) does not grant another trial either', async () => {
     const first = await registerVerified(t);
-    await subscribe(first, 'DESIGNER_PRO').expect(201);
+    await subscribe(first, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
     const [local, domain] = first.email.split('@');
     const alias = await registerVerified(t, { email: `${local}+again@${domain}` });
-    await subscribe(alias, 'DESIGNER_PRO').expect(402);
+    await subscribe(alias, 'DESIGNER_PREMIUM_QUARTERLY').expect(402);
   });
 
   describe('lifecycle sweep', () => {
@@ -250,7 +250,7 @@ describe('subscriptions', () => {
     }
 
     it('expires a finished trial', async () => {
-      const sub = await seedSubscription('DESIGNER_PRO', {
+      const sub = await seedSubscription('DESIGNER_PREMIUM_QUARTERLY', {
         status: 'TRIALING',
         trialEndsAt: new Date(Date.now() - DAY_MS),
       });
@@ -259,13 +259,13 @@ describe('subscriptions', () => {
     });
 
     it('ends a cancelled subscription at period end', async () => {
-      const sub = await seedSubscription('DESIGNER_PRO', { cancelAtPeriodEnd: true });
+      const sub = await seedSubscription('DESIGNER_PREMIUM_QUARTERLY', { cancelAtPeriodEnd: true });
       await sweep();
       expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).status).toBe('CANCELLED');
     });
 
     it('marks an unpaid paid plan past due', async () => {
-      const sub = await seedSubscription('DESIGNER_PRO', {});
+      const sub = await seedSubscription('DESIGNER_PREMIUM_QUARTERLY', {});
       await sweep();
       expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).status).toBe('PAST_DUE');
     });
@@ -279,11 +279,11 @@ describe('subscriptions', () => {
     });
 
     it('two sweeps at once renew a free plan once and allocate its leads once', async () => {
-      const sub = await seedSubscription('JEWELER_BASIC', {});
+      const sub = await seedSubscription('JEWELER_TRIAL', {});
       await Promise.all([sweep(), sweep()]);
       const renewed = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
-      expect(renewed.currentPeriodEnd.getTime()).toBeLessThan(Date.now() + 31 * DAY_MS);
-      const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_BASIC' } });
+      expect(renewed.currentPeriodEnd.getTime()).toBeLessThan(Date.now() + 91 * DAY_MS);
+      const plan = await t.prisma.planCatalog.findUniqueOrThrow({ where: { code: 'JEWELER_TRIAL' } });
       expect(await t.prisma.lead.count({ where: { subscriptionId: sub.id } })).toBe(plan.leadQuota);
     });
 
@@ -313,23 +313,96 @@ describe('subscriptions', () => {
     });
 
     it('a plan agreed at a price is not renewed for free after the catalog makes it free', async () => {
-      const sub = await seedSubscription('DESIGNER_PRO', {});
-      await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PRO' }, data: { price: 0 } });
+      const sub = await seedSubscription('DESIGNER_PREMIUM_QUARTERLY', {});
+      await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PREMIUM_QUARTERLY' }, data: { price: 0 } });
       try {
         await sweep();
       } finally {
-        await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PRO' }, data: { price: 49.9 } });
+        await t.prisma.planCatalog.update({ where: { code: 'DESIGNER_PREMIUM_QUARTERLY' }, data: { price: 45 } });
       }
       expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).status).toBe('PAST_DUE');
     });
 
     it('expires a past-due subscription after the grace period', async () => {
-      const sub = await seedSubscription('DESIGNER_PRO', {
+      const sub = await seedSubscription('DESIGNER_PREMIUM_QUARTERLY', {
         status: 'PAST_DUE',
         currentPeriodEnd: new Date(Date.now() - 30 * DAY_MS),
       });
       await sweep();
       expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } })).status).toBe('EXPIRED');
+    });
+  });
+
+  describe('the pricing table of 19.10', () => {
+    const QUARTER_MS = 91 * DAY_MS;
+
+    async function live(user: TestUser) {
+      return t.prisma.subscription.findMany({
+        where: { userId: user.id, status: { in: ['TRIALING', 'ACTIVE', 'PAST_DUE'] } },
+        include: { plan: true },
+      });
+    }
+
+    it('a jeweler who publishes a profile starts on the free trial plan: 3 leads for a quarter', async () => {
+      const jeweler = await createPublishedJeweler(t);
+      const [sub, ...more] = await live(jeweler);
+      expect(more).toHaveLength(0);
+      expect(sub).toMatchObject({ status: 'ACTIVE', billingCycle: 'QUARTERLY', plan: { code: 'JEWELER_TRIAL' } });
+      expect(Number(sub.price)).toBe(0);
+      const length = sub.currentPeriodEnd.getTime() - sub.currentPeriodStart.getTime();
+      expect(length).toBe(QUARTER_MS);
+      const leads = await t.prisma.lead.findMany({ where: { subscriptionId: sub.id } });
+      expect(leads).toHaveLength(3);
+      expect(leads.every((lead) => lead.periodEnd.getTime() === sub.currentPeriodEnd.getTime())).toBe(true);
+    });
+
+    it('publishing again (or with a plan already chosen) does not add a second plan', async () => {
+      const jeweler = await createPublishedJeweler(t);
+      await t.http.post(`${API}/jeweler-profiles/publish`).set(jeweler.auth).send({}).expect(201);
+      expect(await live(jeweler)).toHaveLength(1);
+    });
+
+    it('the free plan gives way to a trial of a paid plan; the same plan again is refused', async () => {
+      const jeweler = await createPublishedJeweler(t);
+      const [free] = await live(jeweler);
+      expect((await subscribe(jeweler, 'JEWELER_TRIAL').expect(409)).body.code).toBe('SUBSCRIPTION_EXISTS');
+
+      const trial = await subscribe(jeweler, 'JEWELER_PROFESSIONAL').expect(201);
+      expect(trial.body.data.status).toBe('TRIALING');
+      expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: free.id } })).status).toBe('CANCELLED');
+      expect((await live(jeweler)).map((sub) => sub.plan.code)).toEqual(['JEWELER_PROFESSIONAL']);
+      expect(await t.prisma.lead.count({ where: { subscriptionId: trial.body.data.id, status: 'AVAILABLE' } })).toBe(15);
+    });
+
+    it('a free plan is kept when the plan chosen needs payment', async () => {
+      const designer = await registerVerified(t);
+      const free = await subscribe(designer, 'DESIGNER_FREE').expect(201);
+      const refused = await subscribe(designer, await paidPlanWithoutTrial()).expect(402);
+      expect(refused.body.code).toBe('PAYMENT_REQUIRED');
+      expect((await t.prisma.subscription.findUniqueOrThrow({ where: { id: free.body.data.id } })).status).toBe('ACTIVE');
+    });
+
+    it('a trial is not replaced by another plan', async () => {
+      const designer = await registerVerified(t);
+      await subscribe(designer, 'DESIGNER_PREMIUM_QUARTERLY').expect(201);
+      expect((await subscribe(designer, 'DESIGNER_FREE').expect(409)).body.code).toBe('SUBSCRIPTION_EXISTS');
+    });
+
+    it('a free quarterly plan renews for another quarter with its leads', async () => {
+      const jeweler = await createPublishedJeweler(t);
+      const [sub] = await live(jeweler);
+      const ended = new Date(Date.now() - 1000);
+      await t.prisma.subscription.update({
+        where: { id: sub.id },
+        data: { currentPeriodStart: new Date(ended.getTime() - QUARTER_MS), currentPeriodEnd: ended },
+      });
+      await t.app.get(SubscriptionLifecycleService).runOnce();
+      const renewed = await t.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
+      expect(renewed.status).toBe('ACTIVE');
+      expect(renewed.currentPeriodEnd.getTime() - renewed.currentPeriodStart.getTime()).toBe(QUARTER_MS);
+      expect(
+        await t.prisma.lead.count({ where: { subscriptionId: sub.id, status: 'AVAILABLE', periodEnd: renewed.currentPeriodEnd } }),
+      ).toBe(3);
     });
   });
 });

@@ -132,7 +132,7 @@ describe('Exports are made from the design itself', () => {
 
   it('HD picture (Pro): a rendered 1600 px PNG of this design, not a stock photo', async () => {
     const user = await registerVerified(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const design = await createDraftDesign(t, user);
     const job = await t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'PNG_HD' }).expect(201);
     const done = job.body.data.status === 'SUCCEEDED' ? job.body.data : await waitForJob(t, user, job.body.data.id);
@@ -165,7 +165,7 @@ describe('Exports are made from the design itself', () => {
     const slow = await createTestApp({ env: { RENDER_SYNC_WAIT_MS: '0' } });
     try {
       const user = await registerVerified(slow);
-      await slow.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+      await slow.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
       const design = await createDraftDesign(slow, user);
       const first = await slow.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'PNG_HD' }).expect(201);
       const second = await slow.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'STL' }).expect(409);
@@ -192,7 +192,7 @@ describe('Exports are made from the design itself', () => {
     const slow = await createTestApp({ env: { RENDER_SYNC_WAIT_MS: '0' } });
     try {
       const user = await registerVerified(slow);
-      await slow.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+      await slow.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
       const design = await createDraftDesign(slow, user);
       const job = await slow.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'PNG_HD' }).expect(201);
       await slow.http.post(`${API}/render-jobs/${job.body.data.id}/cancel`).set(user.auth).expect(201);

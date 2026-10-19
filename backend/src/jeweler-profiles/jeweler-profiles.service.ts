@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
@@ -25,6 +26,7 @@ import { lockJewelerProfile, lockUser } from '../database/row-locks';
 import { withDesignPreview } from '../atelier/design-pictures';
 import { effectiveOrderStatus } from '../atelier/order-status';
 import { EntitlementsService } from '../entitlements/entitlements.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { PUBLIC_PORTFOLIO_SELECT, PUBLIC_REVIEW_SELECT, toPublicJewelerProfile } from './public-profile';
@@ -43,12 +45,15 @@ const CRM_ENTITLEMENT_KEY = 'jeweler_crm';
 
 @Injectable()
 export class JewelerProfilesService {
+  private readonly logger = new Logger(JewelerProfilesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly appConfig: AppConfigService,
     private readonly stateMachine: StateMachineService,
     private readonly audit: AuditService,
     private readonly entitlements: EntitlementsService,
+    private readonly subscriptions: SubscriptionsService,
     private readonly uploads: UploadsService,
     private readonly access: UploadAccessService,
   ) {}
@@ -253,6 +258,14 @@ export class JewelerProfilesService {
       before: existing ? toJsonValue(existing) : null,
       after: toJsonValue(profile),
     });
+
+    // A jeweler with no plan is put on the free jeweler plan (its leads); one who has a plan keeps
+    // it. The profile is published either way, and a failed enrollment is retried at the next publish.
+    try {
+      await this.subscriptions.enrollInFreePlan(user, UserRole.JEWELER);
+    } catch (err) {
+      this.logger.error(`Free plan enrollment failed for jeweler ${user.id}: ${(err as Error).message}`);
+    }
 
     return profile;
   }

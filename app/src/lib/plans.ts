@@ -21,6 +21,7 @@ export type PlanCard = {
 
 const PERIODS: Record<string, { he: string; en: string }> = {
   MONTHLY: { he: 'לחודש', en: 'per month' },
+  QUARTERLY: { he: 'לרבעון', en: 'per quarter' },
   ANNUAL: { he: 'לשנה', en: 'per year' },
   PER_ITEM: { he: 'לפריט', en: 'per item' },
   PER_LEAD: { he: 'לליד', en: 'per lead' },
@@ -37,7 +38,20 @@ const ENTITLEMENTS: Record<string, { he: string; en: string }> = {
   jeweler_crm: { he: 'מעקב ייצור (CRM)', en: 'Production tracking (CRM)' },
 }
 
+/** "in a month / quarter / year": what a plan's leads and AI creations are counted over. */
+const WITHIN: Record<string, { he: string; en: string }> = {
+  MONTHLY: { he: 'בחודש', en: 'per month' },
+  QUARTERLY: { he: 'ברבעון', en: 'per quarter' },
+  ANNUAL: { he: 'בשנה', en: 'per year' },
+}
+
 const HEBREW = /[֐-׿]/
+
+/** An "unlimited" plan (fair use): its caps exist but are not advertised as numbers. */
+function unlimited(plan: PlanCatalog): boolean {
+  const meta = plan.metadata
+  return Boolean(meta && typeof meta === 'object' && (meta as Record<string, unknown>).unlimited === true)
+}
 
 /** The admin's own feature texts: `bullets` (Hebrew; older catalogs: any language) and `bulletsEn`. */
 function bullets(inclusions: unknown, key: 'bullets' | 'bulletsEn' = 'bullets'): string[] {
@@ -50,9 +64,20 @@ function features(plan: PlanCatalog, locale: Locale): string[] {
   const en = locale === 'en'
   const symbol = currencySymbol(plan.currency)
   const lines: string[] = []
+  const within = WITHIN[plan.billingCycle] ?? WITHIN.MONTHLY
+  const per = en ? within.en : within.he
+  const aiRenders = (plan.entitlements ?? []).find((row) => row.entitlement?.key === 'ai_renders')
+  if (aiRenders && unlimited(plan)) {
+    lines.push(en ? 'Unlimited AI creations (fair use)' : 'יצירות בבינה מלאכותית ללא הגבלה (שימוש הוגן)')
+  } else if (aiRenders && typeof aiRenders.limitValue === 'number') {
+    lines.push(en ? `${aiRenders.limitValue} AI creations ${per}` : `${aiRenders.limitValue} יצירות בבינה מלאכותית ${per}`)
+  }
   if (plan.leadQuota > 0) {
-    const per = plan.billingCycle === 'ANNUAL' ? (en ? 'per year' : 'בשנה') : en ? 'per month' : 'בחודש'
-    lines.push(en ? `${plan.leadQuota} leads ${per}` : `${plan.leadQuota} לידים ${per}`)
+    if (unlimited(plan)) {
+      lines.push(en ? 'Unlimited leads (fair use)' : 'לידים ללא הגבלה (שימוש הוגן)')
+    } else {
+      lines.push(en ? `${plan.leadQuota} leads ${per}` : `${plan.leadQuota} לידים ${per}`)
+    }
   }
   if (plan.extraLeadPrice != null && Number(plan.extraLeadPrice) > 0) {
     const price = formatMoney(plan.extraLeadPrice, symbol)
@@ -91,6 +116,30 @@ export function planCards(
         current: Boolean(options.currentPlanCode) && plan.code === options.currentPlanCode,
       }
     })
+}
+
+/**
+ * Why an AI creation was refused for its quota, in the app language: the plan's quota for the
+ * period (with the way to a bigger plan) or the daily limit. Null for any other refusal.
+ */
+export function aiQuotaMessage(err: unknown, locale: Locale): { message: string; upgrade: boolean } | null {
+  const en = locale === 'en'
+  switch (apiErrorCode(err)) {
+    case 'AI_PLAN_QUOTA_EXCEEDED':
+      return {
+        message: en
+          ? 'You have used all the AI creations your plan includes for this period.'
+          : 'ניצלת את כל היצירות בבינה מלאכותית שהמסלול שלך כולל לתקופה הזו.',
+        upgrade: true,
+      }
+    case 'AI_QUOTA_EXCEEDED':
+      return {
+        message: en ? 'You have reached the daily creation limit. Please try again tomorrow.' : 'הגעת למכסת היצירות היומית. אפשר לנסות שוב מחר.',
+        upgrade: false,
+      }
+    default:
+      return null
+  }
 }
 
 /** Why subscribing was refused, in the app language. */

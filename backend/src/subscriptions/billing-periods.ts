@@ -9,6 +9,8 @@ export function billingCyclePeriodMs(cycle: BillingCycle): number {
   switch (cycle) {
     case BillingCycle.ANNUAL:
       return 365 * DAY_MS;
+    case BillingCycle.QUARTERLY:
+      return 91 * DAY_MS;
     case BillingCycle.MONTHLY:
     case BillingCycle.PER_ITEM:
     case BillingCycle.PER_LEAD:

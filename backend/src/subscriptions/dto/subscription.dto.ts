@@ -13,7 +13,7 @@ export class QueryPlansDto {
 }
 
 export class SubscribeDto {
-  @ApiProperty({ description: 'PlanCatalog.code, e.g. JEWELER_ACTIVE' })
+  @ApiProperty({ description: 'PlanCatalog.code, e.g. JEWELER_PROFESSIONAL' })
   @IsString()
   @MaxLength(64)
   planCode!: string;

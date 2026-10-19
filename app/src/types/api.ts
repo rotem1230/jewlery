@@ -442,6 +442,8 @@ export type PlanCatalog = {
   trialDays: number
   inclusions: unknown
   sortOrder: number
+  /** Display hints, e.g. `{ unlimited: true }` for a fair-use plan. */
+  metadata?: unknown
   /** What the plan unlocks (no_watermark, hd_export, personal_visualization, warm_leads...). */
   entitlements?: Array<{ entitlement?: { key: string } | null; limitValue?: number | null }>
 }

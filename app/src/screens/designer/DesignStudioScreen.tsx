@@ -34,6 +34,7 @@ import { linkForUpload, mediaUrl } from '@/src/lib/media'
 import { attachedAiJob, rememberPendingAiJob, takeFinishedAiJob } from '@/src/lib/pendingAiJobs'
 import { pickChatPhoto, pickTryOnPhoto } from '@/src/lib/chatAttachments'
 import { apiErrorCode, parseApiError } from '@/src/lib/api'
+import { aiQuotaMessage } from '@/src/lib/plans'
 import { isDesignReadOnly } from '@/src/lib/designActions'
 import { jobRefusal, tryOnGate, withPhotoRemovedOnRefusal } from '@/src/lib/tryOn'
 import type { TryOnPlacementValue } from '@/src/lib/tryOnPlacement'
@@ -486,6 +487,12 @@ export function DesignStudioScreen() {
       }
       if (apiErrorCode(err) === 'AI_NOT_CONFIGURED') {
         Alert.alert(t('studioInspirationGenerate'), t('studioInspirationUnavailable'))
+        return
+      }
+      const quota = aiQuotaMessage(err, locale)
+      if (quota) {
+        if (quota.upgrade) showPaywall(quota.message)
+        else Alert.alert(t('studioInspirationGenerate'), quota.message)
         return
       }
       Alert.alert(t('authErrorTitle'), parseApiError(err) || t('studioInspirationGenerateFailed'))

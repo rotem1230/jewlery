@@ -103,6 +103,7 @@ enum ProfilePublishStatus {
 
 enum BillingCycle {
   MONTHLY
+  QUARTERLY
   ANNUAL
   PER_ITEM
   PER_LEAD

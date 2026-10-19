@@ -53,7 +53,7 @@ describe('database seed', () => {
     ).not.toEqual([{ n: 0 }]);
 
     await db.sql.$executeRawUnsafe(`UPDATE "feature_flags" SET "enabled" = true WHERE "key" = 'phase2_matching'`);
-    await db.sql.$executeRawUnsafe(`UPDATE "plan_catalog" SET "price" = 59.90 WHERE "code" = 'DESIGNER_PRO'`);
+    await db.sql.$executeRawUnsafe(`UPDATE "plan_catalog" SET "price" = 59.90 WHERE "code" = 'DESIGNER_PREMIUM_QUARTERLY'`);
     expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
 
     const [flag] = await db.sql.$queryRawUnsafe<Array<{ enabled: boolean }>>(
@@ -61,7 +61,7 @@ describe('database seed', () => {
     );
     expect(flag.enabled).toBe(true);
     const [plan] = await db.sql.$queryRawUnsafe<Array<{ price: string }>>(
-      `SELECT "price"::text AS "price" FROM "plan_catalog" WHERE "code" = 'DESIGNER_PRO'`,
+      `SELECT "price"::text AS "price" FROM "plan_catalog" WHERE "code" = 'DESIGNER_PREMIUM_QUARTERLY'`,
     );
     expect(plan.price).toBe('59.90');
   });
@@ -100,7 +100,9 @@ describe('database seed', () => {
         )
       )[0]?.inclusions;
     const hebrew = /[֐-׿]/;
-    for (const code of ['DESIGNER_FREE', 'DESIGNER_PRO', 'JEWELER_BASIC', 'JEWELER_ACTIVE']) {
+    const codes = (await db.sql.$queryRawUnsafe<Array<{ code: string }>>(`SELECT "code" FROM "plan_catalog"`)).map((row) => row.code);
+    expect(codes.length).toBe(9);
+    for (const code of codes) {
       const plan = await inclusions(code);
       expect(plan.bullets.length).toBeGreaterThan(0);
       expect(plan.bullets.every((line) => hebrew.test(line))).toBe(true);
@@ -114,16 +116,39 @@ describe('database seed', () => {
       `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["Unlimited draft designs", "Standard export with watermark"]}'::jsonb WHERE "code" = 'DESIGNER_FREE'`,
     );
     await db.sql.$executeRawUnsafe(
-      `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["15 leads / month", "Warm, targeted leads", "Priority routing", "Internal CRM"]}'::jsonb WHERE "code" = 'JEWELER_ACTIVE'`,
-    );
-    await db.sql.$executeRawUnsafe(
-      `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["מבצע השקה למנויים"]}'::jsonb WHERE "code" = 'DESIGNER_PRO'`,
+      `UPDATE "plan_catalog" SET "inclusions" = '{"bullets": ["מבצע השקה למנויים"]}'::jsonb WHERE "code" = 'DESIGNER_PREMIUM_QUARTERLY'`,
     );
     expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
 
     expect((await inclusions('DESIGNER_FREE')).bullets).toEqual(free.bullets);
-    expect((await inclusions('JEWELER_ACTIVE')).bullets.every((line) => hebrew.test(line))).toBe(true);
-    expect(await inclusions('DESIGNER_PRO')).toEqual({ bullets: ['מבצע השקה למנויים'] });
+    expect(await inclusions('DESIGNER_PREMIUM_QUARTERLY')).toEqual({ bullets: ['מבצע השקה למנויים'] });
+  });
+
+  it('the plans are the pricing table of 19.10 (prices in ILS, quotas per period, no paid extra leads)', async () => {
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    const plans = await db.sql.$queryRawUnsafe<
+      Array<{ code: string; cycle: string; price: string; leads: number; extra: string | null; currency: string; ai: number | null; unlimited: boolean }>
+    >(
+      `SELECT p."code", p."billingCycle"::text AS "cycle", p."price"::text AS "price", p."leadQuota" AS "leads",
+              p."extraLeadPrice"::text AS "extra", p."currency",
+              (SELECT pe."limitValue" FROM "plan_entitlements" pe JOIN "entitlement_definitions" e ON e."id" = pe."entitlementId"
+                WHERE pe."planId" = p."id" AND e."key" = 'ai_renders') AS "ai",
+              coalesce((p."metadata"->>'unlimited')::boolean, false) AS "unlimited"
+         FROM "plan_catalog" p WHERE p."isActive" ORDER BY p."role", p."sortOrder"`,
+    );
+    const row = (code: string, cycle: string, price: string, leads: number, ai: number | null, unlimited = false) =>
+      ({ code, cycle, price, leads, extra: null, currency: 'ILS', ai, unlimited });
+    expect(plans).toEqual([
+      row('DESIGNER_FREE', 'MONTHLY', '0.00', 0, 10),
+      row('DESIGNER_PREMIUM_QUARTERLY', 'QUARTERLY', '45.00', 0, 150),
+      row('DESIGNER_PREMIUM_ANNUAL', 'ANNUAL', '149.00', 0, 600),
+      row('DESIGNER_PREMIUM_UNLIMITED', 'ANNUAL', '299.00', 0, 1200, true),
+      row('JEWELER_TRIAL', 'QUARTERLY', '0.00', 3, null),
+      row('JEWELER_BASIC_QUARTERLY', 'QUARTERLY', '390.00', 10, null),
+      row('JEWELER_PROFESSIONAL', 'QUARTERLY', '525.00', 15, null),
+      row('JEWELER_BUSINESS', 'QUARTERLY', '640.00', 20, null),
+      row('JEWELER_UNLIMITED', 'QUARTERLY', '990.00', 40, null, true),
+    ]);
   });
 
   it('the ring size chart follows the PRD, and sizes it dropped are no longer offered', async () => {

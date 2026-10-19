@@ -210,7 +210,7 @@ describe('render job limits and ownership', () => {
 
   it('a finished render exposes a signed output URL to its owner', async () => {
     const user = await registerVerified(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const design = await createDraftDesign(t, user);
     const res = await t.http
       .post(`${API}/render-jobs`)

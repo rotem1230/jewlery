@@ -1,5 +1,5 @@
 import type { PlanCatalog } from '../src/types/api'
-import { planCards, subscribeErrorMessage } from '../src/lib/plans'
+import { aiQuotaMessage, planCards, subscribeErrorMessage } from '../src/lib/plans'
 import { ApiError } from '../src/lib/api'
 
 function plan(overrides: Partial<PlanCatalog>): PlanCatalog {
@@ -125,6 +125,54 @@ describe('pricing plans from the server (PRD 5.8)', () => {
     const [card] = planCards([plan({ currency: 'USD', price: '120', billingCycle: 'ANNUAL', trialDays: 0 })], { role: 'DESIGNER', locale: 'he' })
     expect(card).toMatchObject({ price: '$ 120', period: 'לשנה' })
   })
+
+  describe('the pricing table of 19.10 (quarterly plans, AI creations, fair use)', () => {
+    const aiRenders = (limitValue: number | null) => ({ entitlement: { key: 'ai_renders' }, limitValue })
+
+    it('a quarterly plan is priced per quarter, and its AI creations and leads are per quarter', () => {
+      const [designer] = planCards(
+        [plan({ code: 'DESIGNER_PREMIUM_QUARTERLY', price: '45', billingCycle: 'QUARTERLY', trialDays: 0, entitlements: [aiRenders(150)] })],
+        { role: 'DESIGNER', locale: 'he' },
+      )
+      expect(designer).toMatchObject({ price: '₪ 45', period: 'לרבעון' })
+      expect(designer.features[0]).toBe('150 יצירות בבינה מלאכותית ברבעון')
+
+      const [jeweler] = planCards(
+        [plan({ code: 'JEWELER_BASIC_QUARTERLY', role: 'JEWELER', price: '390', billingCycle: 'QUARTERLY', leadQuota: 10, entitlements: [] })],
+        { role: 'JEWELER', locale: 'en' },
+      )
+      expect(jeweler).toMatchObject({ period: 'per quarter' })
+      expect(jeweler.features[0]).toBe('10 leads per quarter')
+    })
+
+    it('the AI creations of a monthly and a yearly plan are named by their period', () => {
+      const cards = planCards(
+        [
+          plan({ code: 'DESIGNER_FREE', price: '0', billingCycle: 'MONTHLY', sortOrder: 1, entitlements: [aiRenders(10)] }),
+          plan({ code: 'DESIGNER_PREMIUM_ANNUAL', price: '149', billingCycle: 'ANNUAL', sortOrder: 2, entitlements: [aiRenders(600)] }),
+        ],
+        { role: 'DESIGNER', locale: 'he' },
+      )
+      expect(cards[0].features[0]).toBe('10 יצירות בבינה מלאכותית בחודש')
+      expect(cards[1].features[0]).toBe('600 יצירות בבינה מלאכותית בשנה')
+    })
+
+    it('an unlimited plan says unlimited (fair use), not its fair-use cap', () => {
+      const [designer] = planCards(
+        [plan({ code: 'DESIGNER_PREMIUM_UNLIMITED', price: '299', billingCycle: 'ANNUAL', metadata: { unlimited: true }, entitlements: [aiRenders(1200)] })],
+        { role: 'DESIGNER', locale: 'he' },
+      )
+      expect(designer.features[0]).toBe('יצירות בבינה מלאכותית ללא הגבלה (שימוש הוגן)')
+      expect(designer.features.join(' ')).not.toContain('1200')
+
+      const [jeweler] = planCards(
+        [plan({ code: 'JEWELER_UNLIMITED', role: 'JEWELER', price: '990', billingCycle: 'QUARTERLY', leadQuota: 40, metadata: { unlimited: true }, entitlements: [] })],
+        { role: 'JEWELER', locale: 'he' },
+      )
+      expect(jeweler.features[0]).toBe('לידים ללא הגבלה (שימוש הוגן)')
+      expect(jeweler.features.join(' ')).not.toContain('40')
+    })
+  })
 })
 
 describe('subscribing', () => {
@@ -135,5 +183,21 @@ describe('subscribing', () => {
       'מסלול זה דורש תשלום, והתשלום בתוך האפליקציה עדיין אינו זמין.',
     )
     expect(subscribeErrorMessage(refused(409, 'SUBSCRIPTION_EXISTS'), 'he')).toBe('כבר יש לך מנוי פעיל. כדי לעבור מסלול יש לבטל קודם את המנוי הנוכחי.')
+  })
+})
+
+describe('AI creation limits', () => {
+  const refused = (code: string) => new ApiError(429, '/ai/inspiration', JSON.stringify({ code, message: 'x' }))
+
+  it('the plan quota and the daily limit are explained in Hebrew, the plan quota with the way to more', () => {
+    expect(aiQuotaMessage(refused('AI_PLAN_QUOTA_EXCEEDED'), 'he')).toEqual({
+      message: 'ניצלת את כל היצירות בבינה מלאכותית שהמסלול שלך כולל לתקופה הזו.',
+      upgrade: true,
+    })
+    expect(aiQuotaMessage(refused('AI_QUOTA_EXCEEDED'), 'he')).toEqual({
+      message: 'הגעת למכסת היצירות היומית. אפשר לנסות שוב מחר.',
+      upgrade: false,
+    })
+    expect(aiQuotaMessage(refused('AI_JOB_IN_PROGRESS'), 'he')).toBeNull()
   })
 })

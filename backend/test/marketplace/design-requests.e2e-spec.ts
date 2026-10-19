@@ -35,8 +35,8 @@ describe('design request delivery', () => {
   }
 
   it('a design whose earlier request has closed can reach the same jeweler again, without a second lead', async () => {
+    // A new jeweler starts on the free trial plan.
     const jeweler = await createPublishedJeweler(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_BASIC' }).expect(201);
     const designer = await registerVerified(t);
     const design = await createPublishedDesign(t, designer);
     const targeted = { mode: 'TARGETED', targetJewelerProfileIds: [jeweler.profileId] };
@@ -52,9 +52,7 @@ describe('design request delivery', () => {
 
   it('with quota enforcement on, re-delivering a design still needs an active subscription (only the lead is waived)', async () => {
     const jeweler = await createPublishedJeweler(t);
-    const sub = (
-      await t.http.post(`${API}/subscriptions/subscribe`).set(jeweler.auth).send({ planCode: 'JEWELER_BASIC' }).expect(201)
-    ).body.data as { id: string };
+    const sub = await t.prisma.subscription.findFirstOrThrow({ where: { userId: jeweler.id, status: 'ACTIVE' } });
     const designer = await registerVerified(t);
     const design = await createPublishedDesign(t, designer);
     const targeted = { mode: 'TARGETED', targetJewelerProfileIds: [jeweler.profileId] };

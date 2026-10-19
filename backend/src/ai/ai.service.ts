@@ -10,7 +10,7 @@ import {
   OnModuleDestroy,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { AiGenerationJob, JobStatus, User, UserRole } from '@prisma/client';
+import { AiGenerationJob, JobStatus, Prisma, User, UserRole } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
 import { AppConfigService } from '../cms/app-config.service';
@@ -22,9 +22,21 @@ import { AI_ENGINE_ADAPTER, AiEngineAdapter } from './adapters/ai-engine.adapter
 import { CreateAiInspirationDto } from './dto/ai.dto';
 import { DesignChoices, describeChoices, loadChoiceCatalog } from './design-choices';
 import { lockUser } from '../database/row-locks';
+import { entitledSubscriptionWhere } from '../entitlements/entitlements.service';
+import { billingCyclePeriodMs } from '../subscriptions/billing-periods';
 
 const DEFAULT_DAILY_PER_USER = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** The plan entitlement whose `limitValue` is the AI creations included per billing period. */
+const AI_RENDERS = 'ai_renders';
+/** Without a plan that sets them: the free designer plan's creations, over the last 30 days. */
+const FREE_PLAN_CODE = 'DESIGNER_FREE';
+const FREE_PLAN_WINDOW_MS = 30 * DAY_MS;
+const DEFAULT_FREE_PLAN_RENDERS = 10;
+/** Creations that use the quota: everything but a failed or cancelled one. */
+const COUNTED_STATUSES = [JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.SUCCEEDED];
+
+type Tx = Prisma.TransactionClient;
 /** Jobs stuck longer than this (e.g. the process restarted mid-generation) are failed. */
 const STALE_JOB_MS = 15 * 60 * 1000;
 
@@ -36,8 +48,9 @@ const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 /**
  * Inspiration pictures (PRD 5.4 step 7: "generate using AI"), made from the note and from the
  * design's inspiration picture when there is one, by a paid provider. Asynchronous (the request
- * returns 202 with a QUEUED job that the app polls) and bounded per user: one job in flight and a
- * daily quota (AppConfig `ai_limits.dailyPerUser`). Without a configured provider the request is
+ * returns 202 with a QUEUED job that the app polls) and bounded per user: one job in flight, the
+ * creations the user's plan includes for its billing period (`ai_renders`), and a daily quota
+ * (AppConfig `ai_limits.dailyPerUser`). Without a configured provider the request is
  * refused up front. The app saves a finished picture as the design's inspiration picture.
  */
 @Injectable()
@@ -64,6 +77,37 @@ export class AiService implements OnModuleDestroy {
     const raw = await this.appConfig.get('ai_limits');
     const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).dailyPerUser : null;
     return typeof value === 'number' && value >= 0 ? value : DEFAULT_DAILY_PER_USER;
+  }
+
+  /**
+   * The AI creations the user may make now, and since when they are counted: those of the plan
+   * they are entitled to (its `ai_renders` cap, over the billing period that holds now), else the
+   * free designer plan's (over the last 30 days). A plan whose cap is null has none.
+   */
+  private async planQuota(tx: Tx, userId: string, now: Date): Promise<{ limit: number | null; since: Date }> {
+    const subscriptions = await tx.subscription.findMany({
+      where: entitledSubscriptionWhere(userId, now),
+      orderBy: { createdAt: 'desc' },
+      include: { plan: { include: { entitlements: { include: { entitlement: true } } } } },
+    });
+    for (const sub of subscriptions) {
+      const cap = sub.plan.entitlements.find((row) => row.entitlement.key === AI_RENDERS);
+      if (cap) {
+        // A renewal paid early starts the next period in the future: count the one that holds now.
+        const since =
+          sub.currentPeriodStart <= now
+            ? sub.currentPeriodStart
+            : new Date(sub.currentPeriodStart.getTime() - billingCyclePeriodMs(sub.billingCycle));
+        return { limit: cap.limitValue, since };
+      }
+    }
+    const free = await tx.planEntitlement.findFirst({
+      where: { plan: { code: FREE_PLAN_CODE }, entitlement: { key: AI_RENDERS } },
+    });
+    return {
+      limit: free ? free.limitValue : DEFAULT_FREE_PLAN_RENDERS,
+      since: new Date(now.getTime() - FREE_PLAN_WINDOW_MS),
+    };
   }
 
   async createInspiration(user: User, dto: CreateAiInspirationDto): Promise<AiJobView> {
@@ -107,6 +151,22 @@ export class AiService implements OnModuleDestroy {
           message: 'A generation is already in progress',
           code: 'AI_JOB_IN_PROGRESS',
         });
+      }
+      const quota = await this.planQuota(tx, user.id, new Date());
+      if (quota.limit !== null) {
+        const used = await tx.aiGenerationJob.count({
+          where: { requestedById: user.id, status: { in: COUNTED_STATUSES }, createdAt: { gte: quota.since } },
+        });
+        if (used >= quota.limit) {
+          throw new HttpException(
+            {
+              success: false,
+              message: 'The AI creations your plan includes for this period are used up',
+              code: 'AI_PLAN_QUOTA_EXCEEDED',
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }
       }
       const today = await tx.aiGenerationJob.count({
         where: { requestedById: user.id, createdAt: { gt: new Date(Date.now() - DAY_MS) } },

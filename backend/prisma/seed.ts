@@ -606,6 +606,7 @@ async function seedEntitlementDefinitions(): Promise<Record<string, string>> {
     { key: 'priority_cloud_processing', description: 'Lower queue priority number for render/AI jobs' },
     { key: 'priority_routing', description: 'Jeweler profile surfaces higher in matching/routing' },
     { key: 'jeweler_crm', description: 'Access to the internal production-tracking CRM notes' },
+    { key: 'ai_renders', description: 'AI creations (inspiration pictures) per billing period; limitValue is the cap' },
   ];
 
   const ids: Record<string, string> = {};
@@ -637,10 +638,21 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
     /** What the plan includes, in Hebrew (the app's language) with the English beside it. */
     inclusions: { bullets: string[]; bulletsEn: string[] };
     /** The English-only list seeded before: a re-seed replaces it (an operator's own list is kept). */
-    legacyInclusions: Prisma.InputJsonValue;
-    entitlementKeys: string[];
+    legacyInclusions?: Prisma.InputJsonValue;
+    /** Display hints: `unlimited` plans show "unlimited (fair use)" instead of their caps. */
+    metadata?: Prisma.InputJsonValue;
+    /** Entitlement key → its cap (`ai_renders`: AI creations per billing period), or null. */
+    entitlements: Record<string, number | null>;
   };
 
+  const DESIGNER_PREMIUM = { no_watermark: null, hd_export: null, personal_visualization: null, verified_designer_badge: null };
+  const JEWELER_PAID = { warm_leads: null, priority_routing: null, jeweler_crm: null, priority_cloud_processing: null };
+  const LISTING = { bullets: ['הצגה ברשימת הצורפים באטלייה'], bulletsEn: ['Standard profile listing'] };
+
+  // The client's pricing table of 19.10 (prices in ILS). "Unlimited" plans are capped for fair use:
+  // 1,200 AI creations a year, 40 leads a quarter. No plan sells extra leads: when a jeweler's
+  // leads for the quarter are used, requests stop until the next quarter. Paid plans keep the
+  // 14-day trial the catalog had before.
   const plans: PlanSeed[] = [
     {
       code: 'DESIGNER_FREE',
@@ -657,63 +669,116 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
         bulletsEn: ['Unlimited draft designs', 'Standard export with watermark'],
       },
       legacyInclusions: { bullets: ['Unlimited draft designs', 'Standard export with watermark'] },
-      entitlementKeys: [],
+      entitlements: { ai_renders: 10 },
     },
     {
-      code: 'DESIGNER_PRO',
+      code: 'DESIGNER_PREMIUM_QUARTERLY',
       role: UserRole.DESIGNER,
-      nameHe: 'מעצב/ת - פרו',
-      nameEn: 'Designer Pro',
-      billingCycle: BillingCycle.MONTHLY,
-      price: 49.9,
+      nameHe: 'מעצב/ת - פרימיום רבעוני',
+      nameEn: 'Designer Premium Quarterly',
+      billingCycle: BillingCycle.QUARTERLY,
+      price: 45,
       leadQuota: 0,
       trialDays: 14,
       sortOrder: 2,
-      inclusions: {
-        bullets: ['ייצוא ללא סימן מים', 'ייצוא תמונת HD', 'הדמיה על תמונה אישית', 'תג "מעצב מאומת"'],
-        bulletsEn: ['Exports without a watermark', 'HD image export', 'Try-on on your own photo', '"Verified designer" badge'],
-      },
-      legacyInclusions: {
-        bullets: ['No watermark exports', 'HD export', 'Personal visualization', 'Verified badge'],
-      },
-      entitlementKeys: ['no_watermark', 'hd_export', 'personal_visualization', 'verified_designer_badge'],
+      inclusions: { bullets: ['כל יכולות הפרימיום, בחיוב רבעוני'], bulletsEn: ['All premium features, billed quarterly'] },
+      entitlements: { ...DESIGNER_PREMIUM, ai_renders: 150 },
     },
     {
-      code: 'JEWELER_BASIC',
+      code: 'DESIGNER_PREMIUM_ANNUAL',
+      role: UserRole.DESIGNER,
+      nameHe: 'מעצב/ת - פרימיום שנתי',
+      nameEn: 'Designer Premium Annual',
+      billingCycle: BillingCycle.ANNUAL,
+      price: 149,
+      leadQuota: 0,
+      trialDays: 14,
+      sortOrder: 3,
+      inclusions: { bullets: ['כל יכולות הפרימיום, בחיוב שנתי'], bulletsEn: ['All premium features, billed yearly'] },
+      entitlements: { ...DESIGNER_PREMIUM, ai_renders: 600 },
+    },
+    {
+      code: 'DESIGNER_PREMIUM_UNLIMITED',
+      role: UserRole.DESIGNER,
+      nameHe: 'מעצב/ת - פרימיום ללא הגבלה',
+      nameEn: 'Designer Premium Unlimited',
+      billingCycle: BillingCycle.ANNUAL,
+      price: 299,
+      leadQuota: 0,
+      trialDays: 14,
+      sortOrder: 4,
+      inclusions: { bullets: ['בכפוף למדיניות שימוש הוגן'], bulletsEn: ['Subject to the fair use policy'] },
+      metadata: { unlimited: true },
+      entitlements: { ...DESIGNER_PREMIUM, ai_renders: 1200 },
+    },
+    {
+      code: 'JEWELER_TRIAL',
       role: UserRole.JEWELER,
-      nameHe: 'צורף/ת - בסיסי',
-      nameEn: 'Jeweler Basic',
-      billingCycle: BillingCycle.MONTHLY,
+      nameHe: 'צורף/ת - התנסות',
+      nameEn: 'Jeweler Trial',
+      billingCycle: BillingCycle.QUARTERLY,
       price: 0,
       leadQuota: 3,
       trialDays: 0,
       sortOrder: 1,
-      inclusions: {
-        bullets: ['3 לידים בחודש', 'הצגה ברשימת הצורפים באטלייה'],
-        bulletsEn: ['3 leads per month', 'Standard profile listing'],
-      },
-      legacyInclusions: { bullets: ['3 design requests / month', 'Standard profile listing'] },
-      entitlementKeys: [],
+      inclusions: LISTING,
+      entitlements: {},
     },
     {
-      code: 'JEWELER_ACTIVE',
+      code: 'JEWELER_BASIC_QUARTERLY',
       role: UserRole.JEWELER,
-      nameHe: 'צורף/ת - אקטיבי',
-      nameEn: 'Jeweler Active',
-      billingCycle: BillingCycle.MONTHLY,
-      price: 199,
-      leadQuota: 15,
-      extraLeadPrice: 25,
+      nameHe: 'צורף/ת - בסיסית',
+      nameEn: 'Jeweler Basic',
+      billingCycle: BillingCycle.QUARTERLY,
+      price: 390,
+      leadQuota: 10,
       trialDays: 14,
       sortOrder: 2,
+      inclusions: LISTING,
+      entitlements: JEWELER_PAID,
+    },
+    {
+      code: 'JEWELER_PROFESSIONAL',
+      role: UserRole.JEWELER,
+      nameHe: 'צורף/ת - מקצועית',
+      nameEn: 'Jeweler Professional',
+      billingCycle: BillingCycle.QUARTERLY,
+      price: 525,
+      leadQuota: 15,
+      trialDays: 14,
+      sortOrder: 3,
+      inclusions: LISTING,
+      entitlements: JEWELER_PAID,
+    },
+    {
+      code: 'JEWELER_BUSINESS',
+      role: UserRole.JEWELER,
+      nameHe: 'צורף/ת - עסקית',
+      nameEn: 'Jeweler Business',
+      billingCycle: BillingCycle.QUARTERLY,
+      price: 640,
+      leadQuota: 20,
+      trialDays: 14,
+      sortOrder: 4,
+      inclusions: LISTING,
+      entitlements: JEWELER_PAID,
+    },
+    {
+      code: 'JEWELER_UNLIMITED',
+      role: UserRole.JEWELER,
+      nameHe: 'צורף/ת - ללא הגבלה',
+      nameEn: 'Jeweler Unlimited',
+      billingCycle: BillingCycle.QUARTERLY,
+      price: 990,
+      leadQuota: 40,
+      trialDays: 14,
+      sortOrder: 5,
       inclusions: {
-        bullets: ['15 לידים בחודש', 'לידים חמים וממוקדים', 'עדיפות בהפניית בקשות', 'מעקב ייצור (CRM)'],
-        bulletsEn: ['15 leads per month', 'Warm, targeted leads', 'Priority request routing', 'Production tracking (CRM)'],
+        bullets: ['הצגה ברשימת הצורפים באטלייה', 'בכפוף למדיניות שימוש הוגן'],
+        bulletsEn: ['Standard profile listing', 'Subject to the fair use policy'],
       },
-      legacyInclusions: {
-        bullets: ['15 leads / month', 'Warm, targeted leads', 'Priority routing', 'Internal CRM'],
-      },
-      entitlementKeys: ['warm_leads', 'priority_routing', 'jeweler_crm', 'priority_cloud_processing'],
+      metadata: { unlimited: true },
+      entitlements: JEWELER_PAID,
     },
   ];
 
@@ -735,23 +800,25 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
         trialDays: plan.trialDays,
         sortOrder: plan.sortOrder,
         inclusions: plan.inclusions,
+        metadata: plan.metadata,
       },
     });
     // The feature texts of a plan seeded before were English only: those are replaced; a list an
     // operator rewrote is not.
-    if (JSON.stringify(row.inclusions) === JSON.stringify(plan.legacyInclusions)) {
+    if (plan.legacyInclusions && JSON.stringify(row.inclusions) === JSON.stringify(plan.legacyInclusions)) {
       await prisma.planCatalog.update({ where: { id: row.id }, data: { inclusions: plan.inclusions } });
     }
 
-    for (const key of plan.entitlementKeys) {
+    for (const [key, limitValue] of Object.entries(plan.entitlements)) {
       const entitlementId = entitlementIds[key];
       if (!entitlementId) {
         continue;
       }
+      // A cap an operator changed is theirs: only a missing link is created.
       await prisma.planEntitlement.upsert({
         where: { planId_entitlementId: { planId: row.id, entitlementId } },
         update: {},
-        create: { planId: row.id, entitlementId },
+        create: { planId: row.id, entitlementId, limitValue },
       });
     }
   }
@@ -760,11 +827,11 @@ async function seedPlanCatalog(entitlementIds: Record<string, string>) {
 }
 
 /** Local designer can hit try-on (`personal_visualization`) without buying a plan. */
-async function seedDesignerProTrial() {
+async function seedDesignerPremiumTrial() {
   const designer = await prisma.user.findUnique({ where: { email: 'designer@dev.mailnvosky.local' } });
-  const plan = await prisma.planCatalog.findUnique({ where: { code: 'DESIGNER_PRO' } });
+  const plan = await prisma.planCatalog.findUnique({ where: { code: 'DESIGNER_PREMIUM_QUARTERLY' } });
   if (!designer || !plan) {
-    console.log('Seed skip: designer PRO trial (user or plan missing)');
+    console.log('Seed skip: designer premium trial (user or plan missing)');
     return;
   }
 
@@ -1280,7 +1347,7 @@ async function main() {
   }
   await seedUsers();
   await enableDemoFeatureFlags();
-  await seedDesignerProTrial();
+  await seedDesignerPremiumTrial();
   await seedJewelerProfileShowcase();
   await seedJewelerChatShowcase(itemTypeIds);
   await seedAtelierPromotions();

@@ -283,6 +283,42 @@ describe('data migrations on existing data', () => {
     expect(row).toEqual({ price: '10.00', currency: 'ILS' });
   });
 
+  it('the pricing table of 19.10: the plans it replaces are no longer offered, their subscriptions carry on, and plans can be quarterly', async () => {
+    db = await scratchDatabase('mig_pricing_table');
+    db.migrateTo('20261017130000_design_preview_key');
+    const pro = await insertPlan('DESIGNER_PRO', 49.9);
+    await insertPlan('JEWELER_BASIC', 0);
+    await insertPlan('JEWELER_ACTIVE', 199);
+    await insertPlan('DESIGNER_FREE', 0);
+    const user = await insertUser(null, '2026-01-01 10:00:00');
+    const sub = randomUUID();
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "subscriptions" ("id", "userId", "planId", "role", "status", "billingCycle", "price", "currency", "currentPeriodStart", "currentPeriodEnd", "createdAt", "updatedAt")
+       VALUES ($1::uuid, $2::uuid, $3::uuid, 'DESIGNER', 'TRIALING', 'MONTHLY', 49.9, 'ILS', now(), now() + interval '14 days', now(), now())`,
+      sub,
+      user,
+      pro,
+    );
+
+    db.migrateTo('20261019120000_pricing_table_plans');
+
+    const plans = await db.sql.$queryRawUnsafe<Array<{ code: string; isActive: boolean }>>(
+      `SELECT "code", "isActive" FROM "plan_catalog" ORDER BY "code"`,
+    );
+    expect(plans).toEqual([
+      { code: 'DESIGNER_FREE', isActive: true },
+      { code: 'DESIGNER_PRO', isActive: false },
+      { code: 'JEWELER_ACTIVE', isActive: false },
+      { code: 'JEWELER_BASIC', isActive: false },
+    ]);
+    const [kept] = await db.sql.$queryRawUnsafe<Array<{ status: string; planId: string }>>(
+      `SELECT "status"::text AS "status", "planId"::text AS "planId" FROM "subscriptions" WHERE "id" = $1::uuid`,
+      sub,
+    );
+    expect(kept).toEqual({ status: 'TRIALING', planId: pro });
+    await db.sql.$executeRawUnsafe(`UPDATE "plan_catalog" SET "billingCycle" = 'QUARTERLY' WHERE "code" = 'DESIGNER_FREE'`);
+  });
+
   it('pending outbox events stay deliverable and voice-note types are allowed after the upgrade', async () => {
     db = await scratchDatabase('mig_outbox');
     db.migrateTo('20261012100000_auth_identity_unique');

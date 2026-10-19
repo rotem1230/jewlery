@@ -404,7 +404,7 @@ describe('upload validation', () => {
   it('generated outputs (exports, AI models) do not use up the personal upload quota', async () => {
     await withLimits({ dailyMaxFiles: 2 }, async () => {
       const user = await registerVerified(t);
-      await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+      await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
       const design = await createDraftDesign(t, user);
       await t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'PNG_HD' }).expect(201);
       await uploadFile(t, user, PNG_BYTES, 'image/png').expect(201);
@@ -471,7 +471,7 @@ describe('visualization retention', () => {
 
   it('purging deletes the stored files, stops serving them and does not repeat', async () => {
     const s = await marketplaceScenario(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const selfie = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'selfie.png').expect(201);
     const job = await t.http
       .post(`${API}/visualization/jobs`)
@@ -501,7 +501,7 @@ describe('visualization retention', () => {
 
   it('purging never deletes a photo that is also used elsewhere (e.g. the avatar)', async () => {
     const s = await marketplaceScenario(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const photo = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'me.png').expect(201);
     await t.http.patch(`${API}/users/me`).set(s.designer.auth).send({ avatarUploadId: photo.body.data.id }).expect(200);
     const job = await t.http
@@ -525,7 +525,7 @@ describe('visualization retention', () => {
 
   it('only a ready image of the user can be the try-on input', async () => {
     const s = await marketplaceScenario(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const voice = await uploadFile(t, s.designer, M4A_BYTES, 'audio/m4a', 'note.m4a').expect(201);
     await t.http
       .post(`${API}/visualization/jobs`)
@@ -536,7 +536,7 @@ describe('visualization retention', () => {
 
   it('the try-on result opens only through the signed link its owner receives', async () => {
     const s = await marketplaceScenario(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const selfie = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'selfie.png').expect(201);
     const created = await t.http
       .post(`${API}/visualization/jobs`)
@@ -631,7 +631,7 @@ describe('try-on limits', () => {
 
   it('caps try-on jobs per user per day, also under simultaneous requests', async () => {
     const s = await marketplaceScenario(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(s.designer.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const selfie = await uploadFile(t, s.designer, PNG_BYTES, 'image/png', 'selfie.png').expect(201);
     const results = await Promise.all(
       Array.from({ length: 4 }, () =>

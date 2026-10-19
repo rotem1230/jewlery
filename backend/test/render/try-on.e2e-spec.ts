@@ -49,7 +49,7 @@ describe('Try-on composes the design onto the photo', () => {
 
   async function proDesigner() {
     const user = await registerVerified(t);
-    await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PRO' }).expect(201);
+    await t.http.post(`${API}/subscriptions/subscribe`).set(user.auth).send({ planCode: 'DESIGNER_PREMIUM_QUARTERLY' }).expect(201);
     const design = await createDraftDesign(t, user);
     return { user, design };
   }

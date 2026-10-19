@@ -79,8 +79,10 @@ export class SubscriptionsService {
   /**
    * Starts a subscription without any payment only when that is legitimate: a free plan, or the
    * user's first trial for that role. Anything else needs a confirmed payment (402); paid
-   * activation arrives exclusively through the signed payment webhook. A per-user row lock keeps
-   * concurrent calls from creating two live subscriptions.
+   * activation arrives exclusively through the signed payment webhook. A live free plan gives way
+   * to the plan chosen (as it does to a paid checkout); a trial or a plan agreed at a price stays
+   * until it is cancelled. A per-user row lock keeps concurrent calls from creating two live
+   * subscriptions.
    */
   async subscribe(user: User, dto: SubscribeDto) {
     const plan = await this.prisma.planCatalog.findUnique({ where: { code: dto.planCode } });
@@ -95,13 +97,15 @@ export class SubscriptionsService {
     }
 
     const now = new Date();
-    const subscription = await this.prisma.$transaction(async (tx) => {
+    const { subscription, replaced } = await this.prisma.$transaction(async (tx) => {
       await lockUser(tx, user.id);
 
       const live = await tx.subscription.findFirst({
         where: { userId: user.id, status: { in: LIVE_STATUSES } },
       });
-      if (live) {
+      const freeToReplace =
+        live && live.status === SubscriptionStatus.ACTIVE && live.price.isZero() && live.planId !== plan.id ? live : null;
+      if (live && !freeToReplace) {
         throw new ConflictException({
           success: false,
           message: 'An active subscription already exists; cancel it before subscribing to a new plan',
@@ -139,6 +143,10 @@ export class SubscriptionsService {
         currentPeriodEnd = new Date(now.getTime() + billingCyclePeriodMs(plan.billingCycle));
       }
 
+      // Only once the new plan is granted (a refusal above keeps the free plan).
+      if (freeToReplace) {
+        await tx.subscription.update({ where: { id: freeToReplace.id }, data: { status: SubscriptionStatus.CANCELLED } });
+      }
       const sub = await tx.subscription.create({
         data: {
           userId: user.id,
@@ -154,13 +162,14 @@ export class SubscriptionsService {
         },
       });
       await this.allocateLeads(tx, sub, plan, now, currentPeriodEnd as Date);
-      return sub;
+      return { subscription: sub, replaced: freeToReplace };
     });
 
     await this.eventLog.record('subscription.created', 'Subscription', subscription.id, {
       planCode: plan.code,
       status: subscription.status,
       userId: user.id,
+      ...(replaced ? { replacedSubscriptionId: replaced.id } : {}),
     });
     await this.outbox.enqueue('subscription.created', {
       subscriptionId: subscription.id,
@@ -168,6 +177,55 @@ export class SubscriptionsService {
       planCode: plan.code,
     });
 
+    return subscription;
+  }
+
+  /**
+   * Puts a user with no live subscription on the role's free plan (the first one offered, e.g. the
+   * jeweler trial plan), so what that plan includes reaches them without choosing it first.
+   * Returns null when they already have a live subscription or no free plan is offered.
+   */
+  async enrollInFreePlan(user: User, role: UserRole): Promise<Subscription | null> {
+    const plan = await this.prisma.planCatalog.findFirst({
+      where: { role, isActive: true, trialDays: 0, price: { equals: new Prisma.Decimal(0) } },
+      orderBy: { sortOrder: 'asc' },
+    });
+    if (!plan) {
+      return null;
+    }
+    const subscription = await this.prisma.$transaction(async (tx) => {
+      await lockUser(tx, user.id);
+      const live = await tx.subscription.findFirst({ where: { userId: user.id, status: { in: LIVE_STATUSES } } });
+      if (live) {
+        return null;
+      }
+      const now = new Date();
+      const end = new Date(now.getTime() + billingCyclePeriodMs(plan.billingCycle));
+      const sub = await tx.subscription.create({
+        data: {
+          userId: user.id,
+          planId: plan.id,
+          role: plan.role,
+          status: SubscriptionStatus.ACTIVE,
+          billingCycle: plan.billingCycle,
+          price: plan.price,
+          currency: plan.currency,
+          currentPeriodStart: now,
+          currentPeriodEnd: end,
+        },
+      });
+      await this.allocateLeads(tx, sub, plan, now, end);
+      return sub;
+    });
+    if (subscription) {
+      await this.eventLog.record('subscription.created', 'Subscription', subscription.id, {
+        planCode: plan.code,
+        status: subscription.status,
+        userId: user.id,
+        enrolled: true,
+      });
+      await this.outbox.enqueue('subscription.created', { subscriptionId: subscription.id, userId: user.id, planCode: plan.code });
+    }
     return subscription;
   }
 
