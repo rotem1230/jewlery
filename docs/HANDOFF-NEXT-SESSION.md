@@ -136,12 +136,12 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 ### בניות
 | בנייה | מצב |
 |---|---|
-| iOS build 3 | ב-TestFlight (אייקון) |
-| iOS build 4 | ב-TestFlight (ניווט RTL + כפתורים) |
-| **iOS build 5** | **רץ בלשונית הטרמינל "iOS build (Apple sign-in)" — מחכה שהמשתמש יתחבר ל-Apple. אחרי זה עולה אוטומטית ל-TestFlight.** |
-| Android APK אחרון שהושלם | https://expo.dev/artifacts/eas/tdGK_3eYxK7fIPfrOevwJfRNqnQbnDq_FyP5mVg2EDU.apk |
-| **Android APK חדש (Apple/Google)** | build `9c877401-4ca1-455f-8bc9-301fad984141` — **לבדוק סטטוס** |
-| **בנייה חדשה ל-17.10 (Android + iOS)** | **לא הופעלה.** נדרשת כדי שהסטודיו, ההדמיה והייצוא החדשים יגיעו למשתמשים. הקרדיטים החינמיים של EAS נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. |
+| iOS #9 (18.10) | ב-TestFlight |
+| Android APK (18.10) | https://expo.dev/artifacts/eas/BouMaU1EeRpRrwuzd56-kwX83pVcVdhRkjCBGD-ouoU.apk |
+| **iOS #10 (19.10)** — מסלולים, Cardcom, ניהול, החלפת כרטיס, תשלום תכשיטים | הועלה ל-App Store Connect / TestFlight (build `6823db90`) |
+| **Android APK (19.10)** — אותו קוד | https://expo.dev/artifacts/eas/IbOJZP3jpiVFSYfMnl29VcPmDsZFOTKgAfv1VcCGnn0.apk (build `5e2280f7`) |
+
+הקרדיטים החינמיים של EAS לחודש נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. iOS בלי יכולת (capability) חדשה רץ לא-אינטראקטיבית (מפתח ASC שמור ב-EAS).
 
 ### דברים שתוקנו בדרך לבניות (לא לשבור)
 - **ספריית הקלטה** `react-native-audio-recorder-player` לא מתקמפלת על RN 0.86 → `app/scripts/patch-native-modules.cjs` רץ ב-`postinstall` (גם בשרתי EAS), עם טסט. נכשל בקול אם הספרייה משתנה.
