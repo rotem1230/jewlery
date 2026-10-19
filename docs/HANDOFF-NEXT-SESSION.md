@@ -138,8 +138,10 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 |---|---|
 | iOS #9 (18.10) | ב-TestFlight |
 | Android APK (18.10) | https://expo.dev/artifacts/eas/BouMaU1EeRpRrwuzd56-kwX83pVcVdhRkjCBGD-ouoU.apk |
-| **iOS #10 (19.10)** — מסלולים, Cardcom, ניהול, החלפת כרטיס, תשלום תכשיטים | הועלה ל-App Store Connect / TestFlight (build `6823db90`) |
-| **Android APK (19.10)** — אותו קוד | https://expo.dev/artifacts/eas/IbOJZP3jpiVFSYfMnl29VcPmDsZFOTKgAfv1VcCGnn0.apk (build `5e2280f7`) |
+| iOS #10 (19.10) — מסלולים, Cardcom, ניהול, החלפת כרטיס, תשלום תכשיטים | הועלה ל-App Store Connect / TestFlight (build `6823db90`) |
+| Android APK (19.10) | https://expo.dev/artifacts/eas/IbOJZP3jpiVFSYfMnl29VcPmDsZFOTKgAfv1VcCGnn0.apk (build `5e2280f7`) |
+| **iOS #11 (20.10)** — + מסך "מנויים ולידים" | הועלה ל-App Store Connect / TestFlight (build `e62ce5fb`) |
+| **Android APK (20.10)** — אותו קוד | https://expo.dev/artifacts/eas/jWP3JT6LAs2ZyWldnmABoRMVcfHVqrTgnayF0NlR7o0.apk (build `4756db5d`) |
 
 הקרדיטים החינמיים של EAS לחודש נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. iOS בלי יכולת (capability) חדשה רץ לא-אינטראקטיבית (מפתח ASC שמור ב-EAS).
 
