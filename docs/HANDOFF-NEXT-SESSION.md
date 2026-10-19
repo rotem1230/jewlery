@@ -79,7 +79,9 @@ git log --oneline -5
 | חשבון ישן (Free, אורגון) | שירות `jewlery` + מסד `jewelry-db` — **לא להשתמש; לכבות** אחרי המעבר. הנתונים בו קפואים מ-18.10 |
 | בנייה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile` |
 | מסד נתונים | `jewelry-db` (dpg-db7nc2bncjis73eu48eg-a), PostgreSQL 18, **Free**, Oregon |
-| מיגרציות | כולן הוחלו, כולל `20261017130000_design_preview_key` (17.10) |
+| מיגרציות | כולן הוחלו, כולל `20261019120000_pricing_table_plans` (19.10, על המסד בחשבון החדש) |
+| מסלולים (19.10) | seed הורץ ב-production אחרי הפריסה של `133f817`: 9 המסלולים של טבלת התמחור. גיבוי לפני: `E:/claude-work/malinvosky/backups/prod-before-pricing-20261019-1628.dump` |
+| `lead_definition.enforceQuota` | **true** מ-19.10 — צורף בלי לידים פנויים לא מקבל בקשות עד הרבעון הבא |
 | seed | הורץ ב-production (בלי חשבונות דמו): קטלוג, מסלולים, מידות טבעת PRD, תבניות הודעה בעברית |
 | דגל `phase3_oauth` | **דלוק** (שונה ידנית במסד, `enabled=true`, `rolloutPct=100`) |
 | דגל `phase2_visualization` | **דלוק** מ-17.10 (הדמיה על תמונה אישית, למסלול Designer Pro) |
