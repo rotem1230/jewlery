@@ -1,12 +1,15 @@
 import {
+  adminActionRequest,
   alertLabel,
   formatBytes,
+  leadsLabel,
   formToPlanPayload,
   newRequestId,
   payoutDueLabel,
   planToForm,
   refundRequest,
   reportRange,
+  subscriptionValidity,
 } from '../src/lib/admin'
 import type { AdminPlan } from '../src/api/admin'
 
@@ -122,5 +125,50 @@ describe('a refund request', () => {
     const b = newRequestId()
     expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(a).not.toBe(b)
+  })
+})
+
+describe("a plan's validity and leads", () => {
+  // Noon UTC: the same calendar day in Israel and in UTC.
+  const now = new Date(Date.UTC(2026, 9, 20, 12))
+  const sub = (overrides: Record<string, unknown>) => ({
+    status: 'ACTIVE',
+    cancelAtPeriodEnd: false,
+    currentPeriodEnd: new Date(Date.UTC(2027, 0, 18, 12)).toISOString(),
+    trialEndsAt: null,
+    ...overrides,
+  })
+
+  it('says until when the plan holds, and whether it renews', () => {
+    expect(subscriptionValidity(sub({}), 'he', now)).toBe('בתוקף עד 18.01.2027 (עוד 90 ימים)')
+    expect(subscriptionValidity(sub({ cancelAtPeriodEnd: true }), 'he', now)).toBe('מסתיים ב-18.01.2027 (עוד 90 ימים) · לא יתחדש')
+    expect(subscriptionValidity(sub({ status: 'TRIALING', trialEndsAt: new Date(Date.UTC(2026, 9, 23, 12)).toISOString() }), 'he', now)).toBe(
+      'ניסיון עד 23.10.2026 (עוד 3 ימים)',
+    )
+    expect(subscriptionValidity(sub({ currentPeriodEnd: new Date(Date.UTC(2026, 9, 20, 18)).toISOString() }), 'he', now)).toBe('בתוקף עד 20.10.2026 (מסתיים היום)')
+    expect(subscriptionValidity(sub({}), 'en', now)).toBe('Valid until 18.01.2027 (90 days left)')
+  })
+
+  it('a failed payment shows the grace period; an ended plan says so', () => {
+    const ended = new Date(Date.UTC(2026, 9, 18, 12)).toISOString()
+    expect(subscriptionValidity(sub({ status: 'PAST_DUE', currentPeriodEnd: ended }), 'he', now)).toBe('התשלום נכשל · בתקופת חסד עד 25.10.2026')
+    expect(subscriptionValidity(sub({ status: 'EXPIRED', currentPeriodEnd: ended }), 'he', now)).toBe('פג תוקף ב-18.10.2026')
+    expect(subscriptionValidity(sub({ status: 'CANCELLED' }), 'he', now)).toBe('בוטל')
+  })
+
+  it("a jeweler's leads: used of all this period, what is left and what is held", () => {
+    expect(leadsLabel({ quota: 10, total: 10, used: 3, reserved: 0, available: 7, refunded: 0 }, 'he')).toBe('לידים: נוצלו 3 מתוך 10 · נשארו 7')
+    expect(leadsLabel({ quota: 10, total: 15, used: 3, reserved: 1, available: 11, refunded: 0 }, 'he')).toBe(
+      'לידים: נוצלו 3 מתוך 15 (10 בחבילה) · נשארו 11 · שמורים 1',
+    )
+    expect(leadsLabel({ quota: 10, total: 10, used: 10, reserved: 0, available: 0, refunded: 0 }, 'en')).toBe('Leads: 10 of 10 used · 0 left')
+  })
+
+  it('an admin action needs a whole number in range and a reason', () => {
+    expect(adminActionRequest('30', 'פיצוי', 365)).toEqual({ body: { value: 30, reason: 'פיצוי' } })
+    expect(adminActionRequest('0', 'x', 365).error).toBe('מספר שלם בין 1 ל-365')
+    expect(adminActionRequest('2.5', 'x', 100).error).toBe('מספר שלם בין 1 ל-100')
+    expect(adminActionRequest('400', 'x', 365).error).toBe('מספר שלם בין 1 ל-365')
+    expect(adminActionRequest('5', ' ', 100).error).toBe('יש לכתוב סיבה')
   })
 })

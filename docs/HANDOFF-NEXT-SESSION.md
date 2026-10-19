@@ -166,8 +166,8 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
    - **תוקן באמולטור:** שכבת התכשיט בהדמיה לא הוצגה (תמונה ב-Android לא שולחת headers — נטענת עכשיו עם ה-session), והעלאת התמונה הראשונה אחרי הפסקה נכשלה (Node סוגר חיבורים אחרי 5 שניות — עכשיו 65).
 
 ### מצב טסטים אחרון
-- **אפליקציה (20.10):** 61 קבצים, **342/342**, tsc 0, lint 0 שגיאות.
-- **שרת (20.10):** 70 קבצים, **773/773** בריצה מלאה (כולל `test/migrations`, Cardcom מול `test/utils/fake-cardcom.ts`).
+- **אפליקציה (20.10):** 62 קבצים, **350/350**, tsc 0, lint 0 שגיאות.
+- **שרת (20.10):** 71 קבצים, **783/783** בריצה מלאה (כולל `test/migrations`, Cardcom מול `test/utils/fake-cardcom.ts`).
 - **אפליקציה (17.10):** 55 קבצים, **293/293**, tsc 0, lint 0 שגיאות (84 אזהרות).
 - **שרת (17.10):** 63 קבצים, **653/653** בריצה מלאה (כולל `test/migrations`).
 
@@ -222,6 +222,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 - **תשלומי תכשיטים דרך Cardcom** (דגל `phase3_jewelry_pay`): המעצב משלם הצעה שאושרה בדף Cardcom בתוך האפליקציה (`ChargeOnly`); אישור כמו במסלולים (`GetLpResult`, פעם אחת). נוצר `JewelerPayout` (ברוטו, עמלה לפי `JEWELRY_COMMISSION_PERCENT`, נטו) והצורף מקבל התראה ומייל. הצעה ששולמה — `QUOTE_ALREADY_PAID`. ניהול: `GET /admin/jewelry-payments`, החזר `POST /admin/jewelry-payments/:id/refunds` (מקטין/מבטל את התשלום לצורף), `GET /admin/jewelry-payouts`, `POST /admin/jewelry-payouts/:id/mark-paid` (אחרי העברה ידנית, עם אסמכתה).
 - **ניהול מסלולים:** `GET/POST /admin/plans`, `PATCH /admin/plans/:code`, `GET /admin/plans/features` — מחיר, מחזור, ניסיון, הרשאות ומכסות. מחיר חדש חל על מנויים חדשים (ועל מעבר מסלול); מנויים קיימים שומרים את המחיר שהסכימו לו. מכסות והרשאות חלות מיד.
 - **דוחות:** `GET /admin/reports/usage` (לכל משתמש: יצירות AI ועלותן, אחסון, תעבורה, הכנסה, התראות) ו-`GET /admin/reports/finance` (לכל מסלול: הכנסות, החזרים, עלויות, עמלת סליקה, רווח). סכומים מחושבים באגורות. עלויות לפי `AI_IMAGE_COST_USD`, `USD_TO_ILS`, `STORAGE_COST_ILS_PER_GB_MONTH`, `TRAFFIC_COST_ILS_PER_GB`, `CARD_FEE_PERCENT` (ברירות מחדל ב-`.env.example`). תעבורה נמדדת בהורדת קבצים (`media_traffic_daily`).
+- **מנויים ולידים (20.10, "לידים: ספירה, מכסות וניהול תוקף" בטבלה):** `GET /admin/subscriptions` (חיפוש לפי מייל/טלפון/שם, סינון לפי תפקיד ומצב; לכל מנוי: תוקף, ניסיון, חידוש, כרטיס, ולצורף — לידים שנוצלו/נשארו/שמורים בתקופה הנוכחית). פעולות: `POST /admin/subscriptions/:id/extend` (ימים; גם הניסיון והלידים של התקופה זזים איתו; **נחסם ב-12 השעות שלפני חידוש בכרטיס** — מזהה החיוב בנוי מסוף התקופה, והזזה אז עלולה לחייב פעמיים), `/leads` (לידים לשארית התקופה, לצורפים בלבד), `/cancel` (בסוף התקופה או מיד). כל פעולה: סיבה חובה, ביומן הביקורת באותה טרנזקציה, ופעם אחת לכל `requestId`. במסך הניהול: "מנויים ולידים".
 - **שימוש הוגן:** התראות `AI_QUOTA_80`, `AI_QUOTA_REACHED`, `AI_DAILY_LIMIT` — פעם אחת לתקופה (`usage_alerts`), מוצגות בדוח השימוש.
 - **אפליקציה:** בפרופיל של משתמש `ADMIN` — "ניהול": מסלולים (עריכה/הוספה), כספים, שימוש, תשלומים והחזרים, תכשיטים ותשלומים לצורפים, בדיקה ידנית. במסך המסלולים: הכרטיס השמור + "החלפת כרטיס", ומעבר למסלול אחר בחידוש הבא (וביטולו). במסך הצעת המחיר: תשלום בכרטיס בדף Cardcom, ואישור מול השרת לפני הודעת הצלחה.
 - **טסטים:** `test/billing/refunds-cards-plan-change.e2e-spec.ts`, `test/billing/jewelry-cardcom.e2e-spec.ts`, `test/admin/admin-plans-reports.e2e-spec.ts` (מול `test/utils/fake-cardcom.ts`); באפליקציה `adminLib`, `adminScreens`, `pricingPayment`, `quoteDetailsScreen`, `paymentSheet`.

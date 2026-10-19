@@ -6,6 +6,8 @@ import { CardcomReturnController } from './cardcom-return.controller';
 import { AdminPaymentsController } from './admin-payments.controller';
 import { AdminPlansController } from './admin-plans.controller';
 import { AdminPlansService } from './admin-plans.service';
+import { AdminSubscriptionsController } from './admin-subscriptions.controller';
+import { AdminSubscriptionsService } from './admin-subscriptions.service';
 import { RefundsService } from './refunds.service';
 import { SubscriptionsController } from './subscriptions.controller';
 import { CheckoutService } from './checkout.service';
@@ -16,7 +18,7 @@ import { WebhooksController } from './webhooks.controller';
 
 @Module({
   imports: [EntitlementsModule],
-  controllers: [SubscriptionsController, WebhooksController, CardcomReturnController, AdminPaymentsController, AdminPlansController],
+  controllers: [SubscriptionsController, WebhooksController, CardcomReturnController, AdminPaymentsController, AdminPlansController, AdminSubscriptionsController],
   providers: [
     SubscriptionsService,
     SubscriptionLifecycleService,
@@ -26,6 +28,7 @@ import { WebhooksController } from './webhooks.controller';
     CardcomPaymentsService,
     RefundsService,
     AdminPlansService,
+    AdminSubscriptionsService,
   ],
   exports: [SubscriptionsService, SubscriptionLifecycleService, CardcomClient, CardcomPaymentsService, RefundsService],
 })

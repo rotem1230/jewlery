@@ -5,10 +5,11 @@ import type { ProfileStackParamList } from '@/src/navigation/types'
 import type { TranslationKey } from '@/src/i18n'
 import { useTranslation } from '@/src/i18n'
 
-type Route = 'AdminPlans' | 'AdminFinance' | 'AdminUsage' | 'AdminPayments' | 'AdminJewelry' | 'AdminReview'
+type Route = 'AdminPlans' | 'AdminSubscriptions' | 'AdminFinance' | 'AdminUsage' | 'AdminPayments' | 'AdminJewelry' | 'AdminReview'
 
 const ENTRIES: Array<{ route: Route; label: TranslationKey }> = [
   { route: 'AdminPlans', label: 'admPlans' },
+  { route: 'AdminSubscriptions', label: 'admSubscriptions' },
   { route: 'AdminFinance', label: 'admFinance' },
   { route: 'AdminUsage', label: 'admUsage' },
   { route: 'AdminPayments', label: 'admPayments' },
@@ -16,7 +17,7 @@ const ENTRIES: Array<{ route: Route; label: TranslationKey }> = [
   { route: 'AdminReview', label: 'admReview' },
 ]
 
-/** The admin menu: plans and prices, reports, payments and refunds, jewelry payouts, review. */
+/** The admin menu: plans and prices, plans of users and their leads, reports, payments and refunds, jewelry payouts, review. */
 export function AdminHomeScreen() {
   const { t } = useTranslation()
   const navigation = useNavigation<NativeStackNavigationProp<ProfileStackParamList>>()

@@ -64,6 +64,7 @@ export type ProfileStackParamList = {
   BusinessProfileView: undefined
   AdminHome: undefined
   AdminPlans: undefined
+  AdminSubscriptions: undefined
   AdminPlanEdit: { code?: string; role?: 'DESIGNER' | 'JEWELER' }
   AdminFinance: undefined
   AdminUsage: undefined

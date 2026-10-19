@@ -152,3 +152,73 @@ export function newRequestId(): string {
   const variant = '89ab'[Math.floor(Math.random() * 4)]
   return `${hex(8)}-${hex(4)}-4${hex(3)}-${variant}${hex(3)}-${hex(12)}`
 }
+
+const GRACE_DAYS = 7
+
+/** dd.mm.yyyy in the device's time zone. */
+function shortDate(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()}`
+}
+
+type ValidityLike = { status: string; cancelAtPeriodEnd: boolean; currentPeriodEnd: string; trialEndsAt: string | null }
+
+/** Until when a plan holds and whether it renews (or why it does not hold any more). */
+export function subscriptionValidity(sub: ValidityLike, locale: Locale, now: Date = new Date()): string {
+  const en = locale === 'en'
+  const periodEnd = new Date(sub.currentPeriodEnd)
+  const left = (end: Date) => {
+    const days = Math.ceil((end.getTime() - now.getTime()) / DAY_MS)
+    if (days <= 1 && end.toDateString() === now.toDateString()) return en ? 'ends today' : 'מסתיים היום'
+    return en ? `${days} days left` : `עוד ${days} ימים`
+  }
+  switch (sub.status) {
+    case 'TRIALING': {
+      const end = new Date(sub.trialEndsAt ?? sub.currentPeriodEnd)
+      return en ? `Trial until ${shortDate(end)} (${left(end)})` : `ניסיון עד ${shortDate(end)} (${left(end)})`
+    }
+    case 'ACTIVE':
+      if (sub.cancelAtPeriodEnd) {
+        return en ? `Ends ${shortDate(periodEnd)} (${left(periodEnd)}) · does not renew` : `מסתיים ב-${shortDate(periodEnd)} (${left(periodEnd)}) · לא יתחדש`
+      }
+      return en ? `Valid until ${shortDate(periodEnd)} (${left(periodEnd)})` : `בתוקף עד ${shortDate(periodEnd)} (${left(periodEnd)})`
+    case 'PAST_DUE': {
+      const grace = new Date(periodEnd.getTime() + GRACE_DAYS * DAY_MS)
+      return en ? `Payment failed · grace period until ${shortDate(grace)}` : `התשלום נכשל · בתקופת חסד עד ${shortDate(grace)}`
+    }
+    case 'EXPIRED':
+      return en ? `Expired ${shortDate(periodEnd)}` : `פג תוקף ב-${shortDate(periodEnd)}`
+    case 'CANCELLED':
+      return en ? 'Cancelled' : 'בוטל'
+    default:
+      return sub.status
+  }
+}
+
+export type LeadCountsView = { quota: number; total: number; used: number; reserved: number; available: number; refunded: number }
+
+/** A jeweler's leads this period: used of all (the plan's and any added), left, and held for open requests. */
+export function leadsLabel(leads: LeadCountsView, locale: Locale): string {
+  if (locale === 'en') {
+    const extra = leads.total !== leads.quota ? ` (${leads.quota} in the plan)` : ''
+    const held = leads.reserved > 0 ? ` · ${leads.reserved} held` : ''
+    return `Leads: ${leads.used} of ${leads.total}${extra} used · ${leads.available} left${held}`
+  }
+  const extra = leads.total !== leads.quota ? ` (${leads.quota} בחבילה)` : ''
+  const held = leads.reserved > 0 ? ` · שמורים ${leads.reserved}` : ''
+  return `לידים: נוצלו ${leads.used} מתוך ${leads.total}${extra} · נשארו ${leads.available}${held}`
+}
+
+/** An admin action on a plan (days to add, leads to add): a whole number from 1 to max, and a reason. */
+export function adminActionRequest(
+  valueText: string,
+  reason: string,
+  max: number,
+): { body?: { value: number; reason: string }; error?: string; field?: 'value' | 'reason' } {
+  const why = reason.trim()
+  const text = valueText.trim()
+  const value = Number(text)
+  if (!/^\d+$/.test(text) || value < 1 || value > max) return { error: `מספר שלם בין 1 ל-${max}`, field: 'value' }
+  if (!why) return { error: 'יש לכתוב סיבה', field: 'reason' }
+  return { body: { value, reason: why } }
+}

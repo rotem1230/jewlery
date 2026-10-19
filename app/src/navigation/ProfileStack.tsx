@@ -13,6 +13,7 @@ import { AdminPaymentsScreen } from '../screens/admin/AdminPaymentsScreen'
 import { AdminPlanEditScreen } from '../screens/admin/AdminPlanEditScreen'
 import { AdminPlansScreen } from '../screens/admin/AdminPlansScreen'
 import { AdminReviewScreen } from '../screens/admin/AdminReviewScreen'
+import { AdminSubscriptionsScreen } from '../screens/admin/AdminSubscriptionsScreen'
 import { AdminUsageScreen } from '../screens/admin/AdminUsageScreen'
 import { useAppSelector } from '../store/hooks'
 import type { ProfileStackParamList } from './types'
@@ -41,6 +42,7 @@ export function ProfileStack() {
       <Stack.Screen name="AdminHome" component={AdminHomeScreen} />
       <Stack.Screen name="AdminPlans" component={AdminPlansScreen} />
       <Stack.Screen name="AdminPlanEdit" component={AdminPlanEditScreen} />
+      <Stack.Screen name="AdminSubscriptions" component={AdminSubscriptionsScreen} />
       <Stack.Screen name="AdminFinance" component={AdminFinanceScreen} />
       <Stack.Screen name="AdminUsage" component={AdminUsageScreen} />
       <Stack.Screen name="AdminPayments" component={AdminPaymentsScreen} />

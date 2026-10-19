@@ -167,3 +167,45 @@ export const refundJewelryPayment = (id: string, body: { amount?: number; reason
 export const listPayouts = (status: 'OWED' | 'PAID' | 'CANCELLED', signal?: AbortSignal) =>
   apiGet<Payout[]>(`/admin/jewelry-payouts${buildQuery({ status })}`, { signal })
 export const markPayoutPaid = (id: string, reference: string) => apiPost<{ id: string; status: string }>(`/admin/jewelry-payouts/${encodeURIComponent(id)}/mark-paid`, { reference })
+
+/** A plan as the admin sees it: when it ends and, for a jeweler, the leads of the current period. */
+export type AdminSubscription = {
+  id: string
+  user: { id: string; email: string; name: string | null; phone: string | null }
+  role: 'DESIGNER' | 'JEWELER'
+  plan: { code: string; nameHe: string }
+  pendingPlan: { code: string; nameHe: string } | null
+  status: 'TRIALING' | 'ACTIVE' | 'PAST_DUE' | 'CANCELLED' | 'EXPIRED' | string
+  price: number
+  currency: string
+  billingCycle: string
+  currentPeriodStart: string
+  currentPeriodEnd: string
+  trialEndsAt: string | null
+  cancelAtPeriodEnd: boolean
+  hasCard: boolean
+  createdAt: string
+  leads: { quota: number; total: number; used: number; reserved: number; available: number; refunded: number } | null
+}
+
+export type AdminSubscriptionsPage = { total: number; page: number; pageSize: number; items: AdminSubscription[] }
+
+export type AdminSubscriptionsQuery = { role?: 'DESIGNER' | 'JEWELER'; status?: 'live' | 'all'; q?: string; page?: number }
+
+export function listAdminSubscriptions(query: AdminSubscriptionsQuery, signal?: AbortSignal): Promise<AdminSubscriptionsPage> {
+  return apiGet<AdminSubscriptionsPage>(`/admin/subscriptions${buildQuery(query)}`, { signal })
+}
+
+type AdminAction = { reason: string; requestId: string }
+
+export function extendSubscription(id: string, body: AdminAction & { days: number }): Promise<AdminSubscription> {
+  return apiPost<AdminSubscription>(`/admin/subscriptions/${encodeURIComponent(id)}/extend`, body)
+}
+
+export function addSubscriptionLeads(id: string, body: AdminAction & { count: number }): Promise<AdminSubscription> {
+  return apiPost<AdminSubscription>(`/admin/subscriptions/${encodeURIComponent(id)}/leads`, body)
+}
+
+export function endSubscription(id: string, body: AdminAction & { immediately: boolean }): Promise<AdminSubscription> {
+  return apiPost<AdminSubscription>(`/admin/subscriptions/${encodeURIComponent(id)}/cancel`, body)
+}
