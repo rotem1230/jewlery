@@ -101,11 +101,19 @@ export const configuration = () => {
       overageCapPerPeriod: int(process.env.LEAD_OVERAGE_CAP, 50),
     },
     payments: {
-      /** "mock" enables the fake provider (never in production); unset = payments fail closed. */
+      /** "cardcom" for card payments; "mock" is a fake provider (never in production); unset = payments fail closed. */
       provider: process.env.PAYMENTS_PROVIDER ?? '',
       /** HMAC secret shared with the payment provider for webhook signatures. */
       webhookSecret: process.env.PAYMENT_WEBHOOK_SECRET ?? '',
       webhookToleranceSeconds: int(process.env.PAYMENT_WEBHOOK_TOLERANCE_SECONDS, 300),
+    },
+    cardcom: {
+      /** Cardcom terminal ("מסוף") and API name: they authenticate every call. */
+      terminalNumber: process.env.CARDCOM_TERMINAL_NUMBER ? int(process.env.CARDCOM_TERMINAL_NUMBER, 0) : undefined,
+      apiName: process.env.CARDCOM_API_NAME ?? '',
+      baseUrl: process.env.CARDCOM_BASE_URL || 'https://secure.cardcom.solutions',
+      /** Tax documents (invoice / receipt) with each charge; "false" when the terminal has no documents module. */
+      documents: process.env.CARDCOM_DOCUMENTS !== 'false',
     },
     uploads: {
       /** Key for signed media URLs; derived from JWT_SECRET when not set. */

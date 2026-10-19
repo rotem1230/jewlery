@@ -5,8 +5,23 @@ import { Check } from 'lucide-react-native'
 import { ScreenTopBar } from '@/src/components/layout/ScreenTopBar'
 import { Button } from '@/src/components/ui/Button'
 import { ErrorState } from '@/src/components/ui/ErrorState'
-import { listPlans, subscribeToPlan, cancelSubscription, getMySubscription } from '@/src/api/subscriptions'
-import { parseApiError } from '@/src/lib/api'
+import {
+  listPlans,
+  subscribeToPlan,
+  cancelSubscription,
+  getMySubscription,
+  startCheckout,
+  getCheckout,
+} from '@/src/api/subscriptions'
+import { PaymentSheet } from '@/src/components/payments/PaymentSheet'
+import { apiErrorCode, parseApiError } from '@/src/lib/api'
+import {
+  checkoutErrorMessage,
+  paymentUnavailableMessage,
+  planAction,
+  waitForCheckout,
+  type PaymentResult,
+} from '@/src/lib/payments'
 import { planCards, subscribeErrorMessage } from '@/src/lib/plans'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
@@ -29,6 +44,7 @@ export function PricingScreen() {
   const plansQuery = useAsyncData((signal) => listPlans(role, signal), { deps: [accessToken, role] })
   const subQuery = useAsyncData((signal) => getMySubscription(signal), { deps: [accessToken] })
   const [busy, setBusy] = useState(false)
+  const [payment, setPayment] = useState<{ url: string; checkoutId: string } | null>(null)
 
   const subscription = subQuery.data
   const live = Boolean(subscription) && LIVE_STATUSES.includes(subscription?.status ?? '')
@@ -38,15 +54,63 @@ export function PricingScreen() {
     currentPlanCode: live ? subscription?.plan?.code : null,
   })
 
+  /** Opens the card payment page of a paid plan (Cardcom), inside the app. */
+  const onPay = async (planCode: string) => {
+    setBusy(true)
+    try {
+      const checkout = await startCheckout(planCode)
+      if (!checkout.paymentUrl) {
+        Alert.alert(t('authErrorTitle'), paymentUnavailableMessage(locale))
+        setBusy(false)
+        return
+      }
+      setPayment({ url: checkout.paymentUrl, checkoutId: checkout.id })
+    } catch (err) {
+      Alert.alert(t('authErrorTitle'), checkoutErrorMessage(err, locale))
+      setBusy(false)
+    }
+  }
+
+  /** Back from the payment page: the plan starts once the server has confirmed the payment. */
+  const onPaymentDone = async (result: PaymentResult) => {
+    const current = payment
+    setPayment(null)
+    if (!current || result !== 'success') {
+      setBusy(false)
+      if (current) Alert.alert(t('pricingTitle'), t('paymentNotCompleted'))
+      return
+    }
+    try {
+      const outcome = await waitForCheckout(current.checkoutId, { get: (id) => getCheckout(id) })
+      await subQuery.refresh()
+      const message =
+        outcome === 'COMPLETED'
+          ? t('paymentDone')
+          : outcome === 'NEEDS_REVIEW'
+            ? t('paymentReview')
+            : outcome === 'CANCELLED'
+              ? t('paymentNotCompleted')
+              : t('paymentPending')
+      Alert.alert(t('pricingTitle'), message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onSubscribe = async (planCode: string) => {
     setBusy(true)
     try {
       await subscribeToPlan(planCode)
       await subQuery.refresh()
       Alert.alert(t('pricingTitle'), t('dzSubscribeDone'))
+      setBusy(false)
     } catch (err) {
+      if (apiErrorCode(err) === 'PAYMENT_REQUIRED') {
+        // No trial left for this plan: it is paid for by card.
+        await onPay(planCode)
+        return
+      }
       Alert.alert(t('authErrorTitle'), subscribeErrorMessage(err, locale))
-    } finally {
       setBusy(false)
     }
   }
@@ -90,7 +154,10 @@ export function PricingScreen() {
           ) : cards.length === 0 ? (
             <Text style={styles.empty}>{t('pricingUnavailable')}</Text>
           ) : (
-            cards.map((card) => (
+            cards.map((card) => {
+              const plan = plansQuery.data?.find((item) => item.code === card.code)
+              const action = plan ? planAction(plan, subscription) : 'none'
+              return (
               <View key={card.code} style={styles.card}>
                 <View style={styles.cardHeaderRow}>
                   {card.current ? (
@@ -123,13 +190,14 @@ export function PricingScreen() {
                 <Button
                   variant="primary"
                   fullWidth
-                  disabled={busy || card.current || live}
-                  onPress={() => void onSubscribe(card.code)}
+                  disabled={busy || action === 'current' || action === 'none'}
+                  onPress={() => void (action === 'pay' ? onPay(card.code) : onSubscribe(card.code))}
                 >
-                  {card.current ? t('dzPlanCurrent') : t('pricingSelectPlan')}
+                  {action === 'current' ? t('dzPlanCurrent') : action === 'pay' ? t('pricingPay') : t('pricingSelectPlan')}
                 </Button>
               </View>
-            ))
+              )
+            })
           )}
 
           <Text style={styles.disclaimer}>{t('pricingDisclaimer')}</Text>
@@ -140,6 +208,7 @@ export function PricingScreen() {
           ) : null}
         </View>
       </ScrollView>
+      <PaymentSheet url={payment?.url ?? null} onDone={(result) => void onPaymentDone(result)} />
     </View>
   )
 }

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, SubscriptionStatus } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { billingCyclePeriodMs, PAST_DUE_GRACE_MS } from './billing-periods';
+import { CardcomPaymentsService } from './cardcom-payments.service';
 import { SubscriptionsService } from './subscriptions.service';
 
 /**
@@ -17,6 +18,7 @@ export class SubscriptionLifecycleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptions: SubscriptionsService,
+    private readonly cardcom: CardcomPaymentsService,
   ) {}
 
   async runOnce(now: Date = new Date()): Promise<void> {
@@ -31,6 +33,8 @@ export class SubscriptionLifecycleService {
     });
 
     const renewed = await this.renewFreePlans(now);
+    // Paid plans with a saved card are charged before an unpaid one is marked past due.
+    const charged = await this.cardcom.renewDue(now);
 
     const pastDue = await this.prisma.subscription.updateMany({
       where: {
@@ -50,11 +54,11 @@ export class SubscriptionLifecycleService {
       data: { status: SubscriptionStatus.EXPIRED },
     });
 
-    const changed = expiredTrials.count + ended.count + renewed + pastDue.count + lapsed.count;
+    const changed = expiredTrials.count + ended.count + renewed + charged + pastDue.count + lapsed.count;
     if (changed > 0) {
       this.logger.log(
         `Subscription sweep: ${expiredTrials.count} trials expired, ${ended.count} cancelled, ${renewed} renewed, ` +
-          `${pastDue.count} past due, ${lapsed.count} lapsed`,
+          `${charged} renewed by card, ${pastDue.count} past due, ${lapsed.count} lapsed`,
       );
     }
   }

@@ -16,7 +16,7 @@ export const MIN_PRODUCTION_BCRYPT_ROUNDS = 10;
 export const MAX_BCRYPT_ROUNDS = 15;
 export const MIN_SIGNING_SECRET_LENGTH = 32;
 const NODE_ENVS = ['development', 'test', 'production'];
-const PAYMENT_PROVIDERS = ['mock'];
+const PAYMENT_PROVIDERS = ['mock', 'cardcom'];
 
 class EnvironmentVariables {
   @IsString()
@@ -156,6 +156,17 @@ export function validateEnv(config: Record<string, unknown>) {
   }
   if (config.PAYMENTS_PROVIDER && !PAYMENT_PROVIDERS.includes(String(config.PAYMENTS_PROVIDER))) {
     problems.push(`PAYMENTS_PROVIDER must be unset or one of: ${PAYMENT_PROVIDERS.join(', ')}`);
+  }
+  if (config.PAYMENTS_PROVIDER === 'cardcom') {
+    if (!/^[1-9]\d*$/.test(String(config.CARDCOM_TERMINAL_NUMBER ?? '').trim())) {
+      problems.push('CARDCOM_TERMINAL_NUMBER must be the Cardcom terminal number when PAYMENTS_PROVIDER=cardcom');
+    }
+    if (!String(config.CARDCOM_API_NAME ?? '').trim()) {
+      problems.push('CARDCOM_API_NAME must be set when PAYMENTS_PROVIDER=cardcom');
+    }
+  }
+  if (config.CARDCOM_BASE_URL && !String(config.CARDCOM_BASE_URL).startsWith('https://')) {
+    problems.push('CARDCOM_BASE_URL must be an https address (the API credentials travel to it)');
   }
   // Unset or empty = the default for NODE_ENV (database in production, local otherwise).
   if (config.STORAGE_DRIVER && !(STORAGE_DRIVERS as readonly string[]).includes(String(config.STORAGE_DRIVER))) {

@@ -121,8 +121,20 @@ export class PaymentWebhookService {
     if (!parsed.ok) {
       return this.recordUnreadable(rawBody as Buffer, parsed);
     }
-    const dto = parsed.dto;
+    return this.record(parsed.dto);
+  }
 
+  /**
+   * Records a payment event and applies its effect in one transaction keyed by (provider,
+   * providerEventId): applied exactly once however often it arrives. For events whose truth was
+   * already established — a signed webhook, or a result read from the provider itself (Cardcom).
+   * `afterApply` runs in the same transaction (e.g. keeping the card a checkout saved), so a failure
+   * there leaves nothing applied and the event is kept for review.
+   */
+  async record(
+    dto: PaymentWebhookDto,
+    afterApply?: (tx: Tx, applied: AppliedEvent) => Promise<void>,
+  ): Promise<PaymentEvent> {
     let event: PaymentEvent;
     try {
       event = await this.prisma.$transaction(
@@ -132,6 +144,9 @@ export class PaymentWebhookService {
             data: { ...this.eventFields(dto), outcome: 'NEEDS_REVIEW', note: 'Being applied' },
           });
           const applied = await this.collapseRepeatedReview(tx, created.id, dto, await this.apply(tx, dto));
+          if (afterApply) {
+            await afterApply(tx, applied);
+          }
           return tx.paymentEvent.update({
             where: { id: created.id },
             data: {
@@ -327,6 +342,12 @@ export class PaymentWebhookService {
         return this.applyFailedPayment(tx, dto);
       case 'subscription.cancelled':
         return this.applyCancellation(tx, dto);
+      case 'payment.review': {
+        // A payment the provider confirmed that does not match what it was for (e.g. Cardcom
+        // reporting a page paid for another checkout): kept for a person to settle.
+        const reason = typeof dto.payload?.reviewReason === 'string' ? dto.payload.reviewReason : 'Payment kept for review';
+        return { outcome: 'NEEDS_REVIEW', note: reason };
+      }
       default: {
         const known = dto.subscriptionId
           ? await tx.subscription.findUnique({ where: { id: dto.subscriptionId }, select: { id: true } })

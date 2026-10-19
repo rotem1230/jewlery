@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CheckoutSession, CheckoutStatus, Prisma, SubscriptionStatus, User } from '@prisma/client';
+import { CheckoutSession, CheckoutStatus, PlanCatalog, Prisma, SubscriptionStatus, User } from '@prisma/client';
 import { EventLogService } from '../audit/event-log.service';
+import { CardcomClient, CardcomUnavailableError } from '../common/payments/cardcom.client';
 import { resolvePaymentProvider } from '../common/payments/payment-provider';
 import { PrismaService } from '../database/prisma.service';
 import { lockPaymentInvoice, lockUser } from '../database/row-locks';
@@ -10,6 +11,7 @@ import { PaymentWebhookDto, SubscribeDto } from './dto/subscription.dto';
 import { describeMoney, isExactPayment } from './money';
 import type { AppliedEvent } from './payment-webhook.service';
 import { SubscriptionsService } from './subscriptions.service';
+import { paymentProviderUnavailable } from './payment-provider-errors';
 
 type Tx = Prisma.TransactionClient;
 
@@ -28,6 +30,8 @@ export type CheckoutView = {
   status: CheckoutStatus;
   expiresAt: Date;
   provider: string;
+  /** The provider's payment page the app opens (Cardcom); null for the mock provider. */
+  paymentUrl: string | null;
 };
 
 /**
@@ -38,15 +42,18 @@ export type CheckoutView = {
  */
 @Injectable()
 export class CheckoutService {
+  private readonly logger = new Logger(CheckoutService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly subscriptions: SubscriptionsService,
     private readonly eventLog: EventLogService,
+    private readonly cardcom: CardcomClient,
   ) {}
 
   async start(user: User, dto: SubscribeDto): Promise<CheckoutView> {
-    const provider = resolvePaymentProvider(this.config);
+    const provider = resolvePaymentProvider(this.config, ['mock', 'cardcom']);
     const plan = await this.prisma.planCatalog.findUnique({ where: { code: dto.planCode } });
     if (!plan || !plan.isActive) {
       throw new NotFoundException({ success: false, message: 'Plan not found' });
@@ -67,10 +74,14 @@ export class CheckoutService {
           code: 'SUBSCRIPTION_EXISTS',
         });
       }
-      const open = await tx.checkoutSession.findFirst({
-        where: { userId: user.id, planId: plan.id, status: CheckoutStatus.OPEN, expiresAt: { gt: new Date() } },
-        orderBy: { createdAt: 'desc' },
-      });
+      // A Cardcom payment page belongs to one checkout: each attempt opens its own.
+      const open =
+        provider === 'cardcom'
+          ? null
+          : await tx.checkoutSession.findFirst({
+              where: { userId: user.id, planId: plan.id, status: CheckoutStatus.OPEN, expiresAt: { gt: new Date() } },
+              orderBy: { createdAt: 'desc' },
+            });
       return (
         open ??
         tx.checkoutSession.create({
@@ -80,12 +91,66 @@ export class CheckoutService {
             amount: plan.price,
             currency: plan.currency,
             expiresAt: new Date(Date.now() + CHECKOUT_TTL_MS),
+            provider,
           },
         })
       );
     });
 
+    if (provider === 'cardcom') {
+      return this.view(await this.openCardcomPage(session, plan, user), plan.code, provider);
+    }
     return this.view(session, plan.code, provider);
+  }
+
+  /**
+   * The checkout of its buyer (another user's is "not found"). An open Cardcom checkout is first
+   * confirmed by the caller (CardcomPaymentsService.confirmCheckout).
+   */
+  async find(user: User, checkoutId: string): Promise<CheckoutView> {
+    const session = await this.prisma.checkoutSession.findFirst({
+      where: { id: checkoutId, userId: user.id },
+      include: { plan: { select: { code: true } } },
+    });
+    if (!session) {
+      throw new NotFoundException({ success: false, message: 'Checkout not found' });
+    }
+    return this.view(session, session.plan.code, session.provider ?? 'mock');
+  }
+
+  /**
+   * Opens the Cardcom page for this checkout: its exact amount, the checkout id returned with the
+   * result, the receipt to the buyer. When Cardcom cannot open it, the checkout is withdrawn.
+   */
+  private async openCardcomPage(session: CheckoutSession, plan: PlanCatalog, user: User): Promise<CheckoutSession> {
+    const base = `${this.config.get<string>('apiPublicUrl')}/${this.config.get<string>('apiPrefix') ?? 'api/v1'}`;
+    const back = (result: string) => `${base}/payments/cardcom/return?checkout=${session.id}&result=${result}`;
+    let page;
+    try {
+      page = await this.cardcom.createPaymentPage({
+        amount: Number(session.amount),
+        currency: session.currency,
+        returnValue: session.id,
+        successUrl: back('success'),
+        failedUrl: back('failed'),
+        cancelUrl: back('cancel'),
+        webhookUrl: `${base}/webhooks/cardcom`,
+        productName: plan.nameHe,
+        customer: { name: [user.firstName, user.lastName].filter(Boolean).join(' '), email: user.email },
+      });
+    } catch (err) {
+      await this.prisma.checkoutSession.update({ where: { id: session.id }, data: { status: CheckoutStatus.CANCELLED } });
+      if (err instanceof CardcomUnavailableError) {
+        this.logger.warn(`Cardcom could not open a payment page for checkout ${session.id}: ${err.message}`);
+      } else {
+        this.logger.error(`Cardcom refused a payment page for checkout ${session.id}: ${(err as Error).message}`);
+      }
+      throw paymentProviderUnavailable();
+    }
+    return this.prisma.checkoutSession.update({
+      where: { id: session.id },
+      data: { providerRef: page.lowProfileId.toLowerCase(), paymentUrl: page.url },
+    });
   }
 
   /**
@@ -247,6 +312,7 @@ export class CheckoutService {
       status: session.status,
       expiresAt: session.expiresAt,
       provider,
+      paymentUrl: session.paymentUrl,
     };
   }
 }

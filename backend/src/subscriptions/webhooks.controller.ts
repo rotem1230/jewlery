@@ -1,13 +1,17 @@
-import { Controller, Headers, Post, Req } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Post, Req } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Public } from '../authorization/decorators/public.decorator';
+import { CardcomPaymentsService } from './cardcom-payments.service';
 import { PaymentWebhookService } from './payment-webhook.service';
 
 @ApiTags('Webhooks')
 @Controller('webhooks')
 export class WebhooksController {
-  constructor(private readonly webhooks: PaymentWebhookService) {}
+  constructor(
+    private readonly webhooks: PaymentWebhookService,
+    private readonly cardcom: CardcomPaymentsService,
+  ) {}
 
   @Public()
   @Post('payments')
@@ -24,5 +28,21 @@ export class WebhooksController {
   handlePaymentWebhook(@Req() req: Request, @Headers('x-webhook-signature') signature?: string) {
     // The raw-body parser registered for this route in configureApp leaves the bytes in req.body.
     return this.webhooks.handle(Buffer.isBuffer(req.body) ? req.body : undefined, signature);
+  }
+
+  @Public()
+  @Post('cardcom')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Receive a Cardcom payment page notification (LowProfileResult)',
+    description:
+      'Cardcom does not sign it: only its LowProfileId is read, and the deal is confirmed with Cardcom (LowProfile/GetLpResult) ' +
+      'before anything is applied. Idempotent per payment page.',
+  })
+  @ApiResponse({ status: 200, description: 'Received (applied, already applied, not paid, or for a page this platform did not open)' })
+  @ApiResponse({ status: 400, description: 'No LowProfileId (CARDCOM_NOTIFICATION_INVALID)' })
+  @ApiResponse({ status: 503, description: 'Cardcom could not be asked right now (PAYMENT_PROVIDER_UNAVAILABLE): send again' })
+  handleCardcomNotification(@Body() body: unknown) {
+    return this.cardcom.handleNotification(body);
   }
 }

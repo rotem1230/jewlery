@@ -21,6 +21,26 @@ export function subscribeToPlan(planCode: string): Promise<unknown> {
   return apiPost('/subscriptions/subscribe', { planCode })
 }
 
+/** A purchase of a paid plan: with Cardcom it carries the payment page the app opens. */
+export type CheckoutView = {
+  id: string
+  planCode: string
+  amount: number
+  currency: string
+  status: string
+  provider: string
+  paymentUrl: string | null
+}
+
+export function startCheckout(planCode: string): Promise<CheckoutView> {
+  return apiPost<CheckoutView>('/subscriptions/checkout', { planCode })
+}
+
+/** The checkout as the server knows it (an open Cardcom one is confirmed with Cardcom first). */
+export function getCheckout(checkoutId: string, signal?: AbortSignal): Promise<CheckoutView> {
+  return apiGet<CheckoutView>(`/subscriptions/checkout/${encodeURIComponent(checkoutId)}`, { signal })
+}
+
 export function cancelSubscription(): Promise<unknown> {
   return apiPost('/subscriptions/cancel', {})
 }

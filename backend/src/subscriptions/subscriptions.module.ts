@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
+import { CardcomClient } from '../common/payments/cardcom.client';
 import { EntitlementsModule } from '../entitlements/entitlements.module';
+import { CardcomPaymentsService } from './cardcom-payments.service';
+import { CardcomReturnController } from './cardcom-return.controller';
 import { SubscriptionsController } from './subscriptions.controller';
 import { CheckoutService } from './checkout.service';
 import { PaymentWebhookService } from './payment-webhook.service';
@@ -9,8 +12,15 @@ import { WebhooksController } from './webhooks.controller';
 
 @Module({
   imports: [EntitlementsModule],
-  controllers: [SubscriptionsController, WebhooksController],
-  providers: [SubscriptionsService, SubscriptionLifecycleService, PaymentWebhookService, CheckoutService],
+  controllers: [SubscriptionsController, WebhooksController, CardcomReturnController],
+  providers: [
+    SubscriptionsService,
+    SubscriptionLifecycleService,
+    PaymentWebhookService,
+    CheckoutService,
+    CardcomClient,
+    CardcomPaymentsService,
+  ],
   exports: [SubscriptionsService, SubscriptionLifecycleService],
 })
 export class SubscriptionsModule {}

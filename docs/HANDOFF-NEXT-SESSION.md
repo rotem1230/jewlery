@@ -199,7 +199,18 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 - מכסת AI: הרשאה `ai_renders` (ה-`limitValue` הוא המכסה לתקופת החיוב). בלי מסלול שקובע — מכסת `DESIGNER_FREE` על 30 הימים האחרונים. יצירה שנכשלה לא נספרת. המגבלה היומית (`ai_limits.dailyPerUser`, 10) נשארת בנוסף. קוד שגיאה `AI_PLAN_QUOTA_EXCEEDED`.
 - **עלות AI אמיתית:** `gemini-3.1-flash-image` ב-1K = $0.067 לתמונה (≈0.25 ₪), פי 10 מההנחה בטבלה (0.7 סנט). בשנתי 600 יצירות ≈ 149 ₪ — כל המחיר. נמסר למשתמש.
 - רבעון = 91 ימים (`billingCyclePeriodMs`).
-- **אין עדיין:** עריכת מסלולים מממשק הניהול, דוח הכנסות/הוצאות, מדידת אחסון למשתמש, תשלום אמיתי (רק mock) — סעיף 3 בטבלה של הלקוחה.
+- **אין עדיין:** עריכת מסלולים מממשק הניהול, דוח הכנסות/הוצאות, מדידת אחסון למשתמש — סעיף 3 בטבלה של הלקוחה.
+
+### סליקה — Cardcom (19.10, בקוד; מחכה לפרטי המסוף)
+המשתמש התחבר ל-Cardcom וביקש סליקה בתוך האפליקציה (הוסבר לו הסיכון ב-App Store למינויים דיגיטליים; בחר בתוך האפליקציה). התיעוד נלקח מה-OpenAPI הרשמי: `https://secure.cardcom.solutions/swagger/v11/swagger.json` (עותק מקומי ב-`E:/claude-work/malinvosky/cardcom-docs/`).
+
+- **רכישה:** `POST /subscriptions/checkout` פותח דף תשלום (`LowProfile/Create`, `Operation=ChargeAndCreateToken`, שקלים, עברית, תשלום אחד, חשבונית/קבלה במייל). `ReturnValue` = מזהה ה-checkout. כל ניסיון — דף משלו. האפליקציה פותחת אותו ב-WebView (`PaymentSheet`) ונסגרת בדף החזרה.
+- **אישור:** ההתראה של Cardcom (`POST /webhooks/cardcom`) **לא חתומה** — לוקחים ממנה רק `LowProfileId` ומאמתים מול Cardcom (`LowProfile/GetLpResult`). רק עסקה שאושרה, בסכום ובמטבע של ה-checkout, ובמסוף שלנו — מפעילה את המסלול (דרך `PaymentWebhookService.record`, פעם אחת בלבד). אחרת: נשמר לבדיקה (`NEEDS_REVIEW`). גם דף החזרה (`GET /payments/cardcom/return`) ו-`GET /subscriptions/checkout/:id` מאמתים מול Cardcom — המסלול מתחיל גם אם ההתראה מתעכבת.
+- **הכרטיס:** הטוקן נשמר בטבלה נפרדת `payment_methods` (לא חלק מתשובות ה-API, לא בלוגים, לא ב-payload של האירועים).
+- **חידושים:** ב-sweep של מחזור החיים — 12 שעות לפני סוף התקופה, חיוב הטוקן (`Transactions/Transaction`) עם `ExternalUniqTranId=renewal:<sub>:<סוף תקופה>:<ניסיון>`; לפני כל חיוב בודקים אם ניסיון קודם כבר עבר (`GetTransactionByExternalUniqTran`) — אין חיוב כפול גם כשתשובה אבדה. סירוב → past due, ניסיון חוזר פעם ביום עד סוף תקופת החסד (7 ימים). מנוי שבוטל — לא מחויב.
+- **תשלומי תכשיטים (`jewelry-payments`)** — אין להם מימוש Cardcom: נשארים סגורים גם כש-`PAYMENTS_PROVIDER=cardcom`.
+- **להפעלה בפרודקשן:** (1) מיגרציה `20261019180000_cardcom_payments` למסד **לפני** פריסת הקוד (עמודות חדשות שהקוד קורא); (2) ב-Render: `PAYMENTS_PROVIDER=cardcom`, `CARDCOM_TERMINAL_NUMBER`, `CARDCOM_API_NAME` (ו-`CARDCOM_DOCUMENTS=false` אם אין מודול מסמכים); (3) בדיקה אמיתית: רכישה בסכום קטן ← הפעלה ← החזר מממשק Cardcom.
+- **עוד לא:** החזרים (`RefundByTransactionId`, דורש `ApiPassword`) מתוך המערכת, החלפת כרטיס, תשלומי תכשיטים דרך Cardcom.
 
 ---
 

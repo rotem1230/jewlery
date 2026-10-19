@@ -94,6 +94,24 @@ describe('validateEnv', () => {
     expect(() => validateEnv(productionEnv({ PAYMENTS_PROVIDER: 'mock' }))).toThrow(/PAYMENTS_PROVIDER/);
   });
 
+  it('accepts Cardcom in production with its terminal number and API name, and refuses it without them', () => {
+    const cardcom = { PAYMENTS_PROVIDER: 'cardcom', CARDCOM_TERMINAL_NUMBER: '1000', CARDCOM_API_NAME: 'api-name' };
+    expect(() => validateEnv(productionEnv(cardcom))).not.toThrow();
+    expect(() => validateEnv(productionEnv({ ...cardcom, CARDCOM_TERMINAL_NUMBER: undefined }))).toThrow(/CARDCOM_TERMINAL_NUMBER/);
+    expect(() => validateEnv(productionEnv({ ...cardcom, CARDCOM_TERMINAL_NUMBER: 'abc' }))).toThrow(/CARDCOM_TERMINAL_NUMBER/);
+    expect(() => validateEnv(productionEnv({ ...cardcom, CARDCOM_API_NAME: '' }))).toThrow(/CARDCOM_API_NAME/);
+    expect(() =>
+      validateEnv({ NODE_ENV: 'development', DATABASE_URL: 'postgresql://localhost/dev', PAYMENTS_PROVIDER: 'cardcom' }),
+    ).toThrow(/CARDCOM_TERMINAL_NUMBER/);
+  });
+
+  it('refuses a Cardcom address other than https', () => {
+    const cardcom = { PAYMENTS_PROVIDER: 'cardcom', CARDCOM_TERMINAL_NUMBER: '1000', CARDCOM_API_NAME: 'api-name' };
+    expect(() => validateEnv(productionEnv({ ...cardcom, CARDCOM_BASE_URL: 'http://secure.cardcom.solutions' }))).toThrow(
+      /CARDCOM_BASE_URL/,
+    );
+  });
+
   it('refuses short signing secrets for payment webhooks and media URLs', () => {
     expect(() => validateEnv(productionEnv({ PAYMENT_WEBHOOK_SECRET: 'short' }))).toThrow(/PAYMENT_WEBHOOK_SECRET/);
     expect(() => validateEnv(productionEnv({ UPLOAD_URL_SECRET: 'short' }))).toThrow(/UPLOAD_URL_SECRET/);
