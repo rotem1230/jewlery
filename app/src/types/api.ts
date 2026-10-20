@@ -465,6 +465,8 @@ export type ContentPage = {
   locale: string
   title: string
   body: unknown
+  /** The page version (the terms accepted at sign-up are recorded by it). */
+  version?: number
 }
 
 /** `PUT /jeweler-profiles/draft` payload; the server replaces the whole draft with it. */

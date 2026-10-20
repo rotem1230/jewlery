@@ -12,6 +12,7 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { getPublicJewelerProfile } from '@/src/api/jewelerProfiles'
 import { listDesigns } from '@/src/api/designs'
 import { createAtelierRequest } from '@/src/api/atelier'
+import { confirmJewelerEngagement } from '@/src/lib/legal'
 import { parseApiError } from '@/src/lib/api'
 import { DAY_LABEL_KEYS, hoursRows } from '@/src/lib/businessHours'
 import { uploadContentUrl } from '@/src/api/uploads'
@@ -58,6 +59,8 @@ export function JewelerProfileScreen() {
 
   const onSelectItem = async (option: QuoteItemOption) => {
     setSheetOpen(false)
+    // Section 5.4 of the terms: sending the design to a jeweler is an independent engagement with them.
+    if (!(await confirmJewelerEngagement(t))) return
     try {
       await createAtelierRequest({
         designId: option.id,

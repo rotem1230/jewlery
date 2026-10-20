@@ -1,7 +1,7 @@
 import { Alert, Image, Text } from 'react-native'
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer'
 import { createJewelryPaymentIntent, getJewelryPaymentIntent } from '../src/api/jewelryPayments'
-import { getQuote } from '../src/api/quotes'
+import { acceptQuote, getQuote } from '../src/api/quotes'
 import { ApiError } from '../src/lib/api'
 import { getFeatureFlags } from '../src/api/visualization'
 import { t } from '../src/i18n'
@@ -188,6 +188,27 @@ describe('paying the accepted quote by card, inside the app', () => {
     expect(getJewelryPaymentIntent).not.toHaveBeenCalled()
     expect(alerts).toContain(t('paymentNotCompleted'))
     expect(tree.root.findAll((node) => typeof node.props.onShouldStartLoadWithRequest === 'function' && Boolean(node.props.source))).toHaveLength(0)
+    await act(async () => tree.unmount())
+  })
+})
+
+describe('approving a quote (an engagement with the jeweler, section 5.4 of the terms)', () => {
+  it('shows the disclaimer first and approves only when the designer continues', async () => {
+    ;(getFeatureFlags as jest.Mock).mockResolvedValue({})
+    ;(getQuote as jest.Mock).mockResolvedValue({ ...ACCEPTED, status: 'PENDING' })
+    ;(acceptQuote as jest.Mock).mockClear().mockResolvedValue({ ...ACCEPTED })
+    const dialogs: Array<{ message: string; buttons?: Array<{ text?: string; style?: string; onPress?: () => void }> }> = []
+    jest.spyOn(Alert, 'alert').mockImplementation((_title, message, buttons) => {
+      dialogs.push({ message: String(message), buttons: buttons as (typeof dialogs)[number]['buttons'] })
+    })
+    const tree = await open()
+    const approve = tree.root.findAll((node) => node.props.label === t('quoteApproveCta') && typeof node.props.onPress === 'function')[0]
+    await act(async () => approve.props.onPress())
+    expect(dialogs[0].message).toBe(t('jewelerDisclaimer'))
+    expect(acceptQuote).not.toHaveBeenCalled()
+
+    await act(async () => dialogs[0].buttons?.find((button) => button.style !== 'cancel')?.onPress?.())
+    expect(acceptQuote).toHaveBeenCalledWith(expect.objectContaining({ id: 'quote-1' }))
     await act(async () => tree.unmount())
   })
 })

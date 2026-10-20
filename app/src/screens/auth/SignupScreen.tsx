@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Alert, Pressable, Text, View, StyleSheet } from 'react-native'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { AuthScreenLayout } from '@/src/components/auth/AuthScreenLayout'
@@ -6,8 +6,10 @@ import { AppleAuthButton } from '@/src/components/auth/AppleAuthButton'
 import { GoogleAuthButton } from '@/src/components/auth/GoogleAuthButton'
 import { PhoneField } from '@/src/components/auth/PhoneField'
 import { Button, Checkbox, Field } from '@/src/components/ui'
-import { register, resendVerification } from '@/src/api/auth'
+import { register, resendVerification, type SignUpConsent } from '@/src/api/auth'
+import { getContentPage } from '@/src/api/subscriptions'
 import { GOOGLE_WEB_CLIENT_ID } from '@/src/config/env'
+import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useSocialSignIn } from '@/src/hooks/useSocialSignIn'
 import { parseApiError } from '@/src/lib/api'
 import { splitFullName } from '@/src/lib/format'
@@ -35,6 +37,15 @@ export function SignupScreen({ navigation, route }: Props) {
   const [fullName, setFullName] = useState('')
   const [phone, setPhone] = useState('')
   const [accepted, setAccepted] = useState(false)
+  // Marketing messages are a separate choice (the anti-spam law): off unless ticked.
+  const [marketing, setMarketing] = useState(false)
+  // The version of the terms the links open, recorded with the acceptance (Hebrew: the binding text).
+  const termsPage = useAsyncData((signal) => getContentPage('tos', 'he', signal))
+  const termsVersion = termsPage.data?.version
+  const consent = useMemo<SignUpConsent | undefined>(
+    () => (accepted ? { acceptTerms: true, termsVersion, marketingConsent: marketing } : undefined),
+    [accepted, marketing, termsVersion],
+  )
   const [busy, setBusy] = useState(false)
   const [errors, setErrors] = useState<FieldErrors>({})
 
@@ -66,6 +77,9 @@ export function SignupScreen({ navigation, route }: Props) {
         firstName: firstName || undefined,
         lastName,
         phone: e164 ?? undefined,
+        acceptTerms: true,
+        termsVersion,
+        marketingConsent: marketing,
       })
       // No session yet: the account works once the e-mailed link has been opened. The address is
       // one left-to-right run inside the Hebrew sentence (not split around its dots).
@@ -87,7 +101,7 @@ export function SignupScreen({ navigation, route }: Props) {
     }
   }
 
-  const social = useSocialSignIn({ persist: true, signUpRole: role, setBusy })
+  const social = useSocialSignIn({ persist: true, signUpRole: role, consent, setBusy })
 
   /** Apple / Google create the account too: the terms must be accepted first, as for e-mail. */
   const afterTerms = (go: () => Promise<void>) => () => {
@@ -147,17 +161,24 @@ export function SignupScreen({ navigation, route }: Props) {
             />
           </View>
           <Checkbox
+            testID="terms"
             checked={accepted}
             onChange={setAccepted}
             labelNode={
               <Text style={styles.terms}>
-                {t('acceptTermsPrefix')}
+                {t('termsAcceptBefore')}
                 <Text style={styles.termsLink} onPress={() => navigation.navigate('Terms')}>
-                  {t('termsLink')}
+                  {t('termsOfUseLink')}
                 </Text>
+                {t('termsAcceptBetween')}
+                <Text style={styles.termsLink} onPress={() => navigation.navigate('Terms', { section: 'privacy' })}>
+                  {t('privacyPolicyLink')}
+                </Text>
+                {t('termsAcceptAfter')}
               </Text>
             }
           />
+          <Checkbox testID="marketing" checked={marketing} onChange={setMarketing} label={t('marketingConsentLabel')} />
         </View>
       }
       bottom={
@@ -215,6 +236,7 @@ const styles = StyleSheet.create({
     writingDirection: 'rtl',
   },
   termsLink: {
+    color: colors.brand,
     textDecorationLine: 'underline',
   },
   linkBtn: {

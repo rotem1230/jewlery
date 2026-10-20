@@ -9,6 +9,12 @@ export function login(email: string, password: string): Promise<AuthResult> {
   return apiPost<AuthResult>('/auth/login', { email, password }, { anonymous: true })
 }
 
+/**
+ * What the sign-up screen records with a new account: the terms box (required), the version of the
+ * terms the links open, and the separate marketing box (off unless ticked).
+ */
+export type SignUpConsent = { acceptTerms?: boolean; termsVersion?: number; marketingConsent?: boolean }
+
 export function register(payload: {
   email: string
   password: string
@@ -17,7 +23,7 @@ export function register(payload: {
   lastName?: string
   /** E.164; stored with the account (there is no session to send it later). */
   phone?: string
-}): Promise<RegisterResult> {
+} & SignUpConsent): Promise<RegisterResult> {
   return apiPost<RegisterResult>('/auth/register', payload, { anonymous: true })
 }
 
@@ -76,7 +82,7 @@ export function oauthGoogle(payload: {
   idToken: string
   firstName?: string
   lastName?: string
-}): Promise<AuthResult> {
+} & SignUpConsent): Promise<AuthResult> {
   return apiPost<AuthResult>('/auth/oauth/google', payload, { anonymous: true })
 }
 
@@ -85,7 +91,7 @@ export function oauthApple(payload: {
   idToken: string
   firstName?: string
   lastName?: string
-}): Promise<AuthResult> {
+} & SignUpConsent): Promise<AuthResult> {
   return apiPost<AuthResult>('/auth/oauth/apple', payload, { anonymous: true })
 }
 

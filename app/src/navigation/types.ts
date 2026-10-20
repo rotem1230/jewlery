@@ -1,12 +1,15 @@
 import type { NavigatorScreenParams } from '@react-navigation/native'
 
+/** The terms screen, opened at its privacy part from the sign-up link 'מדיניות הפרטיות'. */
+export type TermsParams = { section?: 'privacy' } | undefined
+
 export type AuthStackParamList = {
   Splash: undefined
   RoleSelect: undefined
   Login: { role?: 'DESIGNER' | 'JEWELER' } | undefined
   Signup: { role?: 'DESIGNER' | 'JEWELER' } | undefined
   ForgotPassword: undefined
-  Terms: undefined
+  Terms: TermsParams
 }
 
 export type JewelryCategory = 'ring' | 'earrings' | 'bracelet' | 'necklace'
@@ -51,7 +54,7 @@ export type BusinessProfileFormMode = 'create' | 'edit'
 
 export type ProfileStackParamList = {
   ProfileHome: undefined
-  Terms: undefined
+  Terms: TermsParams
   Faq: undefined
   Pricing: undefined
   BusinessProfileForm: { mode: BusinessProfileFormMode }

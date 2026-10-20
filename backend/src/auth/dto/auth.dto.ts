@@ -7,10 +7,13 @@ import {
   IsEmail,
   IsEnum,
   IsIn,
+  IsInt,
+  IsBoolean,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -54,6 +57,22 @@ export class RegisterDto {
   @ArrayMaxSize(3)
   @IsEnum(UserRole, { each: true })
   roles!: UserRole[];
+
+  @ApiPropertyOptional({ description: 'The terms box: false refuses the account; older apps (which required the box) send nothing' })
+  @IsOptional()
+  @IsBoolean()
+  acceptTerms?: boolean;
+
+  @ApiPropertyOptional({ description: 'The version of the terms (CMS page "tos") shown on the screen' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  termsVersion?: number;
+
+  @ApiPropertyOptional({ description: 'The separate, optional box for marketing messages (off unless ticked)' })
+  @IsOptional()
+  @IsBoolean()
+  marketingConsent?: boolean;
 }
 
 export class LoginDto {
@@ -153,4 +172,20 @@ export class OAuthLoginDto {
   @IsString()
   @MaxLength(MAX_NAME)
   lastName?: string;
+
+  @ApiPropertyOptional({ description: 'The terms box: a new account is created only when true (TERMS_REQUIRED otherwise)' })
+  @IsOptional()
+  @IsBoolean()
+  acceptTerms?: boolean;
+
+  @ApiPropertyOptional({ description: 'The version of the terms (CMS page "tos") shown on the screen' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  termsVersion?: number;
+
+  @ApiPropertyOptional({ description: 'The separate, optional box for marketing messages (off unless ticked)' })
+  @IsOptional()
+  @IsBoolean()
+  marketingConsent?: boolean;
 }

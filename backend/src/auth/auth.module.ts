@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { CmsModule } from '../cms/cms.module';
+import { ConsentsService } from './consents.service';
 import { FeatureFlagsModule } from '../feature-flags/feature-flags.module';
 import { MailModule } from '../mail/mail.module';
 import { AuthWebController } from './auth-web.controller';
@@ -29,6 +30,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
   ],
   controllers: [AuthController, AuthWebController],
   providers: [
+    ConsentsService,
     AuthService,
     PasswordService,
     TokenService,
@@ -36,6 +38,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     OAuthTokenVerifier,
     { provide: JWKS_PROVIDER, useClass: HttpJwksProvider },
   ],
-  exports: [AuthService, PasswordService, TokenService],
+  exports: [AuthService, PasswordService, TokenService, ConsentsService],
 })
 export class AuthModule {}

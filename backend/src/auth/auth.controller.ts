@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Ip, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Ip, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AuthProvider, User } from '@prisma/client';
 import { Request } from 'express';
@@ -38,8 +38,8 @@ export class AuthController {
   @ApiResponse({ status: 400, description: 'Weak password or invalid payload' })
   @ApiResponse({ status: 409, description: 'Email already registered' })
   @ApiResponse({ status: 429, description: 'Too many requests from this client' })
-  register(@Body() dto: RegisterDto, @Ip() ip: string) {
-    return this.authService.register(dto, ip);
+  register(@Body() dto: RegisterDto, @Ip() ip: string, @Headers('user-agent') userAgent?: string) {
+    return this.authService.register(dto, ip, userAgent);
   }
 
   @Public()
@@ -127,8 +127,8 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Identity token invalid' })
   @ApiResponse({ status: 403, description: 'phase3_oauth is disabled' })
   @ApiResponse({ status: 503, description: 'Provider not configured on this server' })
-  oauthGoogle(@Body() dto: OAuthLoginDto) {
-    return this.authService.oauthLogin(AuthProvider.GOOGLE, dto);
+  oauthGoogle(@Body() dto: OAuthLoginDto, @Ip() ip: string, @Headers('user-agent') userAgent?: string) {
+    return this.authService.oauthLogin(AuthProvider.GOOGLE, dto, { ip, userAgent });
   }
 
   @Public()
@@ -141,8 +141,8 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Identity token invalid' })
   @ApiResponse({ status: 403, description: 'phase3_oauth is disabled' })
   @ApiResponse({ status: 503, description: 'Provider not configured on this server' })
-  oauthApple(@Body() dto: OAuthLoginDto) {
-    return this.authService.oauthLogin(AuthProvider.APPLE, dto);
+  oauthApple(@Body() dto: OAuthLoginDto, @Ip() ip: string, @Headers('user-agent') userAgent?: string) {
+    return this.authService.oauthLogin(AuthProvider.APPLE, dto, { ip, userAgent });
   }
 
   @ApiBearerAuth()

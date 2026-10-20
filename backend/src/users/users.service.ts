@@ -13,6 +13,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { AuthService } from '../auth/auth.service';
 import { AUTH_ERROR } from '../auth/constants';
+import { ConsentsService } from '../auth/consents.service';
 import { ChatGateway } from '../chat/chat.gateway';
 import { OutboxService } from '../common/outbox/outbox.service';
 import { SafeUser } from '../auth/interfaces/auth-user.interface';
@@ -50,6 +51,7 @@ export class UsersService {
     private readonly auth: AuthService,
     private readonly gateway: ChatGateway,
     private readonly outbox: OutboxService,
+    private readonly consents: ConsentsService,
   ) {}
 
   private sanitize(user: User): SafeUser {
@@ -158,11 +160,27 @@ export class UsersService {
     return { ok: true };
   }
 
+  /** Saves the preferences; turning marketing messages on or off is also recorded as consent (or its withdrawal). */
   async upsertPreferences(userId: string, dto: UpdatePreferencesDto): Promise<UserPreference> {
-    return this.prisma.userPreference.upsert({
-      where: { userId },
-      create: { userId, ...dto },
-      update: { ...dto },
+    const save = (tx: Prisma.TransactionClient) =>
+      tx.userPreference.upsert({
+        where: { userId },
+        create: { userId, ...dto },
+        update: { ...dto },
+      });
+    if (dto.notifyMarketingEnabled === undefined) {
+      return save(this.prisma);
+    }
+    const marketing = dto.notifyMarketingEnabled;
+    return this.prisma.$transaction(async (tx) => {
+      // The owner's lock: two saves at once record one change, not two.
+      await lockUser(tx, userId);
+      const before = await tx.userPreference.findUnique({ where: { userId }, select: { notifyMarketingEnabled: true } });
+      const saved = await save(tx);
+      if ((before?.notifyMarketingEnabled ?? false) !== marketing) {
+        await this.consents.recordMarketing(tx, userId, marketing, 'preferences');
+      }
+      return saved;
     });
   }
 

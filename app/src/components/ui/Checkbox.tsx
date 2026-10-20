@@ -10,12 +10,20 @@ type CheckboxProps = {
   label?: string
   labelNode?: ReactNode
   className?: string
+  testID?: string
 }
 
 /** Figma: justify flex-end, gap 8 — checkbox on the visual right of the label */
-export function Checkbox({ checked, onChange, label, labelNode, className }: CheckboxProps) {
+export function Checkbox({ checked, onChange, label, labelNode, className, testID }: CheckboxProps) {
   return (
-    <Pressable onPress={() => onChange(!checked)} className={cn('w-full', className)} style={styles.row}>
+    <Pressable
+      testID={testID}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      onPress={() => onChange(!checked)}
+      className={cn('w-full', className)}
+      style={styles.row}
+    >
       {labelNode ? (
         labelNode
       ) : label ? (

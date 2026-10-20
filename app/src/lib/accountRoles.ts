@@ -24,7 +24,7 @@ export function roleToSwitch(
 }
 
 type NoParamProfileRoute = {
-  [K in keyof ProfileStackParamList]: ProfileStackParamList[K] extends undefined ? K : never
+  [K in keyof ProfileStackParamList]: undefined extends ProfileStackParamList[K] ? K : never
 }[keyof ProfileStackParamList]
 
 export type ProfileMenuItem = {

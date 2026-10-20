@@ -29,7 +29,15 @@ export function LoginScreen({ navigation, route }: Props) {
   const [remember, setRemember] = useState(true)
   const [busy, setBusy] = useState(false)
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({})
-  const social = useSocialSignIn({ persist: remember, setBusy })
+  // A new Apple / Google account starts on the sign-up screen, where the terms are accepted.
+  const social = useSocialSignIn({
+    persist: remember,
+    setBusy,
+    onTermsRequired: () =>
+      Alert.alert(t('authTermsRequiredTitle'), t('authTermsRequiredBody'), [
+        { text: t('signup'), onPress: () => navigation.navigate('Signup', role ? { role } : undefined) },
+      ]),
+  })
 
   const onLogin = async () => {
     const trimmed = email.trim()

@@ -11,6 +11,7 @@ import { QuoteApproveSuccessModal } from '@/src/components/ui/QuoteApproveSucces
 import { acceptQuote, declineQuote, getQuote } from '@/src/api/quotes'
 import { createJewelryPaymentIntent, getJewelryPaymentIntent } from '@/src/api/jewelryPayments'
 import { PaymentSheet } from '@/src/components/payments/PaymentSheet'
+import { confirmJewelerEngagement } from '@/src/lib/legal'
 import { jewelryCheckoutStatus, waitForCheckout, type PaymentResult } from '@/src/lib/payments'
 import { getFeatureFlags } from '@/src/api/visualization'
 import { apiErrorCode, parseApiError } from '@/src/lib/api'
@@ -84,6 +85,8 @@ export function QuoteDetailsScreen() {
 
   const onAccept = async () => {
     if (!quote) return
+    // Section 5.4 of the terms: approving the quote is an independent engagement with the jeweler.
+    if (!(await confirmJewelerEngagement(t))) return
     setBusy(true)
     try {
       // Accept exactly the terms on screen; a quote edited meanwhile is refused, never accepted unseen.

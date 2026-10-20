@@ -5,6 +5,8 @@ import { nowSeconds, TestIdentityProvider } from '../utils/oauth';
 
 const GOOGLE_CLIENT = 'google-client-test.apps.googleusercontent.com';
 const APPLE_CLIENT = 'com.malinvosky.app';
+/** A new account is created only with the terms accepted (the app's sign-up checkbox). */
+const SIGN_UP = { acceptTerms: true };
 
 async function enableOauth(t: TestApp) {
   await t.prisma.featureFlag.upsert({
@@ -62,37 +64,37 @@ describe('OAuth sign-in', () => {
 
   it('signs in with a valid Google token and keeps the account linked by subject', async () => {
     const claims = googleClaims();
-    const first = await t.http.post(`${API}/auth/oauth/google`).send({ idToken: idp.sign(claims) }).expect(201);
+    const first = await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: idp.sign(claims) }).expect(201);
     expect(first.body.data.user.email).toBe(claims.email);
-    const second = await t.http.post(`${API}/auth/oauth/google`).send({ idToken: idp.sign(claims) }).expect(201);
+    const second = await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: idp.sign(claims) }).expect(201);
     expect(second.body.data.user.id).toBe(first.body.data.user.id);
   });
 
   it('rejects a Google token issued for another application', async () => {
     const token = idp.sign(googleClaims({ aud: 'another-app.apps.googleusercontent.com' }));
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(401);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(401);
   });
 
   it('rejects a token from an unexpected issuer', async () => {
     const token = idp.sign(googleClaims({ iss: 'https://evil.example' }));
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(401);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(401);
   });
 
   it('rejects an expired Apple token', async () => {
     const token = idp.sign(appleClaims({ iat: nowSeconds() - 7200, exp: nowSeconds() - 3600 }));
-    await t.http.post(`${API}/auth/oauth/apple`).send({ idToken: token }).expect(401);
+    await t.http.post(`${API}/auth/oauth/apple`).send({ ...SIGN_UP, idToken: token }).expect(401);
   });
 
   it('rejects a token signed by an unknown key', async () => {
     const stranger = new TestIdentityProvider(idp.kid);
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: stranger.sign(googleClaims()) }).expect(401);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: stranger.sign(googleClaims()) }).expect(401);
   });
 
   it('never trusts an e-mail supplied by the client', async () => {
     const claims = googleClaims({ email: undefined, email_verified: undefined });
     const res = await t.http
       .post(`${API}/auth/oauth/google`)
-      .send({ idToken: idp.sign(claims), email: 'victim@corp.test' })
+      .send({ ...SIGN_UP, idToken: idp.sign(claims), email: 'victim@corp.test' })
       .expect(201);
     expect(res.body.data.user.email).not.toBe('victim@corp.test');
     expect(await t.prisma.user.count({ where: { email: 'victim@corp.test' } })).toBe(0);
@@ -100,18 +102,18 @@ describe('OAuth sign-in', () => {
 
   it('does not adopt a provider e-mail that the provider has not verified', async () => {
     const claims = googleClaims({ email: 'unverified@corp.test', email_verified: false });
-    const res = await t.http.post(`${API}/auth/oauth/google`).send({ idToken: idp.sign(claims) }).expect(201);
+    const res = await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: idp.sign(claims) }).expect(201);
     expect(res.body.data.user.email).not.toBe('unverified@corp.test');
   });
 
   it('rejects a token issued to an app that is not ours (authorized party)', async () => {
     const token = idp.sign(googleClaims({ azp: 'someone-elses-app.apps.googleusercontent.com' }));
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(401);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(401);
   });
 
   it('accepts a token whose authorized party is one of our apps', async () => {
     const token = idp.sign(googleClaims({ azp: GOOGLE_CLIENT }));
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(201);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(201);
   });
 
   it('an e-mail taken by a password sign-up at the same moment answers 409 EMAIL_EXISTS', async () => {
@@ -123,7 +125,7 @@ describe('OAuth sign-in', () => {
     );
     const signingIn = t.http
       .post(`${API}/auth/oauth/google`)
-      .send({ idToken: idp.sign(claims) })
+      .send({ ...SIGN_UP, idToken: idp.sign(claims) })
       .then((res) => res);
     await waitForLockWaiters(t, 1);
     await held.release();
@@ -148,13 +150,45 @@ describe('OAuth sign-in', () => {
     });
 
     const unverified = idp.sign(googleClaims({ sub, email, email_verified: false }));
-    const refused = await t.http.post(`${API}/auth/oauth/google`).send({ idToken: unverified }).expect(403);
+    const refused = await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: unverified }).expect(403);
     expect(refused.body.code).toBe('EMAIL_NOT_VERIFIED');
 
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: idp.sign(googleClaims({ sub, email })) }).expect(201);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: idp.sign(googleClaims({ sub, email })) }).expect(201);
     const row = await t.prisma.user.findUniqueOrThrow({ where: { id: legacy.id } });
     expect(row.status).toBe('ACTIVE');
     expect(row.emailVerifiedAt).not.toBeNull();
+  });
+
+  describe('the terms of use', () => {
+    it('a new account needs them accepted: without that nothing is created (TERMS_REQUIRED)', async () => {
+      const claims = appleClaims();
+      const res = await t.http.post(`${API}/auth/oauth/apple`).send({ idToken: idp.sign(claims) }).expect(403);
+      expect(res.body.code).toBe('TERMS_REQUIRED');
+      expect(await t.prisma.user.count({ where: { authProviderSub: claims.sub } })).toBe(0);
+    });
+
+    it('with them, the version accepted and the marketing choice are recorded with the account', async () => {
+      const claims = appleClaims();
+      const res = await t.http
+        .post(`${API}/auth/oauth/apple`)
+        .set('User-Agent', 'MalinvoskyApp/1.0')
+        .send({ idToken: idp.sign(claims), acceptTerms: true, termsVersion: 1, marketingConsent: true })
+        .expect(201);
+      const consents = await t.prisma.userConsent.findMany({ where: { userId: res.body.data.user.id }, orderBy: { kind: 'asc' } });
+      expect(consents.map((row) => [row.kind, row.granted, row.documentVersion, row.source])).toEqual([
+        ['MARKETING', true, null, 'oauth_signup'],
+        ['TERMS', true, 1, 'oauth_signup'],
+      ]);
+      expect(consents[1].userAgent).toBe('MalinvoskyApp/1.0');
+    });
+
+    it('an existing account signs in without them, and nothing new is recorded', async () => {
+      const claims = googleClaims();
+      const first = await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: idp.sign(claims) }).expect(201);
+      const before = await t.prisma.userConsent.count({ where: { userId: first.body.data.user.id } });
+      await t.http.post(`${API}/auth/oauth/google`).send({ idToken: idp.sign(claims) }).expect(201);
+      expect(await t.prisma.userConsent.count({ where: { userId: first.body.data.user.id } })).toBe(before);
+    });
   });
 });
 
@@ -183,11 +217,11 @@ describe('OAuth signing-key rotation', () => {
   });
 
   it('picks up a newly published key, but made-up key ids cannot force a refetch on every request', async () => {
-    await t.http.post(`${API}/auth/oauth/google`).send({ idToken: rotated.sign(googleClaims()) }).expect(201);
+    await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: rotated.sign(googleClaims()) }).expect(201);
     const forcedBefore = fetches.filter(Boolean).length;
     for (let i = 0; i < 5; i += 1) {
       const forged = idp.sign(googleClaims(), { kid: `made-up-${i}` });
-      await t.http.post(`${API}/auth/oauth/google`).send({ idToken: forged }).expect(401);
+      await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: forged }).expect(401);
     }
     expect(fetches.filter(Boolean).length).toBe(forcedBefore);
   });
@@ -217,7 +251,7 @@ describe('OAuth sign-in without configured client ids', () => {
       iat: nowSeconds(),
       exp: nowSeconds() + 600,
     });
-    const res = await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(503);
+    const res = await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(503);
     expect(res.body.code).toBe('OAUTH_NOT_CONFIGURED');
   });
 });
@@ -244,7 +278,7 @@ describe('OAuth sign-in from the native apps', () => {
     const t = await appWith(`${WEB},${ANDROID}`);
     try {
       const token = idp.sign(googleClaims({ aud: WEB, azp: ANDROID }));
-      await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(201);
+      await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(201);
     } finally {
       await t.close();
     }
@@ -254,7 +288,7 @@ describe('OAuth sign-in from the native apps', () => {
     const t = await appWith(WEB);
     try {
       const token = idp.sign(googleClaims({ aud: WEB, azp: ANDROID }));
-      await t.http.post(`${API}/auth/oauth/google`).send({ idToken: token }).expect(401);
+      await t.http.post(`${API}/auth/oauth/google`).send({ ...SIGN_UP, idToken: token }).expect(401);
     } finally {
       await t.close();
     }

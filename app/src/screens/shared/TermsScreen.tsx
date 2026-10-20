@@ -1,33 +1,31 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native'
+import { useRef } from 'react'
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native'
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import { ScreenTopBar } from '@/src/components/layout/ScreenTopBar'
 import { colors } from '@/src/theme/tokens'
 import { useTranslation } from '@/src/i18n'
-import { useNavigation } from '@react-navigation/native'
 import { getContentPage } from '@/src/api/subscriptions'
-import { contentBodyText } from '@/src/lib/format'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
-
-type LegalBlock =
-  | { type: 'heading'; text: string }
-  | { type: 'paragraph'; text: string }
-  | { type: 'section'; text: string }
-  | { type: 'item'; text: string }
+import { legalBlocks, type LegalBlock } from '@/src/lib/legal'
+import type { TermsParams } from '@/src/navigation/types'
 
 /**
- * Figma תקנון — scrollable legal copy on #EDF3FA.
+ * Figma תקנון — the terms of use and privacy policy as published in the CMS (page "tos"), block by
+ * block; the built-in summary only when none is published. Opened from the sign-up link "מדיניות
+ * הפרטיות", it scrolls to the privacy part.
  */
 export function TermsScreen() {
   const { t, locale } = useTranslation()
   const navigation = useNavigation()
-  const cms = useAsyncData(
-    (signal) => getContentPage('tos', locale, signal),
-    { deps: [locale] },
-  )
-  const cmsText = contentBodyText(cms.data?.body, '')
+  const route = useRoute<RouteProp<{ Terms: TermsParams }, 'Terms'>>()
+  const target = route.params?.section
+  const cms = useAsyncData((signal) => getContentPage('tos', locale, signal), { deps: [locale] })
 
-  const blocks: LegalBlock[] = cmsText
-    ? [{ type: 'paragraph', text: cmsText }]
-    : [
+  const scroll = useRef<ScrollView>(null)
+  const columnY = useRef(0)
+  const scrolled = useRef(false)
+
+  const blocks: LegalBlock[] = legalBlocks(cms.data?.body) ?? [
     { type: 'heading', text: t('termsDocTitle') },
     { type: 'paragraph', text: t('termsIntro1') },
     { type: 'paragraph', text: t('termsIntro2') },
@@ -38,48 +36,37 @@ export function TermsScreen() {
     { type: 'item', text: t('termsItem1_2') },
     { type: 'item', text: t('termsItem2') },
     { type: 'item', text: t('termsItem2_1') },
-    { type: 'section', text: t('termsPartB') },
+    { type: 'section', text: t('termsPartB'), id: 'privacy' },
     { type: 'paragraph', text: t('termsPrivacy') },
   ]
+
+  /** The part asked for is laid out: scroll to it, once. */
+  const onBlockLayout = (id: string | undefined) => (event: LayoutChangeEvent) => {
+    if (!target || id !== target || scrolled.current) return
+    scrolled.current = true
+    scroll.current?.scrollTo({ y: columnY.current + event.nativeEvent.layout.y, animated: false })
+  }
 
   return (
     <View style={styles.root}>
       <ScreenTopBar title={t('termsTitle')} onBack={() => navigation.goBack()} />
-      <ScrollView
-        style={styles.flex}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.column}>
-          {blocks.map((block, index) => {
-            if (block.type === 'heading') {
-              return (
-                <Text key={`h-${index}`} style={styles.docTitle}>
-                  {block.text}
-                </Text>
-              )
-            }
-            if (block.type === 'section') {
-              return (
-                <Text key={`s-${index}`} style={styles.section}>
-                  {block.text}
-                </Text>
-              )
-            }
-            if (block.type === 'item') {
-              return (
-                <Text key={`i-${index}`} style={styles.item}>
-                  {block.text}
-                </Text>
-              )
-            }
-            return (
-              <Text key={`p-${index}`} style={styles.paragraph}>
+      <ScrollView ref={scroll} style={styles.flex} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {cms.loading && !cms.data ? (
+          <ActivityIndicator style={styles.loading} color={colors.brand} />
+        ) : (
+          <View
+            style={styles.column}
+            onLayout={(event) => {
+              columnY.current = event.nativeEvent.layout.y
+            }}
+          >
+            {blocks.map((block, index) => (
+              <Text key={`${block.type}-${index}`} style={STYLE_OF[block.type]} onLayout={block.id ? onBlockLayout(block.id) : undefined}>
                 {block.text}
               </Text>
-            )
-          })}
-        </View>
+            ))}
+          </View>
+        )}
       </ScrollView>
     </View>
   )
@@ -98,6 +85,9 @@ const styles = StyleSheet.create({
     paddingTop: 24,
     paddingBottom: 40,
     alignItems: 'center',
+  },
+  loading: {
+    paddingVertical: 32,
   },
   column: {
     width: '100%',
@@ -125,13 +115,23 @@ const styles = StyleSheet.create({
   },
   section: {
     fontFamily: 'Heebo',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
     lineHeight: 22,
     color: colors.ink,
     textAlign: 'right',
     writingDirection: 'rtl',
-    marginTop: 8,
+    marginTop: 12,
+  },
+  subheading: {
+    fontFamily: 'Heebo',
+    fontSize: 15,
+    fontWeight: '600',
+    lineHeight: 22,
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+    marginTop: 4,
   },
   item: {
     fontFamily: 'Heebo',
@@ -143,3 +143,11 @@ const styles = StyleSheet.create({
     writingDirection: 'rtl',
   },
 })
+
+const STYLE_OF: Record<LegalBlock['type'], (typeof styles)[keyof typeof styles]> = {
+  heading: styles.docTitle,
+  section: styles.section,
+  subheading: styles.subheading,
+  paragraph: styles.paragraph,
+  item: styles.item,
+}

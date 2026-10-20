@@ -236,6 +236,7 @@ model User {
   messagesSent            Message[]                 @relation("MessageSender")
   quotesCreated           Quote[]                   @relation("QuoteAuthor")
   auditLogs               AuditLog[]
+  consents                UserConsent[]
   idempotencyKeys         IdempotencyKey[]
   jewelryPaymentIntents   JewelryPaymentIntent[]
 
@@ -289,6 +290,26 @@ model EmailVerificationToken {
 
   @@index([userId])
   @@map("email_verification_tokens")
+}
+
+/// Evidence of what a user agreed to (click-wrap): the terms of use and privacy policy (TERMS,
+/// with the CMS version of the "tos" page shown) and, separately, marketing messages (MARKETING,
+/// Israel's anti-spam law). One row per decision; the latest row of a kind is the one in force.
+model UserConsent {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @db.Uuid
+  kind            String // TERMS | MARKETING
+  granted         Boolean
+  documentVersion Int? // TERMS: the version of the published "tos" page accepted
+  source          String // signup | signup_older_app | oauth_signup | preferences
+  ip              String?
+  userAgent       String?
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind, createdAt])
+  @@map("user_consents")
 }
 
 model UserPreference {

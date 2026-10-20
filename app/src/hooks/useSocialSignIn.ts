@@ -1,9 +1,9 @@
 import { useCallback } from 'react'
 import { Alert } from 'react-native'
-import { oauthApple, oauthGoogle } from '@/src/api/auth'
+import { oauthApple, oauthGoogle, type SignUpConsent } from '@/src/api/auth'
 import { useTranslation } from '@/src/i18n'
 import type { MarketplaceRole } from '@/src/lib/accountRoles'
-import { parseApiError } from '@/src/lib/api'
+import { apiErrorCode, parseApiError } from '@/src/lib/api'
 import { signInWithGoogleNative } from '@/src/lib/googleSignIn'
 import { sessionFromAuth } from '@/src/lib/session'
 import { isAppleSignInCancelled, roleSetupAfterSocialSignUp, signInWithAppleNative } from '@/src/lib/socialSignIn'
@@ -17,11 +17,15 @@ type Options = {
   persist: boolean
   /** Sign-up only: the role chosen on the screen (new Apple/Google accounts start as designers). */
   signUpRole?: MarketplaceRole
+  /** Sign-up only: the terms accepted and the marketing choice, recorded with a new account. */
+  consent?: SignUpConsent
+  /** Sign-in only: a new account needs the terms accepted first (the server answered TERMS_REQUIRED). */
+  onTermsRequired?: () => void
   setBusy: (busy: boolean) => void
 }
 
 /** Sign in (or up) with Apple or Google, then store the session like an e-mail sign-in. */
-export function useSocialSignIn({ persist, signUpRole, setBusy }: Options) {
+export function useSocialSignIn({ persist, signUpRole, consent, onTermsRequired, setBusy }: Options) {
   const { t } = useTranslation()
   const dispatch = useAppDispatch()
 
@@ -36,37 +40,45 @@ export function useSocialSignIn({ persist, signUpRole, setBusy }: Options) {
     [dispatch, persist, signUpRole],
   )
 
+  /** A new account from the sign-in screen goes to sign-up (where the terms are accepted), not to an error. */
+  const refused = useCallback(
+    (err: unknown, unavailable: () => string | null) => {
+      if (apiErrorCode(err) === 'TERMS_REQUIRED' && onTermsRequired) {
+        onTermsRequired()
+        return
+      }
+      Alert.alert(t('authErrorTitle'), unavailable() ?? parseApiError(err))
+    },
+    [onTermsRequired, t],
+  )
+
   const withApple = useCallback(async () => {
     setBusy(true)
     try {
       const profile = await signInWithAppleNative()
-      await complete(await oauthApple(profile))
+      await complete(await oauthApple({ ...profile, ...consent }))
     } catch (err) {
       // Closing Apple's sheet is the user's choice, not an error.
       if (isAppleSignInCancelled(err)) return
-      const message =
-        err instanceof Error && err.message.startsWith('apple-signin') ? t('shAuthAppleUnavailable') : parseApiError(err)
-      Alert.alert(t('authErrorTitle'), message)
+      refused(err, () => (err instanceof Error && err.message.startsWith('apple-signin') ? t('shAuthAppleUnavailable') : null))
     } finally {
       setBusy(false)
     }
-  }, [complete, setBusy, t])
+  }, [complete, consent, refused, setBusy, t])
 
   const withGoogle = useCallback(async () => {
     setBusy(true)
     try {
       const profile = await signInWithGoogleNative()
       await complete(
-        await oauthGoogle({ idToken: profile.idToken, firstName: profile.firstName, lastName: profile.lastName }),
+        await oauthGoogle({ idToken: profile.idToken, firstName: profile.firstName, lastName: profile.lastName, ...consent }),
       )
     } catch (err) {
-      const message =
-        err instanceof Error && err.message.startsWith('google-signin') ? t('authGoogleUnavailable') : parseApiError(err)
-      Alert.alert(t('authErrorTitle'), message)
+      refused(err, () => (err instanceof Error && err.message.startsWith('google-signin') ? t('authGoogleUnavailable') : null))
     } finally {
       setBusy(false)
     }
-  }, [complete, setBusy, t])
+  }, [complete, consent, refused, setBusy, t])
 
   return { withApple, withGoogle }
 }

@@ -35,6 +35,14 @@ import { OAuthTokenVerifier } from './oauth/oauth-token-verifier';
 import { PasswordService } from './services/password.service';
 import { InvalidTokenError, TokenService } from './services/token.service';
 import { lockUser } from '../database/row-locks';
+import { ConsentContext, ConsentsService } from './consents.service';
+
+const termsRequired = () =>
+  new BadRequestException({
+    success: false,
+    message: 'Accept the terms of use and the privacy policy to create an account',
+    code: AUTH_ERROR.TERMS_REQUIRED,
+  });
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -95,6 +103,7 @@ export class AuthService implements OnModuleDestroy {
     private readonly limiter: RateLimiterService,
     private readonly oauthVerifier: OAuthTokenVerifier,
     private readonly audit: AuditService,
+    private readonly consents: ConsentsService,
   ) {}
 
   private sanitize(user: User): SafeUser {
@@ -248,7 +257,7 @@ export class AuthService implements OnModuleDestroy {
    * Creates a PENDING_VERIFICATION account and mails a verification link. No session is issued:
    * the account becomes usable only after the e-mail is verified and the user signs in.
    */
-  async register(dto: RegisterDto, clientIp: string): Promise<RegisterResult> {
+  async register(dto: RegisterDto, clientIp: string, userAgent?: string): Promise<RegisterResult> {
     const registrationOpen = this.config.get<boolean>('auth.registrationOpen', true);
     if (!registrationOpen) {
       throw new ForbiddenException({
@@ -256,6 +265,10 @@ export class AuthService implements OnModuleDestroy {
         message: 'Registration is disabled',
         code: AUTH_ERROR.REGISTRATION_DISABLED,
       });
+    }
+    // The terms box declined: no account. Older apps send nothing (their sign-up required the box).
+    if (dto.acceptTerms === false) {
+      throw termsRequired();
     }
     await this.assertMailBudget(clientIp);
 
@@ -290,17 +303,25 @@ export class AuthService implements OnModuleDestroy {
     const passwordHash = await this.password.hash(dto.password);
     let user: User;
     try {
-      user = await this.prisma.user.create({
-        data: {
-          email,
-          passwordHash,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          phone: dto.phone ?? null,
-          roles,
-          activeRole: roles[0],
-          status: UserStatus.PENDING_VERIFICATION,
-        },
+      // The account and the record of what it agreed to are created together, or not at all.
+      user = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            passwordHash,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            phone: dto.phone ?? null,
+            roles,
+            activeRole: roles[0],
+            status: UserStatus.PENDING_VERIFICATION,
+          },
+        });
+        await this.consents.recordSignup(tx, created.id, dto, dto.acceptTerms === true ? 'signup' : 'signup_older_app', {
+          ip: clientIp,
+          userAgent,
+        });
+        return created;
       });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -684,7 +705,7 @@ export class AuthService implements OnModuleDestroy {
    * ID token: the e-mail is used only when the provider asserts it is verified, and anything the
    * client sends about e-mail is ignored.
    */
-  async oauthLogin(provider: AuthProvider, dto: OAuthLoginDto): Promise<AuthResult> {
+  async oauthLogin(provider: AuthProvider, dto: OAuthLoginDto, context: ConsentContext = {}): Promise<AuthResult> {
     const enabled = await this.featureFlags.isEnabled('phase3_oauth');
     if (!enabled) {
       throw new ForbiddenException({
@@ -709,20 +730,33 @@ export class AuthService implements OnModuleDestroy {
           code: AUTH_ERROR.EMAIL_EXISTS,
         });
       }
+      // A new account only with the terms accepted (the app's sign-up box); from the sign-in
+      // screen the app sends the user to sign up first.
+      if (dto.acceptTerms !== true) {
+        throw new ForbiddenException({
+          success: false,
+          message: 'Accept the terms of use and the privacy policy to create an account',
+          code: AUTH_ERROR.TERMS_REQUIRED,
+        });
+      }
 
       try {
-        user = await this.prisma.user.create({
-          data: {
-            email,
-            authProvider: provider,
-            authProviderSub: subject,
-            firstName: identity.firstName ?? dto.firstName,
-            lastName: identity.lastName ?? dto.lastName,
-            roles: [UserRole.DESIGNER],
-            activeRole: UserRole.DESIGNER,
-            status: UserStatus.ACTIVE,
-            emailVerifiedAt: identity.email ? new Date() : null,
-          },
+        user = await this.prisma.$transaction(async (tx) => {
+          const created = await tx.user.create({
+            data: {
+              email,
+              authProvider: provider,
+              authProviderSub: subject,
+              firstName: identity.firstName ?? dto.firstName,
+              lastName: identity.lastName ?? dto.lastName,
+              roles: [UserRole.DESIGNER],
+              activeRole: UserRole.DESIGNER,
+              status: UserStatus.ACTIVE,
+              emailVerifiedAt: identity.email ? new Date() : null,
+            },
+          });
+          await this.consents.recordSignup(tx, created.id, dto, 'oauth_signup', context);
+          return created;
         });
       } catch (err) {
         if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
