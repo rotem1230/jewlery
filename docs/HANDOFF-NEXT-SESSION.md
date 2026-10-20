@@ -140,8 +140,10 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 | Android APK (18.10) | https://expo.dev/artifacts/eas/BouMaU1EeRpRrwuzd56-kwX83pVcVdhRkjCBGD-ouoU.apk |
 | iOS #10 (19.10) — מסלולים, Cardcom, ניהול, החלפת כרטיס, תשלום תכשיטים | הועלה ל-App Store Connect / TestFlight (build `6823db90`) |
 | Android APK (19.10) | https://expo.dev/artifacts/eas/IbOJZP3jpiVFSYfMnl29VcPmDsZFOTKgAfv1VcCGnn0.apk (build `5e2280f7`) |
-| **iOS #11 (20.10)** — + מסך "מנויים ולידים" | הועלה ל-App Store Connect / TestFlight (build `e62ce5fb`) |
-| **Android APK (20.10)** — אותו קוד | https://expo.dev/artifacts/eas/jWP3JT6LAs2ZyWldnmABoRMVcfHVqrTgnayF0NlR7o0.apk (build `4756db5d`) |
+| iOS #11 (20.10) — + מסך "מנויים ולידים" | הועלה ל-App Store Connect / TestFlight (build `e62ce5fb`) |
+| Android APK (20.10, מנויים ולידים) | https://expo.dev/artifacts/eas/jWP3JT6LAs2ZyWldnmABoRMVcfHVqrTgnayF0NlR7o0.apk (build `4756db5d`) |
+| **iOS #12 (20.10)** — + תקנון, הסכמות בהרשמה, הודעת סעיף 5.4 | הועלה ל-App Store Connect / TestFlight (build `8849776e`) |
+| **Android APK (20.10, תקנון)** — אותו קוד | https://expo.dev/artifacts/eas/1kONPWRt6IqU2GZPWYo0dlgmo3YJut9cz6vZK8jW5xI.apk (build `312549e0`) |
 
 הקרדיטים החינמיים של EAS לחודש נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. iOS בלי יכולת (capability) חדשה רץ לא-אינטראקטיבית (מפתח ASC שמור ב-EAS).
 
