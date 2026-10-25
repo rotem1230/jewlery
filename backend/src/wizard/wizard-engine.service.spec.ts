@@ -24,7 +24,10 @@ function prismaReturning(updatedAt: () => Date) {
         },
       }),
     },
-    setting: { findUnique: async () => null },
+    setting: {
+      findUnique: async ({ where }: { where: { code: string } }) =>
+        where.code === 'BRIGHT_CUT' ? { code: 'BRIGHT_CUT', minBandWidthMm: 2.5 } : null,
+    },
   } as unknown as PrismaService;
 }
 
@@ -59,5 +62,20 @@ describe('WizardEngineService.validateParameters', () => {
     await wizard.validateParameters('item-1', { size: {} });
     const result = await wizard.validateParameters('item-1', {});
     expect(result.valid).toBe(false);
+  });
+
+  it('keeps to the client catalogue: a cut the stone does not come in is refused', async () => {
+    const wizard = new WizardEngineService(prismaReturning(() => new Date('2026-01-01T00:00:00Z')));
+    const result = await wizard.validateParameters('item-1', { size: {}, stones: [{ stoneCode: 'OPAL', cutCode: 'ROUND' }] });
+    expect(result).toEqual({ valid: false, errors: ['/stones/0/cutCode OPAL comes only as CABOCHON, CABOCHON_OVAL'] });
+  });
+
+  it('a head chosen as headCode needs its minimum band width, as the older settingCode did', async () => {
+    const wizard = new WizardEngineService(prismaReturning(() => new Date('2026-01-01T00:00:00Z')));
+    const narrow = await wizard.validateParameters('item-1', { size: { bandWidthMm: 2 }, setting: { headCode: 'BRIGHT_CUT' } });
+    expect(narrow.errors).toEqual(['Band width 2mm is below the minimum 2.5mm required by setting "BRIGHT_CUT"']);
+    expect((await wizard.validateParameters('item-1', { size: { bandWidthMm: 2.5 }, setting: { headCode: 'BRIGHT_CUT' } })).valid).toBe(true);
+    // No head: nothing to hold.
+    expect((await wizard.validateParameters('item-1', { size: { bandWidthMm: 1 }, setting: { headCode: 'NONE', settingCode: 'BRIGHT_CUT' } })).valid).toBe(true);
   });
 });

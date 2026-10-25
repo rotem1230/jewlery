@@ -57,4 +57,46 @@ describe('describeChoices', () => {
     expect(choices.elements).toHaveLength(6);
     expect(choices.metal).toBeUndefined();
   });
+
+  it('says the cut, a colour other than the stone colour, the head and the band setting of the client catalogue', () => {
+    const parameters = {
+      stones: [
+        { stoneCode: 'SAPPHIRE', cutCode: 'CABOCHON_OVAL', colorCode: 'LIGHT_ROSE' },
+        { stoneCode: 'RUBY', cutCode: 'ROSE', colorCode: 'RUBY' },
+        { stoneCode: 'EMERALD', cutCode: 'EMERALD' },
+      ],
+      setting: {
+        headCode: 'HALF_BEZEL',
+        settingCode: 'HALF_BEZEL',
+        band: { settingCode: 'PAVE', stoneCode: 'DIAMOND', stoneSizeMm: 1.5, rows: 2 },
+      },
+    };
+    const choices = describeChoices(parameters, { ...catalog, settings: { HALF_BEZEL: 'Half-Bezel', PAVE: 'Pavé (2 or more rows)' } });
+    expect(choices.stones).toEqual(['oval cabochon sapphire in light rose colour', 'rose-cut ruby', 'emerald-cut emerald']);
+    expect(choices.setting).toBe('half-bezel setting');
+    expect(choices.band).toBe('pavé band set with diamond stones in 2 rows');
+  });
+
+  it('a centre stone without a head says no setting; a band alone is the band', () => {
+    const choices = describeChoices({ setting: { headCode: 'NONE', band: { settingCode: 'BAND_CHANNEL', stoneCode: 'RUBY' } } }, catalog);
+    expect(choices.setting).toBeUndefined();
+    expect(choices.band).toBe('channel band set with ruby stones');
+  });
+
+  it('says the text and the style of an element', () => {
+    const parameters = {
+      elements: [
+        { elementCode: 'LETTERS', text: 'Dana' },
+        { elementCode: 'NUMBERS', text: '2026' },
+        { elementCode: 'STAR_OF_DAVID', variant: 'SOLID' },
+        { elementCode: 'HEART' },
+      ],
+    };
+    expect(describeChoices(parameters, { ...catalog, elements: { LETTERS: 'Letters', NUMBERS: 'Numbers', STAR_OF_DAVID: 'Star of David', HEART: 'Heart' } }).elements).toEqual([
+      'letters "DANA"',
+      'numbers "2026"',
+      'solid star of david',
+      'heart',
+    ]);
+  });
 });

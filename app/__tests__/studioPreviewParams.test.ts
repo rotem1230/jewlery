@@ -17,13 +17,15 @@ describe('studio preview parameters', () => {
     const next = viewerParameters('RING', saved, {
       size: { standard: 'IL', sizeCode: '58', bandWidthMm: 4.6 },
       metal: { metalCode: 'ROSE_GOLD', purityCode: '18K' },
-      settingCode: '6_PRONG',
-      stones: [{ stoneCode: 'SAPPHIRE', placement: { x: 0, y: 1, z: 0.14 } }],
+      setting: { headCode: 'BEZEL', band: null },
+      stones: [{ stoneCode: 'SAPPHIRE', cutCode: 'ROUND', colorCode: 'SAPPHIRE', sizeMm: 5, placement: { angleDeg: 90, offsetMm: 0, rotationDeg: 0 } }],
     })
     expect(next.size).toEqual({ standard: 'IL', sizeCode: '58', bandWidthMm: 4.6 })
     expect(next.metal).toEqual({ metalCode: 'ROSE_GOLD', purityCode: '18K' })
-    expect(next.setting).toEqual({ settingCode: '6_PRONG' })
-    expect(next.stones).toEqual([{ stoneCode: 'SAPPHIRE', placement: { x: 0, y: 1, z: 0.14 } }])
+    expect(next.setting).toEqual({ headCode: 'BEZEL', settingCode: 'BEZEL' })
+    expect(next.stones).toEqual([
+      { stoneCode: 'SAPPHIRE', cutCode: 'ROUND', colorCode: 'SAPPHIRE', sizeMm: 5, placement: { angleDeg: 90, offsetMm: 0, rotationDeg: 0 } },
+    ])
     expect(next.personalNote).toBe('kept')
     // The saved design itself is untouched.
     expect(saved.metal.metalCode).toBe('YELLOW_GOLD')

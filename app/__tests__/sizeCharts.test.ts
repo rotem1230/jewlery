@@ -108,7 +108,7 @@ describe('band width vs setting (server refuses a band narrower than the setting
   ]
 
   it('flags a ring band below the minimum of the chosen setting', () => {
-    expect(bandWidthConflict('RING', 1.5, 'BEZEL', settings)).toEqual({
+    expect(bandWidthConflict('RING', 1.5, { headCode: 'BEZEL', band: null }, settings)).toEqual({
       settingCode: 'BEZEL',
       settingLabel: 'משבצת סגורה',
       minBandWidthMm: 2,
@@ -116,11 +116,11 @@ describe('band width vs setting (server refuses a band narrower than the setting
     })
   })
 
-  it('accepts the minimum itself, a setting without a minimum, no setting, and non-rings', () => {
-    expect(bandWidthConflict('RING', 2, 'BEZEL', settings)).toBeNull()
-    expect(bandWidthConflict('RING', 0.5, 'PAVE', settings)).toBeNull()
+  it('accepts the minimum itself, no head, no setting, an unknown head, and non-rings', () => {
+    expect(bandWidthConflict('RING', 2, { headCode: 'BEZEL', band: null }, settings)).toBeNull()
+    expect(bandWidthConflict('RING', 0.5, { headCode: 'NONE', band: null }, settings)).toBeNull()
     expect(bandWidthConflict('RING', 0.5, undefined, settings)).toBeNull()
-    expect(bandWidthConflict('RING', 0.5, 'UNKNOWN', settings)).toBeNull()
-    expect(bandWidthConflict('NECKLACE', 0.5, 'BEZEL', settings)).toBeNull()
+    expect(bandWidthConflict('RING', 0.5, { headCode: 'UNKNOWN', band: null }, settings)).toBeNull()
+    expect(bandWidthConflict('NECKLACE', 0.5, { headCode: 'BEZEL', band: null }, settings)).toBeNull()
   })
 })

@@ -9,6 +9,7 @@
 import { BillingCycle, ContentPageStatus, DesignStatus, Prisma, PrismaClient, ProfilePublishStatus, PromotionEntityType, PromotionSource, SubscriptionStatus, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { DEFAULT_APP_CONFIGS } from '../src/cms/app-config.constants';
+import { CUTS, ELEMENTS, LEGACY_ELEMENTS, LEGACY_SETTINGS, SETTINGS, STONES, allowedCuts } from '../src/jewelry/catalog';
 
 const prisma = new PrismaClient();
 const SEED_DEMO_DATA = process.env.SEED_DEMO_DATA === 'true';
@@ -355,34 +356,24 @@ async function seedMetalsAndPurities() {
   console.log(`Seed complete: ${metals.length} metals with purities`);
 }
 
+/**
+ * The client's catalogue (src/jewelry/catalog.ts): heads go on every piece, band styles on rings.
+ * The older 4- and 6-prong settings stay for older designs, no longer offered.
+ */
 async function seedSettings(itemTypeIds: Record<string, string>) {
-  const settings: { code: string; labelHe: string; labelEn: string; minBandWidthMm: number; sortOrder: number }[] = [
-    { code: '4_PRONG', labelHe: 'משבצת 4 צבתות', labelEn: '4-Prong', minBandWidthMm: 1.5, sortOrder: 1 },
-    { code: '6_PRONG', labelHe: 'משבצת 6 צבתות', labelEn: '6-Prong', minBandWidthMm: 1.8, sortOrder: 2 },
-    { code: 'BEZEL', labelHe: 'משבצת סגורה', labelEn: 'Bezel', minBandWidthMm: 2.0, sortOrder: 3 },
-    { code: 'PAVE', labelHe: 'פאבה', labelEn: 'Pavé', minBandWidthMm: 1.2, sortOrder: 4 },
-  ];
-
-  const typeIds = Object.values(itemTypeIds);
-
-  for (const setting of settings) {
+  for (const [index, setting] of SETTINGS.entries()) {
+    const data = {
+      labelHe: setting.labelHe,
+      labelEn: setting.labelEn,
+      minBandWidthMm: setting.minBandWidthMm,
+      sortOrder: index + 1,
+    };
     const row = await prisma.setting.upsert({
       where: { code: setting.code },
-      update: {
-        labelHe: setting.labelHe,
-        labelEn: setting.labelEn,
-        minBandWidthMm: setting.minBandWidthMm,
-        sortOrder: setting.sortOrder,
-      },
-      create: {
-        code: setting.code,
-        labelHe: setting.labelHe,
-        labelEn: setting.labelEn,
-        minBandWidthMm: setting.minBandWidthMm,
-        sortOrder: setting.sortOrder,
-      },
+      update: data,
+      create: { code: setting.code, ...data },
     });
-
+    const typeIds = setting.kind === 'HEAD' ? Object.values(itemTypeIds) : [itemTypeIds.RING];
     for (const itemTypeId of typeIds) {
       await prisma.settingItemType.upsert({
         where: { settingId_itemTypeId: { settingId: row.id, itemTypeId } },
@@ -390,95 +381,43 @@ async function seedSettings(itemTypeIds: Record<string, string>) {
         create: { settingId: row.id, itemTypeId },
       });
     }
+    if (setting.kind === 'BAND') {
+      await prisma.settingItemType.deleteMany({ where: { settingId: row.id, itemTypeId: { not: itemTypeIds.RING } } });
+    }
   }
+  await prisma.setting.updateMany({ where: { code: { in: Object.keys(LEGACY_SETTINGS) } }, data: { isActive: false } });
 
-  console.log(`Seed complete: ${settings.length} settings`);
+  console.log(`Seed complete: ${SETTINGS.length} settings`);
 }
 
+/** The client's stones (with the cuts each comes in) and elements (src/jewelry/catalog.ts). */
 async function seedStonesAndElements() {
-  const stones: Array<{
-    code: string
-    nameHe: string
-    nameEn: string
-    options: Array<{ kind: string; value: string; labelHe: string }>
-  }> = [
-    {
-      code: 'DIAMOND',
-      nameHe: 'יהלום',
-      nameEn: 'Diamond',
-      options: [
-        { kind: 'SHAPE', value: 'ROUND', labelHe: 'עגול' },
-        { kind: 'COLOR', value: 'D', labelHe: 'D' },
-        { kind: 'SIZE_MM', value: '1.0', labelHe: '1.0' },
-      ],
-    },
-    {
-      code: 'SAPPHIRE',
-      nameHe: 'ספיר',
-      nameEn: 'Sapphire',
-      options: [
-        { kind: 'SHAPE', value: 'OVAL', labelHe: 'אובלי' },
-        { kind: 'COLOR', value: 'BLUE', labelHe: 'כחול' },
-        { kind: 'SIZE_MM', value: '2.0', labelHe: '2.0' },
-      ],
-    },
-    {
-      code: 'RUBY',
-      nameHe: 'רובי',
-      nameEn: 'Ruby',
-      options: [
-        { kind: 'SHAPE', value: 'ROUND', labelHe: 'עגול' },
-        { kind: 'COLOR', value: 'RED', labelHe: 'אדום' },
-        { kind: 'SIZE_MM', value: '1.5', labelHe: '1.5' },
-      ],
-    },
-    {
-      code: 'EMERALD',
-      nameHe: 'ברקת',
-      nameEn: 'Emerald',
-      options: [
-        { kind: 'SHAPE', value: 'EMERALD', labelHe: 'אמרלד' },
-        { kind: 'COLOR', value: 'GREEN', labelHe: 'ירוק' },
-        { kind: 'SIZE_MM', value: '2.0', labelHe: '2.0' },
-      ],
-    },
-  ];
-
-  for (const stone of stones) {
+  for (const [index, stone] of STONES.entries()) {
     const row = await prisma.stone.upsert({
       where: { code: stone.code },
-      update: { nameHe: stone.nameHe, nameEn: stone.nameEn },
-      create: { code: stone.code, nameHe: stone.nameHe, nameEn: stone.nameEn, sortOrder: stones.indexOf(stone) },
+      update: { nameHe: stone.nameHe, nameEn: stone.nameEn, sortOrder: index + 1 },
+      create: { code: stone.code, nameHe: stone.nameHe, nameEn: stone.nameEn, sortOrder: index + 1 },
     });
-    for (const option of stone.options) {
+    for (const [cutIndex, cut] of allowedCuts(stone.code).entries()) {
+      const labelHe = CUTS.find((c) => c.code === cut)?.labelHe ?? cut;
       await prisma.stoneOption.upsert({
-        where: { stoneId_kind_value: { stoneId: row.id, kind: option.kind, value: option.value } },
-        update: { labelHe: option.labelHe },
-        create: {
-          stoneId: row.id,
-          kind: option.kind,
-          value: option.value,
-          labelHe: option.labelHe,
-        },
+        where: { stoneId_kind_value: { stoneId: row.id, kind: 'SHAPE', value: cut } },
+        update: { labelHe, sortOrder: cutIndex + 1, isActive: true },
+        create: { stoneId: row.id, kind: 'SHAPE', value: cut, labelHe, sortOrder: cutIndex + 1 },
       });
     }
   }
 
-  const elements: Array<{ code: string; labelHe: string; labelEn: string }> = [
-    { code: 'HEART', labelHe: 'לב', labelEn: 'Heart' },
-    { code: 'STAR', labelHe: 'כוכב', labelEn: 'Star' },
-    { code: 'LEAF', labelHe: 'עלה', labelEn: 'Leaf' },
-    { code: 'INITIAL', labelHe: 'אות', labelEn: 'Initial' },
-  ];
-  for (const element of elements) {
+  for (const element of ELEMENTS) {
     await prisma.elementCatalog.upsert({
       where: { code: element.code },
       update: { labelHe: element.labelHe, labelEn: element.labelEn },
       create: { code: element.code, labelHe: element.labelHe, labelEn: element.labelEn },
     });
   }
+  await prisma.elementCatalog.updateMany({ where: { code: { in: Object.keys(LEGACY_ELEMENTS) } }, data: { isActive: false } });
 
-  console.log(`Seed complete: ${stones.length} stones, ${elements.length} elements`);
+  console.log(`Seed complete: ${STONES.length} stones, ${ELEMENTS.length} elements`);
 }
 
 /**

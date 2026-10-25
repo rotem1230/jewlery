@@ -6,7 +6,11 @@ import { JEWELRY_GEOMETRY_JS } from '@/src/lib/jewelryGeometry.generated'
  * what gets made.
  *
  * Messages (window.__studioSet): { type: 'setDesign', itemType, parameters, ringChartDiameterMm }
- * rebuilds the piece; { type: 'zoom', factor } and { type: 'resize', width, height } move the view.
+ * rebuilds the piece; { type: 'zoom', factor } and { type: 'resize', width, height } move the view;
+ * { type: 'edit', target: { kind: 'stone' | 'element', index } | null } makes a one-finger drag move
+ * that item instead of turning the view. Where the finger lets go is posted back as
+ * 'placement:' + JSON { kind, index, angleDeg, offsetMm } (the angle on the piece and the place
+ * across the band, from the shared geometry).
  */
 export function studioViewerHtml(options: { itemType?: string } = {}): string {
   const item = JSON.stringify(options.itemType ?? 'RING')
@@ -99,6 +103,44 @@ function applyCamera() {
 
 let drag = null;
 let pinch0 = 0;
+/** The item a drag places ({ kind, index }), or null: a drag turns the view. */
+let editTarget = null;
+let placing = null;
+let currentSpec = null;
+const raycaster = new THREE.Raycaster();
+const marker = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 24, 16),
+  new THREE.MeshBasicMaterial({ color: 0x6b4eff, transparent: true, opacity: 0.55, depthTest: false }),
+);
+marker.renderOrder = 10;
+marker.visible = false;
+scene.add(marker);
+
+/** The point of the piece under a screen position, or null. */
+function pieceHit(p) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((p.x - rect.left) / rect.width) * 2 - 1, -((p.y - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObjects(pieceGroup.children, false);
+  return hits.length ? hits[0].point : null;
+}
+function placeAt(p) {
+  const hit = pieceHit(p);
+  if (!hit || !currentSpec) return;
+  placing = GEO.placementFromPoint(currentSpec, [hit.x, hit.y, hit.z]);
+  marker.position.copy(hit);
+  marker.scale.setScalar(Math.max(0.6, frameRadius * 0.035));
+  marker.visible = true;
+}
+function finishPlacing() {
+  marker.visible = false;
+  if (placing && editTarget && window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage('placement:' + JSON.stringify({
+      kind: editTarget.kind, index: editTarget.index, angleDeg: placing.angleDeg, offsetMm: placing.offsetMm,
+    }));
+  }
+  placing = null;
+}
 function pos(e) {
   var t = e.touches ? e.touches[0] : e;
   return { x: t.clientX, y: t.clientY };
@@ -109,8 +151,9 @@ function pinchDist(e) {
 }
 function onDown(e) {
   if (e.type.indexOf('pointer') === 0 && e.pointerType !== 'mouse') return;
-  if (e.touches && e.touches.length === 2) { drag = null; pinch0 = pinchDist(e); return; }
+  if (e.touches && e.touches.length === 2) { drag = null; placing = null; marker.visible = false; pinch0 = pinchDist(e); return; }
   drag = pos(e);
+  if (editTarget) placeAt(drag);
 }
 function onMove(e) {
   if (e.type.indexOf('pointer') === 0 && e.pointerType !== 'mouse') return;
@@ -126,12 +169,17 @@ function onMove(e) {
   if (e.touches && e.touches.length !== 1) return;
   if (e.buttons !== undefined && e.pointerType === 'mouse' && !(e.buttons & 1)) return;
   var p = pos(e);
+  if (editTarget) { drag = p; placeAt(p); return; }
   spherical.theta -= (p.x - drag.x) * 0.008;
   spherical.phi -= (p.y - drag.y) * 0.008;
   drag = p;
   applyCamera();
 }
-function onUp() { drag = null; pinch0 = 0; }
+function onUp() {
+  if (editTarget && drag) finishPlacing();
+  drag = null;
+  pinch0 = 0;
+}
 var el = renderer.domElement;
 el.addEventListener('touchstart', onDown, { passive: true });
 el.addEventListener('touchmove', onMove, { passive: false });
@@ -189,9 +237,22 @@ function metalMaterial(code, purity, finish) {
     side: THREE.DoubleSide,
   });
 }
-function stoneMaterial(code) {
+function stoneMaterial(code, opaque) {
+  const color = new THREE.Color((GEO.STONE_COLORS && GEO.STONE_COLORS[code]) || '#DDE3FF');
+  if (opaque) {
+    // Opal, lapis, turquoise…: no light through the stone, a polished surface.
+    return new THREE.MeshPhysicalMaterial({
+      color: color,
+      metalness: 0,
+      roughness: 0.32,
+      clearcoat: 0.8,
+      clearcoatRoughness: 0.08,
+      envMapIntensity: 1.1,
+      side: THREE.DoubleSide,
+    });
+  }
   return new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color((GEO.STONE_COLORS && GEO.STONE_COLORS[code]) || '#DDE3FF'),
+    color: color,
     metalness: 0.02,
     roughness: 0.04,
     ior: 2.4,
@@ -245,9 +306,10 @@ function setDesign(msg) {
   if (msg.itemType && msg.itemType !== ITEM) ITEM = msg.itemType;
   const spec = GEO.specFromParameters(ITEM, msg.parameters || {}, { ringChartDiameterMm: msg.ringChartDiameterMm });
   const model = GEO.buildJewelry(spec);
+  currentSpec = spec;
   clearPiece();
   model.parts.forEach(function (part) {
-    const material = part.material === 'metal' ? metalMaterial(part.code, spec.purityCode, spec.finishCode) : stoneMaterial(part.code);
+    const material = part.material === 'metal' ? metalMaterial(part.code, spec.purityCode, spec.finishCode) : stoneMaterial(part.code, part.opaque);
     pieceGroup.add(new THREE.Mesh(geometryOf(part.mesh), material));
   });
   const force = framedItem !== ITEM;
@@ -280,6 +342,12 @@ window.__studioSet = function (msg) {
     if (msg.type === 'zoom') zoomBy(msg.factor);
     else if (msg.type === 'resize') { resize(msg.width, msg.height); if (framed) frame(true); }
     else if (msg.type === 'setDesign') setDesign(msg);
+    else if (msg.type === 'edit') {
+      const target = msg.target;
+      editTarget = target && (target.kind === 'stone' || target.kind === 'element') && Number.isInteger(target.index) ? target : null;
+      placing = null;
+      marker.visible = false;
+    }
   } catch (err) {
     fail(err);
   }

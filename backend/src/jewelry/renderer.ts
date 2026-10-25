@@ -141,14 +141,18 @@ for (const l of KEY_LIGHTS) {
 
 interface Material {
   stone: boolean;
+  /** Opaque stones (opal, lapis lazuli…): a lit coloured surface with a sheen, no light through. */
+  opaque: boolean;
   color: V3;
   rough: number;
 }
 
 function materialFor(part: JewelryModel['parts'][number], finishCode: string): Material {
-  if (part.material === 'stone') return { stone: true, color: hexToLinear(STONE_COLORS[part.code] ?? '#DDE3FF'), rough: 0 };
+  if (part.material === 'stone') {
+    return { stone: true, opaque: Boolean(part.opaque), color: hexToLinear(STONE_COLORS[part.code] ?? '#DDE3FF'), rough: 0 };
+  }
   const matte = /MATTE|BRUSH|SATIN|SAND/i.test(finishCode);
-  return { stone: false, color: METAL_REFLECTANCE[part.code] ?? METAL_REFLECTANCE.YELLOW_GOLD, rough: matte ? 0.55 : 0.08 };
+  return { stone: false, opaque: false, color: METAL_REFLECTANCE[part.code] ?? METAL_REFLECTANCE.YELLOW_GOLD, rough: matte ? 0.55 : 0.08 };
 }
 
 /** What the camera frames: the whole piece, or for a necklace with a pendant the pendant area. */
@@ -389,6 +393,17 @@ function* renderSteps(model: JewelryModel, options: RenderOptions): Generator<vo
       r = fr * (er + spec) * 0.8;
       g = fg * (eg + spec) * 0.8;
       bl = fb * (eb + spec) * 0.8;
+    } else if (material.opaque) {
+      // A polished opaque stone: its colour lit by the studio, a thin glossy reflection on top.
+      const [sr, sg, sb] = material.color;
+      const fresnel = 0.04 + 0.5 * grazing;
+      let diffuse = 0.32;
+      for (const l of KEY_LIGHTS) diffuse += Math.max(0, nx * l[0] + ny * l[1] + nz * l[2]) * 0.55;
+      let gloss = 0;
+      for (const l of KEY_LIGHTS) gloss += Math.pow(Math.max(0, rx * l[0] + ry * l[1] + rz * l[2]), 60) * 1.2;
+      r = sr * diffuse * (1 - fresnel) + env[0] * fresnel + gloss;
+      g = sg * diffuse * (1 - fresnel) + env[1] * fresnel + gloss;
+      bl = sb * diffuse * (1 - fresnel) + env[2] * fresnel + gloss;
     } else {
       const [sr, sg, sb] = material.color;
       const fresnel = 0.17 + 0.83 * grazing;

@@ -25,13 +25,21 @@ function loadGeometry(): Geometry {
 }
 
 describe('3D studio geometry', () => {
-  const backendSource = join(__dirname, '..', '..', 'backend', 'src', 'jewelry', 'geometry.ts')
+  const jewelry = join(__dirname, '..', '..', 'backend', 'src', 'jewelry')
+  const sources = ['catalog.ts', 'motifs.ts', 'geometry.ts'].map((file) => join(jewelry, file))
 
   it('is the backend geometry, unchanged (run scripts/sync-jewelry-geometry.cjs after editing it)', () => {
-    if (!existsSync(backendSource)) return // app-only checkout (e.g. a cloud build)
+    if (!sources.every((file) => existsSync(file))) return // app-only checkout (e.g. a cloud build)
     // Line endings do not count (a Windows checkout may turn them into CRLF).
-    const sha = createHash('sha256').update(readFileSync(backendSource, 'utf8').replace(/\r\n/g, '\n')).digest('hex')
-    expect(JEWELRY_GEOMETRY_SOURCE_SHA256).toBe(sha)
+    const joined = sources.map((file) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n')).join('\n')
+    expect(JEWELRY_GEOMETRY_SOURCE_SHA256).toBe(createHash('sha256').update(joined).digest('hex'))
+  })
+
+  it('the studio has the backend catalogue, unchanged', () => {
+    const source = join(jewelry, 'catalog.ts')
+    if (!existsSync(source)) return
+    const copy = readFileSync(join(__dirname, '..', 'src', 'lib', 'jewelryCatalog.generated.ts'), 'utf8').replace(/\r\n/g, '\n')
+    expect(copy.endsWith(readFileSync(source, 'utf8').replace(/\r\n/g, '\n'))).toBe(true)
   })
 
   it('builds the configured ring the same way the server does', () => {

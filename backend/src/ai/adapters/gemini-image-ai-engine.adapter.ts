@@ -108,6 +108,7 @@ export class GeminiImageAiEngineAdapter implements AiEngineAdapter {
     if (choices?.metal) made.push(`made of ${choices.metal}`);
     if (choices?.stones.length) made.push(`with ${choices.stones.join(', ')} stones`);
     if (choices?.setting) made.push(`in a ${choices.setting}`);
+    if (choices?.band) made.push(`with a ${choices.band}`);
     if (choices?.finish) made.push(`with a ${choices.finish}`);
     if (choices?.elements.length) made.push(`decorated with ${choices.elements.join(', ')} elements`);
     const design = made.length ? ` The piece is ${made.join(', ')}: keep to these choices.` : '';

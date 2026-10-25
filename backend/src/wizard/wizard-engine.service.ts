@@ -3,6 +3,7 @@ import { ItemType, ItemTypeConfig } from '@prisma/client';
 import Ajv, { ErrorObject, ValidateFunction } from 'ajv';
 import { PrismaService } from '../database/prisma.service';
 import { MAX_ELEMENTS, MAX_STONES } from '../jewelry/geometry';
+import { catalogErrors } from '../jewelry/parameters-check';
 
 export type ItemTypeWithConfig = ItemType & { config: ItemTypeConfig | null };
 
@@ -111,13 +112,15 @@ export class WizardEngineService {
   }
 
   /**
-   * Concrete, DB-driven compatibility check: a stone setting's `minBandWidthMm`
-   * (if configured) must not exceed the design's chosen band width.
+   * Concrete, DB-driven compatibility check: the centre stone head's `minBandWidthMm`
+   * (if configured) must not exceed the design's chosen band width. The head is `headCode`
+   * ("NONE": no head), or `settingCode` in older designs.
    */
   private async checkBandWidthVsSetting(parameters: Record<string, unknown>): Promise<string[]> {
-    const settingCode = this.getByPath(parameters, 'setting.settingCode');
+    const headCode = this.getByPath(parameters, 'setting.headCode');
+    const settingCode = headCode ?? this.getByPath(parameters, 'setting.settingCode');
     const bandWidthMm = this.getByPath(parameters, 'size.bandWidthMm');
-    if (typeof settingCode !== 'string' || typeof bandWidthMm !== 'number') {
+    if (typeof settingCode !== 'string' || settingCode === 'NONE' || typeof bandWidthMm !== 'number') {
       return [];
     }
     const setting = await this.prisma.setting.findUnique({ where: { code: settingCode } });
@@ -146,10 +149,13 @@ export class WizardEngineService {
       return { valid: false, errors: [`/elements must have at most ${MAX_ELEMENTS} items`] };
     }
 
+    // The client catalogue (cuts, colours, sizes, heads, band styles), whatever the item type's schema.
+    const catalog = catalogErrors(itemType.code, raw);
     if (!itemType.config) {
-      // No schema configured yet for this item type — accept as-is.
-      return { valid: true, errors: [] };
+      // No schema configured yet for this item type: only the catalogue applies.
+      return { valid: catalog.length === 0, errors: catalog };
     }
+    errors.push(...catalog);
 
     if (itemType.config.parametersSchema) {
       const validateFn = this.validatorFor(itemType.config);

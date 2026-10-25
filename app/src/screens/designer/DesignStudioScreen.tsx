@@ -5,12 +5,13 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { HomeHeader } from '@/src/components/home/HomeHeader'
-import { StudioViewer } from '@/src/components/studio/StudioViewer'
+import { StudioViewer, type StudioPlacementEvent } from '@/src/components/studio/StudioViewer'
 import { StudioTabBar, type StudioTabId } from '@/src/components/studio/StudioTabBar'
 import { StudioSizePanel } from '@/src/components/studio/StudioSizePanel'
 import { StudioMetalPanel } from '@/src/components/studio/StudioMetalPanel'
 import { StudioSettingPanel } from '@/src/components/studio/StudioSettingPanel'
-import { StudioCatalogList } from '@/src/components/studio/StudioCatalogList'
+import { StudioStonePanel } from '@/src/components/studio/StudioStonePanel'
+import { StudioElementPanel } from '@/src/components/studio/StudioElementPanel'
 import { StudioInspirationPanel } from '@/src/components/studio/StudioInspirationPanel'
 import { TryOnPlacement } from '@/src/components/studio/TryOnPlacement'
 import { BrandButton } from '@/src/components/ui/BrandButton'
@@ -39,32 +40,35 @@ import { isDesignReadOnly } from '@/src/lib/designActions'
 import { jobRefusal, tryOnGate, withPhotoRemovedOnRefusal } from '@/src/lib/tryOn'
 import type { TryOnPlacementValue } from '@/src/lib/tryOnPlacement'
 import {
-  FALLBACK_ELEMENTS,
   FALLBACK_METALS,
-  FALLBACK_STONES,
   STUDIO_MAX_ELEMENTS,
-  STUDIO_MAX_STONES,
   WRIST_MAX_CM,
   WRIST_MIN_CM,
+  addElement,
   bandWidthConflict,
+  elementPayload,
   elementsFromParameters,
   inspirationUploadFromParameters,
   isNecklaceLength,
   metalFromParameters,
   noteFromParameters,
-  placementForIndex,
   ringChartDiameterMm,
-  settingCodeFromParameters,
+  settingFromParameters,
+  settingPayload,
   sizeFromParameters,
   sizePayload,
+  stonePayload,
   stonesFromParameters,
   viewerParameters,
+  withDraggedPlacement,
   withGeneratedInspiration,
   type StudioElement,
   type StudioMetal,
+  type StudioSetting,
   type StudioSize,
   type StudioStone,
 } from '@/src/lib/studioParams'
+import { elementDef } from '@/src/lib/jewelryCatalog.generated'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
@@ -112,9 +116,13 @@ export function DesignStudioScreen() {
   const [tab, setTab] = useState<StudioTabId | null>(null)
   const [sizeDraft, setSizeDraft] = useState<StudioSize | null>(null)
   const [metalDraft, setMetalDraft] = useState<StudioMetal | null>(null)
-  const [settingDraft, setSettingDraft] = useState<string | null>(null)
+  const [settingDraft, setSettingDraft] = useState<StudioSetting | null>(null)
   const [stonesDraft, setStonesDraft] = useState<StudioStone[] | null>(null)
   const [elementsDraft, setElementsDraft] = useState<StudioElement[] | null>(null)
+  /** The stone / element open in its tab, and whether a drag on the model moves it. */
+  const [stoneIndex, setStoneIndex] = useState(0)
+  const [elementIndex, setElementIndex] = useState(0)
+  const [moving, setMoving] = useState(false)
   const [noteDraft, setNoteDraft] = useState<string | null>(null)
   const [jewelerNotesDraft, setJewelerNotesDraft] = useState<string | null>(null)
   const [inspirationUploadDraft, setInspirationUploadDraft] = useState<string | null>(null)
@@ -147,7 +155,7 @@ export function DesignStudioScreen() {
   const sizeLocked = Boolean(design?.lockedFields?.includes('size'))
   const savedSize = sizeFromParameters(parameters)
   const previewSize = sizeDraft ?? savedSize
-  const previewSetting = settingDraft ?? settingCodeFromParameters(parameters) ?? undefined
+  const previewSetting = settingDraft ?? settingFromParameters(itemType, parameters)
   const previewNote = noteDraft ?? noteFromParameters(parameters)
   const previewJewelerNotes = jewelerNotesDraft ?? design?.jewelerNotes ?? ''
   const previewInspiration = inspirationUploadDraft ?? inspirationUploadFromParameters(parameters)
@@ -169,36 +177,40 @@ export function DesignStudioScreen() {
       viewerParameters(itemType, design?.parameters, {
         size: sizeDraft,
         metal: metalDraft,
-        settingCode: settingDraft,
+        setting: settingDraft,
         stones: stonesDraft,
         elements: elementsDraft,
       }),
     [itemType, design?.parameters, sizeDraft, metalDraft, settingDraft, stonesDraft, elementsDraft],
   )
   const chartDiameter = ringChartDiameterMm(chartsQuery.data ?? [], previewSize)
+  const stonesCount = Array.isArray(previewParameters.stones) ? previewParameters.stones.length : 0
 
   const metals =
     (metalsQuery.data ?? []).length > 0 ? (metalsQuery.data ?? []) : FALLBACK_METALS
-  const stoneCatalog =
-    (stonesQuery.data ?? []).length > 0
-      ? (stonesQuery.data ?? []).map((stone) => ({
-          code: stone.code,
-          label: locale === 'en' && stone.nameEn ? stone.nameEn : stone.nameHe,
-        }))
-      : FALLBACK_STONES.map((stone) => ({
-          code: stone.code,
-          label: locale === 'en' ? stone.labelEn : stone.labelHe,
-        }))
-  const elementCatalog =
-    (elementsQuery.data ?? []).length > 0
-      ? (elementsQuery.data ?? []).map((element) => ({
-          code: element.code,
-          label: locale === 'en' && element.labelEn ? element.labelEn : element.labelHe,
-        }))
-      : FALLBACK_ELEMENTS.map((element) => ({
-          code: element.code,
-          label: locale === 'en' ? element.labelEn : element.labelHe,
-        }))
+  // What the server offers (an admin can turn items off); empty while loading = the whole catalogue.
+  const offeredStones = (stonesQuery.data ?? []).map((stone) => stone.code)
+  const offeredElements = (elementsQuery.data ?? []).map((element) => element.code)
+
+  /** A text element (a name, a date) needs its text before it can be saved. */
+  const missingText = (list: StudioElement[] | null): string | null => {
+    const empty = (list ?? []).find((element) => elementDef(element.elementCode)?.text && !element.text)
+    if (!empty) return null
+    const def = elementDef(empty.elementCode)
+    const name = def ? (locale === 'en' ? def.labelEn : def.labelHe) : ''
+    return t('studioElementTextNeeded').replace('{{name}}', name)
+  }
+
+  const onPlacement = (event: StudioPlacementEvent) => {
+    if (event.kind === 'stone') setStonesDraft((current) => (current ? withDraggedPlacement(current, event.index, event) : current))
+    else setElementsDraft((current) => (current ? withDraggedPlacement(current, event.index, event) : current))
+  }
+  const editTarget =
+    moving && tab === 'stone' && stonesDraft?.[stoneIndex]
+      ? { kind: 'stone' as const, index: stoneIndex }
+      : moving && tab === 'elements' && elementsDraft?.[elementIndex]
+        ? { kind: 'element' as const, index: elementIndex }
+        : null
 
   const persist = async (next: Record<string, unknown>, extra?: { jewelerNotes?: string }) => {
     if (!design) return null
@@ -265,6 +277,11 @@ export function DesignStudioScreen() {
       Alert.alert(t('authErrorTitle'), bandConflict.message)
       return false
     }
+    const textError = missingText(elementsDraft)
+    if (textError) {
+      Alert.alert(t('authErrorTitle'), textError)
+      return false
+    }
     if (sizeDraft && !sizeLocked) {
       const error = sizeDraftError(sizeDraft)
       if (error) {
@@ -284,15 +301,15 @@ export function DesignStudioScreen() {
       dirty = true
     }
     if (settingDraft) {
-      next.setting = { settingCode: settingDraft }
+      next.setting = settingPayload(settingDraft, parameters, itemType)
       dirty = true
     }
     if (stonesDraft) {
-      next.stones = stonesDraft
+      next.stones = stonesDraft.map(stonePayload)
       dirty = true
     }
     if (elementsDraft) {
-      next.elements = elementsDraft
+      next.elements = elementsDraft.map(elementPayload)
       dirty = true
     }
     if (noteDraft != null) {
@@ -312,10 +329,12 @@ export function DesignStudioScreen() {
     setNoteDraft(null)
     setJewelerNotesDraft(null)
     setInspirationUploadDraft(null)
+    setMoving(false)
     return true
   }
 
   const closePanel = () => {
+    setMoving(false)
     if (tab === 'size') setSizeDraft(null)
     else if (tab === 'metal') setMetalDraft(null)
     else if (tab === 'setting') setSettingDraft(null)
@@ -336,12 +355,15 @@ export function DesignStudioScreen() {
     }
     if (id === 'size' && sizeDraft == null) setSizeDraft(sizeFromParameters(parameters))
     if (id === 'metal' && metalDraft == null) setMetalDraft(metalFromParameters(parameters))
-    if (id === 'setting' && settingDraft == null) {
-      setSettingDraft(settingCodeFromParameters(parameters) ?? '')
+    setMoving(false)
+    if (id === 'setting' && settingDraft == null) setSettingDraft(settingFromParameters(itemType, parameters))
+    if (id === 'stone' && stonesDraft == null) {
+      setStonesDraft(stonesFromParameters(parameters))
+      setStoneIndex(0)
     }
-    if (id === 'stone' && stonesDraft == null) setStonesDraft(stonesFromParameters(parameters))
     if (id === 'elements' && elementsDraft == null) {
       setElementsDraft(elementsFromParameters(parameters))
+      setElementIndex(0)
     }
     if (id === 'inspiration' && noteDraft == null) {
       setNoteDraft(noteFromParameters(parameters))
@@ -405,17 +427,22 @@ export function DesignStudioScreen() {
       return
     }
     if (tab === 'setting' && settingDraft) {
-      const updated = await persist({ ...parameters, setting: { settingCode: settingDraft } })
+      const updated = await persist({ ...parameters, setting: settingPayload(settingDraft, parameters, itemType) })
       if (updated) closePanel()
       return
     }
     if (tab === 'stone' && stonesDraft) {
-      const updated = await persist({ ...parameters, stones: stonesDraft })
+      const updated = await persist({ ...parameters, stones: stonesDraft.map(stonePayload) })
       if (updated) closePanel()
       return
     }
     if (tab === 'elements' && elementsDraft) {
-      const updated = await persist({ ...parameters, elements: elementsDraft })
+      const textError = missingText(elementsDraft)
+      if (textError) {
+        Alert.alert(t('authErrorTitle'), textError)
+        return
+      }
+      const updated = await persist({ ...parameters, elements: elementsDraft.map(elementPayload) })
       if (updated) closePanel()
       return
     }
@@ -525,11 +552,9 @@ export function DesignStudioScreen() {
       const upload = await uploadChatFile(file)
       setElementsDraft((current) => {
         const list = current ?? []
-        if (list.length >= STUDIO_MAX_ELEMENTS) return list
-        return [
-          ...list,
-          { customUploadId: upload.id, placement: placementForIndex(list.length, -0.12) },
-        ]
+        const next = addElement(itemType, list, { customUploadId: upload.id }, previewSize.bandWidthMm, stonesCount)
+        if (next !== list) setElementIndex(next.length - 1)
+        return next
       })
     } catch (err) {
       Alert.alert(t('authErrorTitle'), parseApiError(err) || t('designSaveFailed'))
@@ -709,6 +734,8 @@ export function DesignStudioScreen() {
               itemType={itemType}
               parameters={previewParameters}
               ringChartDiameterMm={chartDiameter}
+              editTarget={editTarget}
+              onPlacement={onPlacement}
             />
             {!tab ? (
               <Pressable
@@ -751,64 +778,53 @@ export function DesignStudioScreen() {
                   onChange={setMetalDraft}
                 />
               ) : null}
-              {tab === 'setting' && settingDraft != null ? (
+              {tab === 'setting' && settingDraft ? (
                 <StudioSettingPanel
                   settings={settingsQuery.data ?? []}
-                  selectedCode={previewSetting}
                   itemTypeCode={itemType}
-                  onSelect={setSettingDraft}
+                  value={settingDraft}
+                  onChange={setSettingDraft}
+                  offeredStones={offeredStones}
                 />
               ) : null}
               {tab === 'stone' && stonesDraft ? (
-                <StudioCatalogList
-                  catalog={stoneCatalog}
-                  max={STUDIO_MAX_STONES}
-                  selected={stonesDraft.map((stone) => ({
-                    code: stone.stoneCode,
-                    label: stoneCatalog.find((item) => item.code === stone.stoneCode)?.label ?? stone.stoneCode,
-                  }))}
-                  onAdd={(code) =>
-                    setStonesDraft((current) => {
-                      const list = current ?? []
-                      if (list.length >= STUDIO_MAX_STONES) return list
-                      return [
-                        ...list,
-                        { stoneCode: code, placement: placementForIndex(list.length, 0.28) },
-                      ]
-                    })
-                  }
-                  onRemove={(index) =>
-                    setStonesDraft((current) => (current ?? []).filter((_, i) => i !== index))
-                  }
+                <StudioStonePanel
+                  itemType={itemType}
+                  stones={stonesDraft}
+                  onChange={setStonesDraft}
+                  offered={offeredStones}
+                  parameters={previewParameters}
+                  bandWidthMm={previewSize.bandWidthMm}
+                  selected={stoneIndex}
+                  onSelect={(index) => {
+                    setStoneIndex(index)
+                    setMoving(false)
+                  }}
+                  moving={moving}
+                  onToggleMove={() => setMoving((on) => !on)}
                 />
               ) : null}
               {tab === 'elements' && elementsDraft ? (
-                <StudioCatalogList
-                  catalog={elementCatalog}
-                  max={STUDIO_MAX_ELEMENTS}
-                  selected={elementsDraft.map((element, index) => ({
-                    code: element.elementCode ?? element.customUploadId ?? `el-${index}`,
-                    label: element.customUploadId
-                      ? t('studioCustomElement')
-                      : elementCatalog.find((item) => item.code === element.elementCode)?.label ??
-                        element.elementCode ??
-                        t('studioCustomElement'),
-                  }))}
-                  extraActionLabel={t('studioUploadElement')}
-                  onExtraAction={() => void onUploadElement()}
-                  onAdd={(code) =>
-                    setElementsDraft((current) => {
-                      const list = current ?? []
-                      if (list.length >= STUDIO_MAX_ELEMENTS) return list
-                      return [
-                        ...list,
-                        { elementCode: code, placement: placementForIndex(list.length, -0.12) },
-                      ]
-                    })
+                <StudioElementPanel
+                  itemType={itemType}
+                  elements={elementsDraft}
+                  onChange={setElementsDraft}
+                  onAdd={(elementCode) =>
+                    setElementsDraft((current) =>
+                      addElement(itemType, current ?? [], { elementCode }, previewSize.bandWidthMm, stonesCount),
+                    )
                   }
-                  onRemove={(index) =>
-                    setElementsDraft((current) => (current ?? []).filter((_, i) => i !== index))
-                  }
+                  onUpload={() => void onUploadElement()}
+                  offered={offeredElements}
+                  parameters={previewParameters}
+                  bandWidthMm={previewSize.bandWidthMm}
+                  selected={elementIndex}
+                  onSelect={(index) => {
+                    setElementIndex(index)
+                    setMoving(false)
+                  }}
+                  moving={moving}
+                  onToggleMove={() => setMoving((on) => !on)}
                 />
               ) : null}
               {tab === 'inspiration' && noteDraft != null && jewelerNotesDraft != null ? (

@@ -443,4 +443,88 @@ describe('data migrations on existing data', () => {
     expect(status(open, untouched.profileId)).toBe('NEW');
     expect(status(cancelled, untouched.profileId)).toBe('CLOSED');
   });
+
+  it('the client catalogue: its stones, settings and elements, older codes kept but no longer offered, an admin choice kept', async () => {
+    db = await scratchDatabase('mig_catalog');
+    db.migrateTo('20261020120000_terms_and_consents');
+    const types: Record<string, string> = {};
+    for (const code of ['RING', 'NECKLACE', 'BRACELET', 'EARRINGS']) {
+      types[code] = randomUUID();
+      await db.sql.$executeRawUnsafe(`INSERT INTO "item_types" ("id", "code", "labelHe") VALUES ($1::uuid, $2, $2)`, types[code], code);
+    }
+    // The first seed: four settings on every piece, four stones with sample options, four elements.
+    const setting = async (code: string, labelHe: string, min: number | null) => {
+      const id = randomUUID();
+      await db.sql.$executeRawUnsafe(
+        `INSERT INTO "settings" ("id", "code", "labelHe", "minBandWidthMm") VALUES ($1::uuid, $2, $3, $4)`,
+        id,
+        code,
+        labelHe,
+        min,
+      );
+      for (const typeId of Object.values(types)) {
+        await db.sql.$executeRawUnsafe(`INSERT INTO "setting_item_types" ("settingId", "itemTypeId") VALUES ($1::uuid, $2::uuid)`, id, typeId);
+      }
+    };
+    await setting('4_PRONG', 'משבצת 4 צבתות', 1.5);
+    await setting('6_PRONG', 'משבצת 6 צבתות', 1.8);
+    await setting('BEZEL', 'משבצת סגורה', 2);
+    await setting('PAVE', 'פאבה', 1.2);
+    const diamond = randomUUID();
+    await db.sql.$executeRawUnsafe(`INSERT INTO "stones" ("id", "code", "nameHe") VALUES ($1::uuid, 'DIAMOND', 'יהלום')`, diamond);
+    for (const [kind, value] of [['SHAPE', 'ROUND'], ['COLOR', 'D'], ['SIZE_MM', '1.0'], ['CLARITY', 'VVS1']]) {
+      await db.sql.$executeRawUnsafe(
+        `INSERT INTO "stone_options" ("id", "stoneId", "kind", "value") VALUES ($1::uuid, $2::uuid, $3, $4)`,
+        randomUUID(),
+        diamond,
+        kind,
+        value,
+      );
+    }
+    await db.sql.$executeRawUnsafe(`INSERT INTO "element_catalog" ("id", "code", "labelHe") VALUES ($1::uuid, 'INITIAL', 'אות')`, randomUUID());
+    // An admin turned the heart off.
+    await db.sql.$executeRawUnsafe(`INSERT INTO "element_catalog" ("id", "code", "labelHe", "isActive") VALUES ($1::uuid, 'HEART', 'לב', false)`, randomUUID());
+
+    db.migrateTo('20261025120000_client_catalog');
+
+    const settings = await db.sql.$queryRawUnsafe<Array<{ code: string; labelHe: string; isActive: boolean; minBandWidthMm: string | null }>>(
+      `SELECT "code", "labelHe", "isActive", "minBandWidthMm"::text AS "minBandWidthMm" FROM "settings"`,
+    );
+    const byCode = new Map(settings.map((row) => [row.code, row]));
+    expect(settings.filter((row) => row.isActive)).toHaveLength(22);
+    expect(byCode.get('4_PRONG')?.isActive).toBe(false);
+    expect(byCode.get('6_PRONG')?.isActive).toBe(false);
+    expect(byCode.get('BEZEL')).toMatchObject({ labelHe: 'משבצת סגורה (Bezel)', isActive: true, minBandWidthMm: '2.00' });
+    expect(byCode.get('PAVE')).toMatchObject({ labelHe: 'פאווה – 2 שורות ומעלה (Pavé)', minBandWidthMm: null });
+    const links = await db.sql.$queryRawUnsafe<Array<{ setting: string; type: string }>>(
+      `SELECT s."code" AS "setting", t."code" AS "type" FROM "setting_item_types" l
+       JOIN "settings" s ON s."id" = l."settingId" JOIN "item_types" t ON t."id" = l."itemTypeId"`,
+    );
+    const typesOf = (code: string) => links.filter((l) => l.setting === code).map((l) => l.type).sort();
+    // Band styles only on rings; heads on every piece.
+    expect(typesOf('PAVE')).toEqual(['RING']);
+    expect(typesOf('BAND_SCALLOP')).toEqual(['RING']);
+    expect(typesOf('BASKET')).toEqual(['BRACELET', 'EARRINGS', 'NECKLACE', 'RING']);
+
+    const stones = await db.sql.$queryRawUnsafe<Array<{ code: string }>>(`SELECT "code" FROM "stones" WHERE "isActive"`);
+    expect(stones).toHaveLength(24);
+    const options = await db.sql.$queryRawUnsafe<Array<{ stone: string; kind: string; value: string; isActive: boolean }>>(
+      `SELECT s."code" AS "stone", o."kind", o."value", o."isActive" FROM "stone_options" o JOIN "stones" s ON s."id" = o."stoneId"`,
+    );
+    const option = (stone: string, kind: string, value: string) =>
+      options.find((o) => o.stone === stone && o.kind === kind && o.value === value)?.isActive;
+    expect(option('DIAMOND', 'SHAPE', 'ROSE')).toBe(true);
+    expect(option('DIAMOND', 'COLOR', 'D')).toBe(false);
+    expect(option('DIAMOND', 'SIZE_MM', '1.0')).toBe(false);
+    // An option the admin added stays.
+    expect(option('DIAMOND', 'CLARITY', 'VVS1')).toBe(true);
+    expect(options.filter((o) => o.stone === 'TURQUOISE' && o.isActive).map((o) => o.value).sort()).toEqual(['CABOCHON', 'CABOCHON_OVAL']);
+
+    const elements = await db.sql.$queryRawUnsafe<Array<{ code: string; isActive: boolean }>>(`SELECT "code", "isActive" FROM "element_catalog"`);
+    const element = new Map(elements.map((row) => [row.code, row.isActive]));
+    expect(elements).toHaveLength(24);
+    expect(element.get('INITIAL')).toBe(false);
+    expect(element.get('HEART')).toBe(false);
+    expect(element.get('ANGEL_WINGS')).toBe(true);
+  });
 });

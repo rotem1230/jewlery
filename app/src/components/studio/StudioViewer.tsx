@@ -9,6 +9,28 @@ import { colors } from '@/src/theme/tokens'
 
 type StudioItemType = 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS'
 
+/** The item a drag on the model places. */
+export type StudioEditTarget = { kind: 'stone' | 'element'; index: number }
+
+/** Where the user let go of an item on the model. */
+export type StudioPlacementEvent = StudioEditTarget & { angleDeg: number; offsetMm: number }
+
+/** A placement posted by the viewer page, or null for any other message. */
+export function placementFromMessage(data: string): StudioPlacementEvent | null {
+  if (!data.startsWith('placement:')) return null
+  try {
+    const value = JSON.parse(data.slice('placement:'.length)) as Record<string, unknown>
+    const { kind, index, angleDeg, offsetMm } = value
+    if ((kind !== 'stone' && kind !== 'element') || !Number.isInteger(index)) return null
+    if (typeof angleDeg !== 'number' || !Number.isFinite(angleDeg) || typeof offsetMm !== 'number' || !Number.isFinite(offsetMm)) {
+      return null
+    }
+    return { kind, index: index as number, angleDeg, offsetMm }
+  } catch {
+    return null
+  }
+}
+
 type StudioViewerProps = {
   itemType?: StudioItemType
   /** The design's parameters with the open tab's draft applied: what the piece looks like now. */
@@ -16,6 +38,9 @@ type StudioViewerProps = {
   /** Inner diameter of the chosen ring size from the size chart (mm), when known. */
   ringChartDiameterMm?: number | null
   interactive?: boolean
+  /** While set, a one-finger drag on the model moves this item (the view no longer turns). */
+  editTarget?: StudioEditTarget | null
+  onPlacement?: (event: StudioPlacementEvent) => void
 }
 
 type StudioWebViewProps = {
@@ -54,6 +79,8 @@ export function StudioViewer({
   parameters,
   ringChartDiameterMm,
   interactive = true,
+  editTarget = null,
+  onPlacement,
 }: StudioViewerProps) {
   const { t } = useTranslation()
   const ref = useRef<WebViewRef>(null)
@@ -66,8 +93,15 @@ export function StudioViewer({
   const designRef = useRef(design)
   designRef.current = design
 
+  const edit = useMemo(() => ({ type: 'edit', target: editTarget }), [editTarget])
+  const editRef = useRef(edit)
+  editRef.current = edit
+  const editJson = JSON.stringify(edit)
+  const onPlacementRef = useRef(onPlacement)
+  onPlacementRef.current = onPlacement
+
   const html = useMemo(() => studioViewerHtml({ itemType }), [itemType])
-  const htmlRev = `studio-${itemType}-parametric-v22`
+  const htmlRev = `studio-${itemType}-parametric-v23`
   const baseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '')
   const layout = useRef({ width: 0, height: 0 })
 
@@ -79,6 +113,11 @@ export function StudioViewer({
     if (!ready.current) return
     send(ref.current, designRef.current)
   }, [designJson])
+
+  useEffect(() => {
+    if (!ready.current) return
+    send(ref.current, editRef.current)
+  }, [editJson])
 
   return (
     <View
@@ -116,12 +155,18 @@ export function StudioViewer({
             console.warn('[studio-viewer]', data)
             return
           }
+          if (typeof data === 'string' && data.startsWith('placement:')) {
+            const placement = placementFromMessage(data)
+            if (placement) onPlacementRef.current?.(placement)
+            return
+          }
           if (data !== 'ready') return
           ready.current = true
           if (layout.current.width > 0) {
             send(ref.current, { type: 'resize', width: layout.current.width, height: layout.current.height })
           }
           send(ref.current, designRef.current)
+          send(ref.current, editRef.current)
         }}
       />
       <View style={styles.zoomStack} pointerEvents="box-none">
