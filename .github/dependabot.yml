@@ -25,6 +25,12 @@ updates:
       # A react-native 0.x minor is a breaking release.
       - dependency-name: react-native
         update-types: ['version-update:semver-minor']
+      # Its own packages and CLI move with it (@react-native/new-app-screen 0.88 next to
+      # react-native 0.86 failed `npm ci` in the minor-and-patch group, PR #18).
+      - dependency-name: '@react-native/*'
+        update-types: ['version-update:semver-minor']
+      - dependency-name: '@react-native-community/cli*'
+        update-types: ['version-update:semver-minor']
   - package-ecosystem: github-actions
     directory: /
     schedule:
