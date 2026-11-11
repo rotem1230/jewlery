@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Pressable, Text, type PressableProps } from 'react-native'
+import { Pressable, StyleSheet, Text, type PressableProps, type StyleProp, type ViewStyle } from 'react-native'
 import {
   buttonClasses,
   buttonTextClasses,
@@ -8,7 +8,9 @@ import {
 } from '@/src/theme/variants/button'
 import { cn } from '@/src/lib/cn'
 
-type ButtonProps = PressableProps & {
+type ButtonProps = Omit<PressableProps, 'style'> & {
+  /** A plain style (NativeWind drops a Pressable style given as a function). */
+  style?: StyleProp<ViewStyle>
   variant?: ButtonVariant
   size?: ButtonSize
   fullWidth?: boolean
@@ -27,16 +29,17 @@ export function Button({
   className,
   textClassName,
   disabled,
+  style,
   ...props
 }: ButtonProps) {
   return (
     <Pressable
       disabled={disabled}
-      className={cn(
-        buttonClasses({ variant, size, fullWidth, pill }),
-        disabled && 'opacity-50',
-        className,
-      )}
+      className={cn(buttonClasses({ variant, size, fullWidth, pill }), className)}
+      // The faded look follows `disabled` through a plain style. As a class toggled with it,
+      // NativeWind kept it after the button was enabled ("מעבר לעיצוב" stayed faded once a size
+      // was picked, though it worked).
+      style={[disabled ? styles.disabled : null, style]}
       {...props}
     >
       {typeof children === 'string' ? (
@@ -47,3 +50,7 @@ export function Button({
     </Pressable>
   )
 }
+
+const styles = StyleSheet.create({
+  disabled: { opacity: 0.5 },
+})

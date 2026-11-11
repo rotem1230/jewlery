@@ -9,4 +9,8 @@ module.exports = {
     '\.css$': '<rootDir>/__mocks__/styleMock.js',
   },
   setupFiles: ['<rootDir>/jest.setup.js'],
+  // A suite's first render loads (and on a cold cache, transforms) React Native's modules inside the
+  // test. On a loaded machine that alone passed jest's 5 s default (backendStatusBanner,
+  // paymentSheet and tryOnOverlay timed out while an emulator ran, and pass in under 0.4 s once loaded).
+  testTimeout: 60000,
 }

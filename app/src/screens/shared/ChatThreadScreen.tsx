@@ -83,6 +83,7 @@ function ThreadMessage({
         imageUri={uri}
         time={item.time}
         side={item.side}
+        delivery={item.delivery}
         avatar={item.avatar}
         avatarLabel={item.avatarLabel}
         onPress={() => onImagePress(uri)}
@@ -95,6 +96,7 @@ function ThreadMessage({
       <ChatAudioBubble
         time={item.time}
         side={item.side}
+        delivery={item.delivery}
         playing={playing}
         positionMs={positionMs}
         durationMs={durationMs}

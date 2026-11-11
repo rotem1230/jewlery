@@ -1,6 +1,7 @@
 import type { DesignDetail } from '@/src/types/api'
 import { colorName, elementName, finishName, metalName, settingName, shapeName, stoneName, variantName } from '@/src/lib/catalogLabels'
 import { caratEstimate, settingDef, type CutCode } from '@/src/lib/jewelryCatalog.generated'
+import { hasCentreHead } from '@/src/lib/studioParams'
 
 export type SpecRow = { label: string; value: string; fullWidth?: boolean }
 
@@ -16,10 +17,11 @@ function str(value: unknown): string | null {
   return null
 }
 
-/** Flatten known design.parameters keys into spec-grid rows. */
+/** Flatten known design.parameters keys into spec-grid rows (`itemTypeCode`: RING, NECKLACE…). */
 export function specsFromParameters(
   parameters: Record<string, unknown> | null | undefined,
   itemLabel?: string | null,
+  itemTypeCode?: string | null,
 ): SpecRow[] {
   const rows: SpecRow[] = []
   if (itemLabel) rows.push({ label: 'סוג', value: itemLabel })
@@ -44,6 +46,8 @@ export function specsFromParameters(
   // The head (`headCode`, or the older `settingCode`), then the stones set in the band.
   const headCode = setting ? str(setting.headCode) ?? str(setting.settingCode) : str(params.setting)
   if (headCode) rows.push({ label: 'שיבוץ', value: headCode === 'NONE' ? 'ללא בית לאבן' : settingName(headCode) })
+  // No head chosen: a ring's first stone stands in the basket the model shows.
+  else if (itemTypeCode === 'RING' && hasCentreHead('RING', params)) rows.push({ label: 'שיבוץ', value: settingName('BASKET') })
   const band = asRecord(setting?.band)
   if (band) rows.push({ label: 'שיבוץ בטבעת', value: bandText(band), fullWidth: true })
   const housing = str(params.stoneHousing)
@@ -146,7 +150,7 @@ function elementTextOf(element: Record<string, unknown>): string {
 
 export function specsFromDesign(design: DesignDetail): SpecRow[] {
   const itemLabel = design.itemType?.labelHe ?? design.itemType?.code ?? null
-  const rows = specsFromParameters(design.parameters, itemLabel)
+  const rows = specsFromParameters(design.parameters, itemLabel, design.itemType?.code ?? null)
   const jewelerNotes = str(design.jewelerNotes)
   if (jewelerNotes) rows.push({ label: 'הערות לצורף', value: jewelerNotes, fullWidth: true })
   return rows

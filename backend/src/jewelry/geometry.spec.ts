@@ -243,6 +243,24 @@ describe('the client catalogue in the geometry', () => {
     expect(triangles(plain, 'stone')).toBe(8 * one);
   });
 
+  it('a stone added beside a band setting stands in a basket on top unless the user chose no head', () => {
+    const band = { settingCode: 'BAND_BEAD_BRIGHT_CUT', stoneCode: 'DIAMOND', colorCode: 'CRYSTAL', stoneSizeMm: 1.5 };
+    // A band style for small stones and no head chosen, then a sapphire added in the stone tab.
+    const model = ring({ stones: [{ stoneCode: 'SAPPHIRE', sizeMm: 5 }], setting: { band } });
+    expect(model.spec.setting).toBe('BASKET');
+    const [x, y] = centroid(stoneParts(model).find((p) => p.code === 'SAPPHIRE')!.mesh.positions);
+    expect(y).toBeGreaterThan(modelBounds(ring({})).max[0]);
+    expect(Math.abs(x)).toBeLessThan(1);
+    // The row of small stones still runs on both shoulders of the head.
+    expect(stoneParts(model).some((p) => p.code === 'CRYSTAL')).toBe(true);
+    // "No head" chosen on purpose: the stone is set flush in the band.
+    expect(ring({ stones: [{ stoneCode: 'SAPPHIRE', sizeMm: 5 }], setting: { headCode: 'NONE', band } }).spec.setting).toBeNull();
+    // An older pavé design (the setting itself was the band, made of the first stone): unchanged.
+    const older = specFromParameters('RING', { stones: [{ stoneCode: 'RUBY' }, { stoneCode: 'SAPPHIRE' }], setting: { settingCode: 'PAVE' } });
+    expect(older.setting).toBeNull();
+    expect(older.band?.stoneCode).toBe('RUBY');
+  });
+
   it('the centre stone and its head go where the user puts them, turned as asked', () => {
     const top = ring({ stones: [{ stoneCode: 'EMERALD', cutCode: 'EMERALD', sizeMm: 7, placement: { angleDeg: 90 } }], setting: { headCode: 'BASKET' } });
     const side = ring({

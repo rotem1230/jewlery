@@ -4,11 +4,16 @@ import {
   autoAngleDeg,
   bandWidthConflict,
   caratLabel,
+  draftsChanged,
   elementsFromParameters,
   itemControls,
+  metalFromParameters,
+  newBand,
   placementPayload,
   settingFromParameters,
   settingPayload,
+  shownAngleDeg,
+  sizeFromParameters,
   stoneSizeRange,
   stonesFromParameters,
   viewerParameters,
@@ -166,12 +171,31 @@ describe('studio setting: the head and the band', () => {
     expect(bandWidthConflict('NECKLACE', 1, { headCode: 'BRIGHT_CUT', band: null }, settings, 'he')).toBeNull()
   })
 
+  it('a stone added beside a band setting, with no head chosen, stands in the basket on top', () => {
+    const band = { settingCode: 'BAND_BEAD_BRIGHT_CUT', stoneCode: 'DIAMOND', colorCode: 'CRYSTAL', stoneSizeMm: 1.5, rows: 1, count: null, angleDeg: 90 }
+    const params = viewerParameters('RING', { size: { standard: 'IL', sizeCode: '56', bandWidthMm: 6 } }, {
+      setting: { headCode: '', band },
+      stones: addStone('RING', [], 'SAPPHIRE'),
+    })
+    // The studio: the centre stone moves along the ring only, and starts on top.
+    expect(itemControls('RING', 'STONE', 0, params).across).toBeNull()
+    expect(shownAngleDeg('RING', 'STONE', 0, { angleDeg: null, offsetMm: 0, rotationDeg: 0 }, params)).toBe(90)
+    // The viewer runs the server's geometry: the same basket.
+    expect(geometry().specFromParameters('RING', params).setting).toBe('BASKET')
+  })
+
   it('the head the studio expects is the one the geometry builds', () => {
     const geo = geometry()
     const cases: Array<Record<string, unknown>> = [
       { stones: [{ stoneCode: 'RUBY' }] },
       { stones: [{ stoneCode: 'RUBY' }], setting: { headCode: 'NONE' } },
       { stones: [{ stoneCode: 'RUBY' }], setting: { band: { settingCode: 'PAVE' } } },
+      { stones: [{ stoneCode: 'RUBY' }], setting: { headCode: 'NONE', band: { settingCode: 'PAVE' } } },
+      // An older pavé design: the setting itself was the band.
+      { stones: [{ stoneCode: 'RUBY' }, { stoneCode: 'SAPPHIRE' }], setting: { settingCode: 'PAVE' } },
+      // Entries that are not stones are not a centre stone.
+      { stones: [{}], setting: { band: { settingCode: 'PAVE' } } },
+      { stones: [null, { stoneCode: '' }], setting: { band: { settingCode: 'PAVE' } } },
       { stones: [{ stoneCode: 'RUBY' }], setting: { headCode: 'BEZEL', band: { settingCode: 'PAVE' } } },
       { stones: [], setting: { headCode: 'BEZEL' } },
     ]
@@ -180,6 +204,38 @@ describe('studio setting: the head and the band', () => {
       const built = geo.specFromParameters('RING', params)
       expect({ params, centre: controls.across === null }).toEqual({ params, centre: built.setting != null && (params.stones as unknown[]).length > 0 })
     }
+  })
+})
+
+describe('changes not saved yet', () => {
+  const saved = {
+    size: { standard: 'IL', sizeCode: '56', bandWidthMm: 6 },
+    metal: { metalCode: 'YELLOW_GOLD', purityCode: '14K' },
+    // An older stone (a shape, no colour) and a 6-prong head: read back the same, they are no change.
+    stones: [{ stoneCode: 'DIAMOND', shape: 'OVAL' }],
+    setting: { settingCode: '6_PRONG' },
+    elements: [{ elementCode: 'STAR' }],
+  }
+
+  it('a tab only opened is no change', () => {
+    expect(
+      draftsChanged('RING', saved, {
+        size: sizeFromParameters(saved),
+        metal: metalFromParameters(saved),
+        setting: settingFromParameters('RING', saved),
+        stones: stonesFromParameters(saved),
+        elements: elementsFromParameters(saved),
+      }),
+    ).toBe(false)
+    expect(draftsChanged('RING', saved, {})).toBe(false)
+  })
+
+  it('a band picked, a stone added, a size or metal changed is a change', () => {
+    expect(draftsChanged('RING', saved, { setting: { headCode: 'BASKET', band: newBand('PAVE') } })).toBe(true)
+    expect(draftsChanged('RING', saved, { stones: addStone('RING', stonesFromParameters(saved), 'RUBY') })).toBe(true)
+    expect(draftsChanged('RING', saved, { size: { ...sizeFromParameters(saved), bandWidthMm: 4 } })).toBe(true)
+    expect(draftsChanged('RING', saved, { metal: { metalCode: 'ROSE_GOLD', purityCode: '14K' } })).toBe(true)
+    expect(draftsChanged('RING', saved, { elements: [] })).toBe(true)
   })
 })
 

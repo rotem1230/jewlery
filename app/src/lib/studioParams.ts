@@ -529,20 +529,20 @@ export function settingPayload(
 
 /**
  * Whether the first stone stands in a centre head, by the geometry's rule: a chosen head; on a
- * ring with no head chosen, a basket unless a band setting holds the stones.
+ * ring with no head chosen, a basket (a band setting holds its own small stones). Only an older
+ * pavé design, whose setting itself was the band, keeps its stones flush.
  */
-function hasCentreHead(itemType: StudioItemType, parameters: Record<string, unknown> | undefined): boolean {
-  const stones = Array.isArray(parameters?.stones) ? parameters.stones.length : 0
-  if (stones === 0) return false
+export function hasCentreHead(itemType: StudioItemType, parameters: Record<string, unknown> | undefined): boolean {
+  // Only entries the geometry reads as stones count (not null, {} or an empty stone code).
+  if (stonesFromParameters(parameters).length === 0) return false
   const setting = recordOf(parameters?.setting)
   const raw = typeof setting?.headCode === 'string' ? setting.headCode : typeof setting?.settingCode === 'string' ? setting.settingCode : ''
   const asked = raw.toUpperCase()
   if (asked === 'NONE') return false
   if (LEGACY_SETTINGS[asked] || settingDef(asked)?.kind === 'HEAD') return true
   if (itemType !== 'RING') return false
-  const band = recordOf(setting?.band)
-  const banded = band ? settingDef(band.settingCode)?.kind === 'BAND' : settingDef(asked)?.kind === 'BAND'
-  return !banded
+  const olderPave = !recordOf(setting?.band) && settingDef(asked)?.kind === 'BAND'
+  return !olderPave
 }
 
 type Piece = { stones: number; centreHead: boolean; earringStyle?: string }
@@ -672,6 +672,44 @@ export type StudioDrafts = {
   setting?: StudioSetting | null
   stones?: StudioStone[] | null
   elements?: StudioElement[] | null
+}
+
+/** JSON with object keys in one order, so two equal values always compare equal. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    const record = recordOf(item)
+    return record ? Object.fromEntries(Object.entries(record).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item
+  })
+}
+
+export type DraftChanges = { size: boolean; metal: boolean; setting: boolean; stones: boolean; elements: boolean }
+
+/**
+ * Which drafts hold a choice the saved design does not have. A tab only opened (its draft read
+ * from the saved design) is no change, an older design's stones and setting included.
+ */
+export function changedDrafts(
+  itemType: StudioItemType,
+  parameters: Record<string, unknown> | undefined,
+  drafts: StudioDrafts,
+): DraftChanges {
+  const differs = (draft: unknown, saved: unknown) => draft != null && stableJson(draft) !== stableJson(saved)
+  return {
+    size: differs(drafts.size, sizeFromParameters(parameters)),
+    metal: differs(drafts.metal, metalFromParameters(parameters)),
+    setting: differs(drafts.setting, settingFromParameters(itemType, parameters)),
+    stones: differs(drafts.stones, stonesFromParameters(parameters)),
+    elements: differs(drafts.elements, elementsFromParameters(parameters)),
+  }
+}
+
+/** Whether any draft holds a choice the saved design does not have. */
+export function draftsChanged(
+  itemType: StudioItemType,
+  parameters: Record<string, unknown> | undefined,
+  drafts: StudioDrafts,
+): boolean {
+  return Object.values(changedDrafts(itemType, parameters, drafts)).some(Boolean)
 }
 
 /**

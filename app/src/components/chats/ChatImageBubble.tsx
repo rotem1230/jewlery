@@ -1,10 +1,14 @@
 import { Image, type ImageSourcePropType, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import { colors } from '@/src/theme/tokens'
+import { DeliveryTick } from '@/src/components/chats/DeliveryTick'
+import type { Delivery } from '@/src/lib/chatThread'
 
 type ChatImageBubbleProps = {
   imageUri: string
   time: string
   side: 'incoming' | 'outgoing'
+  /** Outgoing only: sent / read by the other side. */
+  delivery?: Delivery
   avatar?: ImageSourcePropType
   avatarLabel?: string
   onPress?: () => void
@@ -15,7 +19,7 @@ const SIDE_INSET = 16
 const AVATAR_GAP = 8
 
 /** Photo message — same avatar/meta language as ChatBubble. */
-export function ChatImageBubble({ imageUri, time, side, avatar, avatarLabel, onPress }: ChatImageBubbleProps) {
+export function ChatImageBubble({ imageUri, time, side, delivery, avatar, avatarLabel, onPress }: ChatImageBubbleProps) {
   const outgoing = side === 'outgoing'
   const { width: screenW } = useWindowDimensions()
   const mediaW = Math.min(screenW * 0.62, 260)
@@ -52,6 +56,7 @@ export function ChatImageBubble({ imageUri, time, side, avatar, avatarLabel, onP
           outgoing ? { marginRight: AVATAR + AVATAR_GAP } : { marginLeft: AVATAR + AVATAR_GAP },
         ]}
       >
+        {outgoing && delivery ? <DeliveryTick delivery={delivery} /> : null}
         <Text style={styles.time}>{time}</Text>
       </View>
     </View>
@@ -99,6 +104,7 @@ const styles = StyleSheet.create({
   meta: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
   },
   time: {
     fontFamily: 'Heebo',

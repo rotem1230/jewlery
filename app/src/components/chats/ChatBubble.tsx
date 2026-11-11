@@ -1,7 +1,6 @@
 import { Image, type ImageSourcePropType, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
-import Svg, { Path } from 'react-native-svg'
 import { colors } from '@/src/theme/tokens'
-import { useTranslation } from '@/src/i18n'
+import { DeliveryTick } from '@/src/components/chats/DeliveryTick'
 import type { Delivery } from '@/src/lib/chatThread'
 
 type ChatBubbleProps = {
@@ -15,53 +14,15 @@ type ChatBubbleProps = {
   avatarLabel?: string
 }
 
-const READ_TICK = '#4FC3F7'
-
 const AVATAR = 40
 const SIDE_INSET = 16
 const AVATAR_GAP = 8
-
-function DoubleCheck({ color }: { color: string }) {
-  return (
-    <Svg width={14} height={10} viewBox="0 0 14 10" fill="none">
-      <Path
-        d="M1.2 5.2 L3.4 7.4 L7.8 2.2"
-        stroke={color}
-        strokeWidth={1.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <Path
-        d="M5.2 5.2 L7.4 7.4 L12.4 2"
-        stroke={color}
-        strokeWidth={1.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  )
-}
-
-function SingleCheck({ color }: { color: string }) {
-  return (
-    <Svg width={14} height={10} viewBox="0 0 14 10" fill="none">
-      <Path
-        d="M3.2 5.2 L5.4 7.4 L10.4 2"
-        stroke={color}
-        strokeWidth={1.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
-  )
-}
 
 /**
  * Figma chat row — avatar bottom-aligned with bubble;
  * square corner on the avatar side at the bottom of the bubble.
  */
 export function ChatBubble({ text, time, side, delivery, avatar, avatarLabel }: ChatBubbleProps) {
-  const { t } = useTranslation()
   const outgoing = side === 'outgoing'
   const { width: screenW } = useWindowDimensions()
   const bubbleMaxW = Math.min(screenW * 0.68, screenW - SIDE_INSET * 2 - AVATAR - AVATAR_GAP)
@@ -82,18 +43,7 @@ export function ChatBubble({ text, time, side, delivery, avatar, avatarLabel }: 
         outgoing ? { marginRight: AVATAR + AVATAR_GAP } : { marginLeft: AVATAR + AVATAR_GAP },
       ]}
     >
-      {outgoing && delivery ? (
-        <View
-          accessible
-          accessibilityLabel={t(delivery === 'read' ? 'shChatTickRead' : 'shChatTickSent')}
-        >
-          {delivery === 'read' ? (
-            <DoubleCheck color={READ_TICK} />
-          ) : (
-            <SingleCheck color={colors.textSecondary} />
-          )}
-        </View>
-      ) : null}
+      {outgoing && delivery ? <DeliveryTick delivery={delivery} /> : null}
       <Text style={styles.time}>{time}</Text>
     </View>
   )
