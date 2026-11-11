@@ -4,6 +4,7 @@ import { StudioChips } from '@/src/components/studio/StudioChips'
 import { StudioColorGrid } from '@/src/components/studio/StudioColorGrid'
 import { StudioPlacementControls } from '@/src/components/studio/StudioPlacementControls'
 import { StudioSlider } from '@/src/components/studio/StudioSlider'
+import { BrandButton } from '@/src/components/ui/BrandButton'
 import { CUTS, STONES, allowedCuts, paletteColor, stoneDef } from '@/src/lib/jewelryCatalog.generated'
 import {
   STUDIO_MAX_STONES,
@@ -35,6 +36,9 @@ type StudioStonePanelProps = {
   /** The stone being moved by dragging on the model, if any. */
   moving: boolean
   onToggleMove: () => void
+  /** The ring's band of small stones (its name), whose stones the setting tab chooses. */
+  bandName?: string | null
+  onOpenBand?: () => void
 }
 
 /** The stone tab: the client's stones, their cuts, chart colours, size up to 1.5 ct and place. */
@@ -49,6 +53,8 @@ export function StudioStonePanel({
   onSelect,
   moving,
   onToggleMove,
+  bandName,
+  onOpenBand,
 }: StudioStonePanelProps) {
   const { t, locale } = useTranslation()
   const [adding, setAdding] = useState(stones.length === 0)
@@ -81,6 +87,14 @@ export function StudioStonePanel({
 
   return (
     <View style={styles.root}>
+      {bandName ? (
+        <View style={styles.band}>
+          <Text style={styles.info}>{t('studioStoneBandHint').replace('{{band}}', bandName)}</Text>
+          {onOpenBand ? (
+            <BrandButton label={t('studioStoneBandOpen')} variant="outline" hug flex={false} onPress={onOpenBand} />
+          ) : null}
+        </View>
+      ) : null}
       <StudioChips
         items={[
           ...stones.map((stone, index) => ({
@@ -206,6 +220,7 @@ function StoneEditor({ stone, index, itemType, catalog, parameters, bandWidthMm,
 
 const styles = StyleSheet.create({
   root: { gap: 10 },
+  band: { gap: 6, alignItems: 'flex-end' },
   editor: { gap: 8 },
   row: {
     flexDirection: 'row',

@@ -1,6 +1,6 @@
 # Handoff לסשן הבא — Malinvosky (צילה תכשיטים)
 
-נכתב: 2026-10-15, עודכן 2026-10-17 (QA חי מקצה לקצה ותיקונים לפרודקשן), 2026-10-19/20 (מסלולים, סליקת Cardcom, החזרים, ניהול ודוחות). המסמך הזה הוא נקודת הפתיחה לסשן הבא. ההיסטוריה המלאה של סבבי ההקשחה (1–5) נמצאת ב-`docs/HANDOFF.md`, ומעקב הפערים מול ה-PRD ב-`docs/prd-gap-audit.md`.
+נכתב: 2026-10-15, עודכן 2026-10-17 (QA חי מקצה לקצה ותיקונים לפרודקשן), 2026-10-19/20 (מסלולים, סליקת Cardcom, החזרים, ניהול ודוחות), 2026-11-11 (באגים פתוחים, CI, ניקוי המסמך). המסמך הזה הוא נקודת הפתיחה לסשן הבא. ההיסטוריה המלאה של סבבי ההקשחה (1–5) נמצאת ב-`docs/HANDOFF.md`, ומעקב הפערים מול ה-PRD ב-`docs/prd-gap-audit.md`.
 
 > **אין במסמך הזה סיסמאות או מפתחות.** איפה כל סוד יושב — בסעיף 9.
 
@@ -58,13 +58,14 @@ git log --oneline -5
 2. **לא לגעת בפרויקטים אחרים על המכונה** (kuku, RAI על פורט 3100, bot-torim, teachup...). תהליכי postgres — רק לפי הנתיב `E:/claude-work/malinvosky/pgtool`.
 3. **לא להשתמש ב-npx.** מריצים `node node_modules/...`.
 4. **`backend/.env`** — ערכי פיתוח של בעל הפרויקט, כולל מפתח AI אמיתי (ב-gitignore). לא לדלוף.
-5. **`backend/.env.render.local`** — כתובת ה-**External** של מסד הנתונים ב-Render (כולל סיסמה). ב-gitignore (`.env.*.local`). משמש להרצת מיגרציות/שאילתות מהמחשב:
+5. **`backend/.env.render-new.local`** — כתובת ה-**External** של מסד הייצור (חשבון הלקוחה, כולל סיסמה). ב-gitignore (`.env.*.local`), **לא להדפיס ולא לדחוף**. משמש להרצת מיגרציות מהמחשב, **אחרי גיבוי** ל-`E:/claude-work/malinvosky/backups/` (`pg_dump --format=custom --no-owner --no-privileges` מ-`C:/Program Files/PostgreSQL/18/bin`):
    ```bash
-   cd backend; set -a; . ./.env.render.local; set +a
+   cd backend; set -a; . ./.env.render-new.local; set +a
    node node_modules/prisma/build/index.js migrate deploy
    ```
+   (`backend/.env.render.local` = המסד הישן, שיימחק ב-13.11 — לא להשתמש.)
 6. **EAS בלי git:** בכל פקודת `eas` צריך `EAS_NO_VCS=1` (ב-PowerShell: `$env:EAS_NO_VCS = '1'`). מה שלא נשלח לענן מוגדר ב-`app/.easignore`.
-7. **bug-finder (MCP)** עובד (סוקר שינויים לפי נתיבים) — להריץ `review_changes` אחרי כל שינוי.
+7. **bug-finder (MCP)** לא עובד בפרויקט הזה: תיקיית ה-git חיצונית, והוא מחזיר "אין שינויים". הסקירה נעשית בסוכן נפרד עם הקשר נקי, על ה-diff (`git diff`).
 8. **הטרמינל של Bash** לפעמים נופל על `tail`/fork (cygheap) — לכתוב פלט לקובץ ולקרוא אותו.
 
 ---
@@ -73,13 +74,11 @@ git log --oneline -5
 
 | פריט | ערך |
 |---|---|
-| Web Service | `jewlery` (srv-db7nduo473hc73e0gir0), **Free**, Region **Oregon** |
 | כתובת | **https://api.malinovskyjewelry.com** (CNAME `api` → `jewlery-djia.onrender.com` ב-cPanel של LiveDNS) — API ב-`/api/v1`, בריאות ב-`/api/v1/health` |
-| חשבון חדש (הלקוחה) | Web Service `srv-dbagi1rrjlhs73a6hadg` (Starter), Postgres `dpg-dbafqs67bikc73eflbgg` (פרנקפורט, בתשלום). כתובת חיצונית מקומית ב-`backend/.env.render-new.local` (gitignored) |
-| חשבון ישן (Free, אורגון) | שירות `jewlery` + מסד `jewelry-db` — **לא להשתמש; לכבות** אחרי המעבר. הנתונים בו קפואים מ-18.10 |
-| בנייה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile` |
-| מסד נתונים | `jewelry-db` (dpg-db7nc2bncjis73eu48eg-a), PostgreSQL 18, **Free**, Oregon |
-| מיגרציות | כולן הוחלו, כולל `20261019120000_pricing_table_plans` (19.10, על המסד בחשבון החדש) |
+| חשבון (של הלקוחה, מ-18.10) | Web Service `srv-dbagi1rrjlhs73a6hadg` (**Starter**, פרנקפורט), Postgres `dpg-dbafqs67bikc73eflbgg` (בתשלום, פרנקפורט, עם גיבויים). כתובת חיצונית מקומית ב-`backend/.env.render-new.local` (gitignored, לא להדפיס) |
+| בנייה ופריסה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile`. **push ל-`main` = פריסה.** מיגרציות לא רצות בעלייה: גיבוי (`pg_dump`) ← `migrate deploy` מהמחשב ← ורק אז push |
+| חשבון ישן (Free, אורגון) | שירות `jewlery` (`srv-db7nduo473hc73e0gir0`, `jewlery.onrender.com`) + מסד `jewelry-db` — **לא בשימוש מ-18.10**, הנתונים בו קפואים. **המסד החינמי נמחק אוטומטית ב-13.11.2026.** בניות אפליקציה מלפני 18.10 פונות לכתובת הישנה ויפסיקו לעבוד אחרי המחיקה. לכבות את השירות כשכל הבודקים על בנייה חדשה |
+| מיגרציות | כולן הוחלו על המסד בחשבון החדש, האחרונה `20261025120000_client_catalog` (25.10) |
 | מסלולים (19.10) | seed הורץ ב-production אחרי הפריסה של `133f817`: 9 המסלולים של טבלת התמחור. גיבוי לפני: `E:/claude-work/malinvosky/backups/prod-before-pricing-20261019-1628.dump` |
 | `lead_definition.enforceQuota` | **true** מ-19.10 — צורף בלי לידים פנויים לא מקבל בקשות עד הרבעון הבא |
 | seed | הורץ ב-production (בלי חשבונות דמו): קטלוג, מסלולים, מידות טבעת PRD, תבניות הודעה בעברית |
@@ -87,28 +86,21 @@ git log --oneline -5
 | דגל `phase2_visualization` | **דלוק** מ-17.10 (הדמיה על תמונה אישית, למסלול Designer Pro) |
 | תכני המסלולים | בעברית (עם אנגלית לצד) — עודכנו במסד ב-17.10 רק היכן שהיה עדיין הטקסט האנגלי המקורי |
 
-### משתני סביבה שהוגדרו ב-Render (שמות בלבד)
-`NODE_ENV=production`, `DATABASE_URL` (Internal), `JWT_SECRET`, `TRIAL_HASH_SECRET`, `UPLOAD_URL_SECRET`, `API_PUBLIC_URL`, `CORS_ORIGINS`, `TRUST_PROXY=1`, `JOBS_ENABLED=true`, `SMTP_URL` (Resend, `smtp.resend.com:2465`), `MAIL_FROM=onboarding@resend.dev`.
+### משתני סביבה ב-Render (שמות בלבד)
+`NODE_ENV=production`, `DATABASE_URL` (Internal), `JWT_SECRET`, `TRIAL_HASH_SECRET`, `UPLOAD_URL_SECRET`, `API_PUBLIC_URL`, `CORS_ORIGINS`, `TRUST_PROXY=1`, `JOBS_ENABLED=true`, `SMTP_URL` (Resend, `smtp.resend.com:2465`), `MAIL_FROM` (`no-reply@malinovskyjewelry.com`), `APPLE_CLIENT_ID`, `GOOGLE_CLIENT_ID`, `GEMINI_API_KEY`. ב-18.10 הועתקו מהשירות הישן כמו שהם (כדי שאף אחד לא יצטרך להתחבר מחדש), ו-`GEMINI_API_KEY` נוסף; יצירת AI חיה נבדקה באותו יום.
 
-**חסר / לבדוק:**
-- `APPLE_CLIENT_ID=com.malinvoskyapp` — **ביקשתי מהמשתמש להוסיף. בלי זה התחברות Apple מחזירה 503 `OAUTH_NOT_CONFIGURED`.**
-- `GOOGLE_CLIENT_ID` — רק כשיוגדרו מזהי Google (סעיף 7).
-- `GEMINI_API_KEY` — **לא מוגדר**. בלעדיו "השראת AI" מחזירה 503 `AI_NOT_CONFIGURED` (אין תמונות דמה). מפתח מ-https://aistudio.google.com/apikey על פרויקט עם חיוב (למודלי תמונה אין מסלול חינמי). המשתמש מוסיף ב-Render → Environment.
+**חסר:** פרטי Cardcom (סעיף 7). בלעדיהם תשלומים אמיתיים כבויים.
 
-### מגבלות ידועות של המסלול החינמי
-- **השרת נרדם** אחרי חוסר פעילות — בקשה ראשונה עד כדקה.
-- **Render חוסם SMTP בפורטים 25/465/587** במסלול Free (לכן Gmail נכשל ב-`Connection timeout`, ועברנו ל-Resend בפורט 2465).
-- **אין דיסק קבוע:** לכן קבצים נשמרים במסד הנתונים (`STORAGE_DRIVER=database`, ברירת המחדל בפרודקשן) — הם שורדים פריסות. הם נספרים בנפח המסד החינמי (1GB): לעקוב, ובהמשך לעבור לאחסון אובייקטים (R2/S3).
-- **המסד החינמי יימחק ב-13 בנובמבר 2026** — לשדרג לפני כן. אין גיבויים.
+### קבצים
+נשמרים במסד הנתונים (`STORAGE_DRIVER=database`, ברירת המחדל בפרודקשן) ושורדים פריסות. הם נספרים בנפח המסד: לעקוב, ובהמשך לשקול אחסון אובייקטים (R2/S3).
 
 ### מיילים
-- Resend במצב בדיקה: שולח **רק ל-`rotem122510@gmail.com`**. לכל כתובת אחרת: שגיאה 550 בלוג.
-- **המשתמש יביא מחר דומיין מאומת.** הצעדים: ב-Resend → Domains → Add Domain → להוסיף את רשומות ה-DNS (TXT/MX/DKIM) אצל מנהל הדומיין → אחרי אימות, ב-Render לשנות `MAIL_FROM` ל-`no-reply@<הדומיין>`. `SMTP_URL` נשאר.
+- הדומיין `malinovskyjewelry.com` מאומת ב-Resend (17.10, רשומות DNS ב-cPanel). שליחה לכל כתובת.
 - הלוגים שמראים שליחה: `Mail sent to=...` (הצלחה) / `Verification mail for user ... failed: ...` (כישלון).
 - כלי עזר: Resend API (`GET https://api.resend.com/emails`) מראה סטטוס מסירה (delivered/bounced).
 
-### מצב המשתמשים במסד
-- 15.10: נמחקו כל חשבונות הבדיקה (3) לבקשת המשתמש. אחר כך נרשם שוב `rotem122510@gmail.com`; נשלח לו קישור אימות ישיר (המייל "delivered" אבל לא נמצא אצלו). **לבדוק בסשן הבא אם החשבון אומת.**
+### מנהלים (ADMIN)
+- 19.10: `litvak_tzilla@hotmail.com` ו-`rotem122510@gmail.com` (טרנזקציה אחת, עם רישום ב-audit). **פתוח:** האם גם `antselrotem@gmail.com`.
 
 ---
 
@@ -146,6 +138,8 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 | **Android APK (20.10, תקנון)** — אותו קוד | https://expo.dev/artifacts/eas/1kONPWRt6IqU2GZPWYo0dlgmo3YJut9cz6vZK8jW5xI.apk (build `312549e0`) |
 | **iOS #13 (26.10)** — קטלוג הלקוחה: אבנים, צבעים, חיתוכים, שיבוץ, אלמנטים, הזזה על הדגם | הועלה ל-App Store Connect / TestFlight (build `955afcac`) |
 | **Android APK (26.10, קטלוג הלקוחה)** — אותו קוד | https://expo.dev/artifacts/eas/qYZFF6MbSEegKzqESyOoon6x6YwwxHCJVLRzoyw5FUs.apk (build `e8a744f9`) |
+| **iOS #14 (11.11)** — סל לאבן ליד שיבוץ בטבעת, "סיימתי" שומר הכול, שאלה ביציאה, כפתור "מעבר לעיצוב", וי בתמונה/הקלטה | הועלה ל-App Store Connect / TestFlight (build `d72fac05`, submission `83b67a2d` FINISHED) |
+| **Android APK (11.11)** — אותו קוד | https://expo.dev/artifacts/eas/Wmfp-VHYSXUbsthu9szYfGhSTv3PUykiCptgnhl2ViU.apk (build `4c3fde67`) |
 
 הקרדיטים החינמיים של EAS לחודש נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. iOS בלי יכולת (capability) חדשה רץ לא-אינטראקטיבית (מפתח ASC שמור ב-EAS).
 
@@ -171,7 +165,18 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
    - AI (ענף `feature/google-ai-inspiration-image`): "צור באמצעות AI" יוצר **תמונת השראה** עם Gemini של גוגל (`gemini-3.1-flash-image`), כפי שה-PRD מגדיר (5.4 שלב 7: ספק ליצירת תמונות), מההערה ומתמונת ההשראה אם יש. התמונה נשמרת כתמונת ההשראה של העיצוב ומגיעה לצורף. נקודת חזרה: תג `before-google-ai-image` (גרסת Tripo).
    - **תוקן באמולטור:** שכבת התכשיט בהדמיה לא הוצגה (תמונה ב-Android לא שולחת headers — נטענת עכשיו עם ה-session), והעלאת התמונה הראשונה אחרי הפסקה נכשלה (Node סוגר חיבורים אחרי 5 שניות — עכשיו 65).
 
+7. **11.11 — תוקנו באגים שנשארו פתוחים** (כל אחד עם טסט שנכשל קודם):
+   - **אבן ליד שיבוץ אבנים קטנות:** בטבעת עם שיבוץ בטבעת (פאווה וכו') בלי בית שנבחר, האבן שנוספה בלשונית "אבן" נשארה בלי בית, שקועה בצד הטבעת (0°), כמעט בלתי נראית. עכשיו היא עומדת בסל למעלה (כמו בטבעת בלי שיבוץ), והשורה של האבנים הקטנות על שתי הכתפיים. "ללא" נשאר שקוע במכוון; עיצוב פאווה ישן (השיבוץ עצמו היה הפס) לא השתנה. `geometry.ts` + `hasCentreHead` באפליקציה, והמפרט לצורף מציין "סל (Basket)".
+   - **"סיימתי" שומר הכול:** קודם נשמרה רק הלשונית הפתוחה — שיבוץ שנבחר בלשונית "בית אבן" ואחריו אבנים בלשונית "אבן" ו"סיימתי" שם: נשמרו רק האבנים, והשיבוץ אבד ביציאה. עכשיו נשמר כל מה שהדגם מראה (`saveDrafts`) — ורק מה שהשתנה: לשונית שרק נפתחה לא חוסמת ולא נכתבת מחדש. "סיימתי" בלשונית המידה בלי שינוי מציע לנעול את המידה בלי לשמור.
+   - **יציאה עם שינויים שלא נשמרו** (חזרה, Android back, החלקה ב-iOS): שאלה "לשמור את השינויים?" — ביטול / יציאה בלי לשמור / שמירה (`usePreventRemove`). לשונית שרק נפתחה אינה שינוי (`changedDrafts`). חזרה בזמן שמירה לא שואלת (ממתינה לסוף השמירה).
+   - **בלשונית "אבן"** כשיש שיבוץ בטבעת: שורה שמסבירה שהאבנים הקטנות נבחרות ב"בית אבן" + כפתור מעבר.
+   - **כפתור "מעבר לעיצוב" נראה מושבת** אחרי בחירת מידה (QA 17.10): השקיפות הייתה class של NativeWind שנשאר; עכשיו style רגיל (`Button`, `IconButton`).
+   - **וי "נשלחה/נקראה"** גם על תמונה והקלטה ששולחים בצ'אט (`DeliveryTick`).
+   - **CI:** סקריפט ה-smoke (`scripts/e2e-local.cjs`) מצפה עכשיו לסירוב AI כשאין מפתח (503 `AI_NOT_CONFIGURED`) ומעלה תמונת PNG אמיתית להדמיה.
+   - **טסטים באפליקציה:** `testTimeout` 60 שניות (שלושה קבצים נכשלו ב-5 שניות כשהמכונה עמוסה).
+
 ### מצב טסטים אחרון
+- **11.11 (קומיט `c5a32c5`):** אפליקציה 71 קבצים, **407/407**, tsc 0, lint 0 שגיאות. **CI ב-GitHub ירוק** (לראשונה מ-17.10): שרת 75 קבצים **837/837**, smoke **33/33**, אפליקציה 407/407, בניית images. במחשב המקומי רצו רק טסטי היחידה של השרת (244/244): Postgres המקומי קרס (Windows: קובץ הדפדוף קטן מדי, 0xC0000142) ופורט 54390 היה תפוס — `tmp/round5/pg-dev.cjs` ו-`run-e2e.sh` מקבלים עכשיו `PG_DEV_PORT`.
 - **אפליקציה (25.10, קטלוג הלקוחה):** 68 קבצים, **388/388**, tsc 0, lint 0 שגיאות.
 - **שרת (25.10):** 75 קבצים, 836 טסטים בריצה מלאה. נכשל רק הכלל `lock_timeout` במיגרציה החדשה; תוקן, והקבצים של המיגרציות, הגאומטריה, הייצוא והקטלוג רצו שוב ירוקים (כולל השינויים האחרונים בגאומטריה).
 - **אפליקציה (20.10):** 65 קבצים, **363/363**, tsc 0, lint 0 שגיאות.
@@ -289,38 +294,34 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 
 ---
 
-## 7. מה פתוח — לפי סדר עדיפות
+## 7. מה פתוח — לפי סדר עדיפות (עודכן 11.11)
 
-**קודם כול (25.10) — קטלוג הלקוחה:**
-- **נבנה ב-26.10:** iOS #13 ב-TestFlight ו-APK (סעיף 4). אין OTA: כל עדכון באפליקציה דורש בנייה ב-EAS, שעולה כסף ונעשית רק באישור. המיגרציה כבר רצה בפרודקשן.
-- **לבדוק על מכשיר:** גרירה על הדגם, מקלדת עברית בטקסט של אלמנט, גלילת המסכים הארוכים.
+**דחוף — 13.11:**
+- **המסד החינמי בחשבון הישן נמחק אוטומטית ב-13.11.** הייצור לא תלוי בו (עבר ב-18.10), אבל בניות אפליקציה מלפני 18.10 פונות לכתובת הישנה ויפסיקו לעבוד. לוודא שכל הבודקים על בנייה מ-18.10 ואילך, ואז לכבות את השירות הישן.
 
-**קודם כול (20.10) — להפעלת הסליקה:**
-- **פרטי Cardcom ב-Render** (המשתמש מביא): `PAYMENTS_PROVIDER=cardcom`, `CARDCOM_TERMINAL_NUMBER`, `CARDCOM_API_NAME`, `CARDCOM_API_PASSWORD` (להחזרים), `CARDCOM_DOCUMENTS=false` אם אין מודול מסמכים, `JEWELRY_COMMISSION_PERCENT`. ואז בדיקה אמיתית בסכום קטן: מסלול ← חידוש ← החלפת כרטיס ← החזר מתוך האפליקציה; תשלום הצעת תכשיט ← סימון העברה לצורף.
-- **משתמש ADMIN** — לשאול את המשתמש איזה מייל מקבל את התפקיד.
-- **הדגל `phase3_jewelry_pay`** — להדליק כשרוצים תשלומי תכשיטים באפליקציה.
-- **בנייה חדשה של האפליקציה** (מסכי הניהול, החלפת כרטיס, תשלום תכשיטים) — עולה כסף ב-EAS, רק באישור.
-
-**קודם כול (17.10):**
-- **לשחרר את האפליקציה:** בנייה חדשה ל-Android (APK) ול-iOS (TestFlight) — עולה כסף ב-EAS, רק באישור המשתמש. אחר כך לעבור על הסטודיו, הייצוא וההדמיה על מכשיר אמיתי מול השרת בפרודקשן.
-- **`GEMINI_API_KEY` ב-Render** — כדי שהשראת AI תעבוד (אחרי מיזוג הענף ל-main). מפתח מ-https://aistudio.google.com/apikey, עם חיוב פעיל; מומלץ התראת תקציב. כ-7 סנט לתמונה. אחרי שהמפתח מוגדר — לבדוק יצירה אחת חיה (עוד לא נבדק מול גוגל).
-
-**ואחר כך:**
-
-1. **iOS build 5** — לוודא שהמשתמש התחבר ל-Apple בלשונית הטרמינל, שהבנייה הסתיימה ועלתה ל-TestFlight.
-2. **`APPLE_CLIENT_ID=com.malinvoskyapp` ב-Render** — לוודא שהמשתמש הוסיף, ואז לבדוק התחברות Apple על אייפון אמיתי.
-3. **דחיפה ל-GitHub** של `3745b38` — אחרי אישור המשתמש.
-4. **דומיין ל-Resend** (המשתמש מביא מחר) → `MAIL_FROM` חדש → לבדוק הרשמה עם כתובת חיצונית.
-5. **Google sign-in** (אם המשתמש רוצה):
-   - Google Cloud Console: מזהי OAuth מסוג Web, Android (עם SHA-1 של מפתח החתימה מ-EAS — ב-expo.dev → Credentials), ו-iOS (`com.malinvoskyapp`).
-   - באפליקציה: `GOOGLE_WEB_CLIENT_ID` ב-`eas.json` (ולהוסיף `GOOGLE_IOS_CLIENT_ID` + URL scheme הפוך ב-Info.plist), ו-`iosClientId` ב-`googleSignIn.ts`.
-   - בשרת: `GOOGLE_CLIENT_ID` ב-Render עם שלושת המזהים.
-   - **כלל App Store:** אם יש Google — חובה גם Apple (כבר קיים).
-6. **שדרוג Render:** Web Service ל-Starter (בלי הירדמות; רינדור מהיר יותר), ו-Postgres למסלול בתשלום לפני 13.11.2026 (גם בגלל נפח הקבצים שנשמרים במסד).
-7. **סודות שנחשפו בצ'אט — להחליף:** סיסמת מסד הנתונים ב-Render, מפתח Resend, סיסמת אפליקציה של Gmail (לבטל — כבר לא בשימוש), ומפתח Tripo (כבר לא בשימוש).
+**מחכה למשתמש / ללקוחה:**
+1. **פרטי Cardcom ב-Render:** `PAYMENTS_PROVIDER=cardcom`, `CARDCOM_TERMINAL_NUMBER`, `CARDCOM_API_NAME`, `CARDCOM_API_PASSWORD` (להחזרים), `CARDCOM_DOCUMENTS=false` אם אין מודול מסמכים, `JEWELRY_COMMISSION_PERCENT`. אחר כך בדיקה אמיתית בסכום קטן: מסלול ← חידוש ← החלפת כרטיס ← החזר; תשלום הצעת תכשיט ← סימון העברה לצורף. הדגל `phase3_jewelry_pay` — להדליק כשרוצים תשלומי תכשיטים.
+2. **החלטות פתוחות:**
+   - האם `antselrotem@gmail.com` יהיה גם אדמין.
+   - האם להוריד את 14 ימי הניסיון מהמסלולים בתשלום (`trialDays=0` בניהול → מסלולים).
+   - טבלת המנויים: זו של 19.10 (מוטמעת) או זו שבדרייב (יולי). ההמלצה: 19.10.
+3. **סודות שנחשפו בצ'אט — להחליף:** סיסמאות המסד (ישן וחדש), מפתח Resend, סיסמת אפליקציה של Gmail (לבטל), סיסמת cPanel, מפתח Gemini.
+4. **בדיקה על מכשיר אמיתי:** הסטודיו (גרירה על הדגם, מקלדת עברית בטקסט של אלמנט, גלילת המסכים הארוכים, השאלה ביציאה עם שינויים), הייצוא וההדמיה מול הפרודקשן.
+5. **פרסום בחנויות:** App Store (הגשה ל-review מ-App Store Connect) ו-Google Play (AAB + חשבון Play Console). חשבונות Apple ו-Expo על שם המשתמש — לשקול להעביר ללקוחה.
+6. **החלטות מוצר** D1–D8 ושאלות 🟡 ב-`docs/prd-gap-audit.md`. Push (Firebase/APNs) ו-Sentry (DSN) — תלויים בחשבונות.
+7. **Google sign-in** (אם רוצים): מזהי OAuth (Web, Android עם SHA-1 מ-EAS, iOS), `GOOGLE_WEB_CLIENT_ID` ב-`eas.json`, `GOOGLE_CLIENT_ID` ב-Render.
 8. **לפנות מקום ב-C:** (המשתמש).
-9. **החלטות מוצר** D1–D8 ושאלות 🟡 ב-`docs/prd-gap-audit.md`.
-10. **לא נבדק על מכשיר** — רוב מסכי סבב 5 נבדקו רק ב-jest/tsc/lint. עכשיו כשיש TestFlight ו-APK, לעבור על זרימות מלאות על מכשיר.
+
+**GitHub:**
+- **CI על `main` ירוק מ-11.11** (`c5a32c5`). מ-17.10 עד אז נכשל בשתי בדיקות smoke שלא עודכנו (AI בלי מפתח, הדמיה על "תמונה" ריקה).
+- **12 PRs של Dependabot פתוחים**, חלקם קפיצות גרסה ראשית (NestJS 12, TypeScript 7, ESLint 10, Babel 8, Jest). לא למזג בלי לעבור עליהם: מיזוג ל-`main` = פריסה.
+
+**נשאר בקוד (לא דחוף):**
+- תיאור העיצוב ל-AI (`backend/src/ai/design-choices.ts`) לא מזכיר את הסל שאבן מרכזית בטבעת מקבלת כשלא נבחר בית (גם בלי שיבוץ בטבעת). צריך את סוג התכשיט בפונקציה.
+- הסיבה שהכפתור נשאר חיוור (NativeWind) לא שוחזרה על מכשיר; התיקון (style רגיל) נבדק ב-jest בלבד.
+- קונפיג סוגי פריטים לא באמת data-driven (🔧 ב-`docs/prd-gap-audit.md`).
+- משתמשים קיימים לא התבקשו לאשר את התקנון מחדש (מותר לפי סעיף 1.2 בחלק ג'); אם רוצים — מסך למי שגרסת ה-TERMS שלו ישנה.
+
 
 ---
 
@@ -351,12 +352,12 @@ node E:/claude-work/malinvosky/tmp/round5/pg-dev.cjs stop
 | סוד | איפה |
 |---|---|
 | כתובת המסד (Internal) | Render → jewlery → Environment (`DATABASE_URL`) |
-| כתובת המסד (External) | Render → jewelry-db → Connect; מקומית ב-`backend/.env.render.local` (gitignored) |
+| כתובת המסד (External) | Render (חשבון הלקוחה) → Postgres → Connect; מקומית ב-`backend/.env.render-new.local` (gitignored). `backend/.env.render.local` = המסד הישן, שיימחק ב-13.11 |
 | JWT / TRIAL / UPLOAD secrets | Render Environment (נוצרו ב-Generate) |
 | SMTP (Resend API key) | Render Environment (`SMTP_URL`) |
-| Gemini (גוגל) | Render Environment (`GEMINI_API_KEY`) — **עדיין לא הוגדר** |
+| Gemini (גוגל) | Render Environment (`GEMINI_API_KEY`) |
 | חתימת Android | EAS (expo.dev → Credentials) |
 | תעודת הפצה / provisioning iOS | EAS; מפתח ASC API `HDV3Q2YWV4` ב-EAS |
 | Apple ID | של המשתמש (`antselrotem@gmail.com`) — רק הוא מקליד סיסמה/קוד |
 
-**נחשפו בצ'אט ויש להחליף:** סיסמת המסד, מפתח Resend, סיסמת אפליקציה של Gmail (`rotem122510`).
+**נחשפו בצ'אט ויש להחליף:** סיסמאות המסד (ישן וחדש), מפתח Resend, סיסמת אפליקציה של Gmail (`rotem122510`), סיסמת cPanel, מפתח Gemini.

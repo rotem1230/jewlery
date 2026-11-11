@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
+import { useNavigation, usePreventRemove, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -46,6 +46,7 @@ import {
   WRIST_MIN_CM,
   addElement,
   bandWidthConflict,
+  changedDrafts,
   elementPayload,
   elementsFromParameters,
   inspirationUploadFromParameters,
@@ -68,7 +69,7 @@ import {
   type StudioSize,
   type StudioStone,
 } from '@/src/lib/studioParams'
-import { elementDef } from '@/src/lib/jewelryCatalog.generated'
+import { elementDef, settingDef } from '@/src/lib/jewelryCatalog.generated'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
 import { useAppSelector } from '@/src/store/hooks'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
@@ -183,6 +184,9 @@ export function DesignStudioScreen() {
       }),
     [itemType, design?.parameters, sizeDraft, metalDraft, settingDraft, stonesDraft, elementsDraft],
   )
+  // The ring's band of small stones, if any: its stones are chosen in the setting tab.
+  const bandDef = itemType === 'RING' && previewSetting.band ? settingDef(previewSetting.band.settingCode) : undefined
+  const bandName = bandDef ? (locale === 'en' ? bandDef.labelEn : bandDef.labelHe) : null
   const chartDiameter = ringChartDiameterMm(chartsQuery.data ?? [], previewSize)
   const stonesCount = Array.isArray(previewParameters.stones) ? previewParameters.stones.length : 0
 
@@ -270,57 +274,80 @@ export function DesignStudioScreen() {
     return null
   }
 
-  const flushDrafts = async (): Promise<boolean> => {
-    if (!design) return false
-    if (readOnly) return true
-    if (bandConflict && (sizeDraft || settingDraft)) {
+  // What differs from the saved design. A tab only opened is no change (a locked size never is).
+  const changes = changedDrafts(itemType, parameters, {
+    size: sizeLocked ? null : sizeDraft,
+    metal: metalDraft,
+    setting: settingDraft,
+    stones: stonesDraft,
+    elements: elementsDraft,
+  })
+  const notesChanged =
+    noteDraft != null &&
+    (noteDraft !== noteFromParameters(parameters) ||
+      (jewelerNotesDraft ?? '') !== (design?.jewelerNotes ?? '') ||
+      (inspirationUploadDraft || undefined) !== (inspirationUploadFromParameters(parameters) || undefined))
+
+  /**
+   * Saves every tab's changes in one update: what the model shows is what is saved (a band picked
+   * in one tab and stones added in another are one design). Only what changed is checked and
+   * written: a tab only opened (an older design's letters without text, a size not picked yet)
+   * neither blocks the save nor is rewritten. The saved design, 'unchanged' when there was nothing
+   * to save, or null when it could not be saved (the user was told why).
+   */
+  const saveDrafts = async (): Promise<DesignDetail | 'unchanged' | null> => {
+    if (!design) return null
+    if (readOnly) return 'unchanged'
+    if (bandConflict && (changes.size || changes.setting)) {
       Alert.alert(t('authErrorTitle'), bandConflict.message)
-      return false
+      return null
     }
-    const textError = missingText(elementsDraft)
+    const textError = changes.elements ? missingText(elementsDraft) : null
     if (textError) {
       Alert.alert(t('authErrorTitle'), textError)
-      return false
+      return null
     }
-    if (sizeDraft && !sizeLocked) {
+    if (changes.size && sizeDraft) {
       const error = sizeDraftError(sizeDraft)
       if (error) {
         Alert.alert(t('authErrorTitle'), error)
-        return false
+        return null
       }
     }
     const next: Record<string, unknown> = { ...parameters }
     let extra: { jewelerNotes?: string } | undefined
     let dirty = false
-    if (sizeDraft && !sizeLocked) {
+    if (changes.size && sizeDraft) {
       next.size = sizePayload(itemType, sizeDraft)
       dirty = true
     }
-    if (metalDraft) {
+    if (changes.metal && metalDraft) {
       next.metal = metalDraft
       dirty = true
     }
-    if (settingDraft) {
+    if (changes.setting && settingDraft) {
       next.setting = settingPayload(settingDraft, parameters, itemType)
       dirty = true
     }
-    if (stonesDraft) {
+    if (changes.stones && stonesDraft) {
       next.stones = stonesDraft.map(stonePayload)
       dirty = true
     }
-    if (elementsDraft) {
+    if (changes.elements && elementsDraft) {
       next.elements = elementsDraft.map(elementPayload)
       dirty = true
     }
-    if (noteDraft != null) {
+    if (notesChanged) {
       next.personalNote = previewNote
       if (previewInspiration) next.inspirationUploadId = previewInspiration
       extra = { jewelerNotes: previewJewelerNotes }
       dirty = true
     }
-    if (!dirty) return true
+    if (!dirty) return 'unchanged'
     const updated = await persist(next, extra)
-    if (!updated) return false
+    if (!updated) return null
+    // Saved: leaving no longer asks, even before the cleared drafts render.
+    unsavedRef.current = false
     setSizeDraft(null)
     setMetalDraft(null)
     setSettingDraft(null)
@@ -330,8 +357,48 @@ export function DesignStudioScreen() {
     setJewelerNotesDraft(null)
     setInspirationUploadDraft(null)
     setMoving(false)
-    return true
+    return updated
   }
+
+  const flushDrafts = async (): Promise<boolean> => (await saveDrafts()) !== null
+
+  // Changes not saved yet (a tab only opened is none): leaving asks first (back button, Android's
+  // back, iOS's swipe), so a band or stones the model shows are never dropped without a word.
+  const unsaved = Boolean(design) && !readOnly && (Object.values(changes).some(Boolean) || notesChanged)
+  const unsavedRef = useRef(unsaved)
+  unsavedRef.current = unsaved
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  const saveDraftsRef = useRef(saveDrafts)
+  saveDraftsRef.current = saveDrafts
+  usePreventRemove(unsaved, ({ data }) => {
+    // Saved a moment ago, before this screen rendered again: nothing left to ask about.
+    if (!unsavedRef.current) {
+      navigation.dispatch(data.action)
+      return
+    }
+    // A save is running: the user stays until it ends (asking now could save the same version twice).
+    if (busyRef.current) return
+    Alert.alert(t('studioUnsavedTitle'), t('studioUnsavedBody'), [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('studioUnsavedDiscard'),
+        style: 'destructive',
+        onPress: () => {
+          unsavedRef.current = false
+          navigation.dispatch(data.action)
+        },
+      },
+      {
+        text: t('studioUnsavedSave'),
+        onPress: () => {
+          void (async () => {
+            if ((await saveDraftsRef.current()) !== null) navigation.dispatch(data.action)
+          })()
+        },
+      },
+    ])
+  })
 
   const closePanel = () => {
     setMoving(false)
@@ -398,65 +465,21 @@ export function DesignStudioScreen() {
     ])
   }
 
+  /**
+   * "סיימתי": saves the open tab together with every other tab's changes the model shows (a band
+   * picked in the setting tab before the stones were added is saved with them, not dropped).
+   */
   const onFinish = async () => {
     if (panelConflict) {
       Alert.alert(t('authErrorTitle'), panelConflict.message)
       return
     }
-    if (tab === 'size') {
-      if (!sizeDraft) {
-        closePanel()
-        return
-      }
-      if (sizeLocked) {
-        closePanel()
-        return
-      }
-      const sizeError = sizeDraftError(sizeDraft)
-      if (sizeError) {
-        Alert.alert(t('authErrorTitle'), sizeError)
-        return
-      }
-      const updated = await persist({ ...parameters, size: sizePayload(itemType, sizeDraft) })
-      if (updated) offerSizeLock(updated)
-      return
-    }
-    if (tab === 'metal' && metalDraft) {
-      const updated = await persist({ ...parameters, metal: metalDraft })
-      if (updated) closePanel()
-      return
-    }
-    if (tab === 'setting' && settingDraft) {
-      const updated = await persist({ ...parameters, setting: settingPayload(settingDraft, parameters, itemType) })
-      if (updated) closePanel()
-      return
-    }
-    if (tab === 'stone' && stonesDraft) {
-      const updated = await persist({ ...parameters, stones: stonesDraft.map(stonePayload) })
-      if (updated) closePanel()
-      return
-    }
-    if (tab === 'elements' && elementsDraft) {
-      const textError = missingText(elementsDraft)
-      if (textError) {
-        Alert.alert(t('authErrorTitle'), textError)
-        return
-      }
-      const updated = await persist({ ...parameters, elements: elementsDraft.map(elementPayload) })
-      if (updated) closePanel()
-      return
-    }
-    if (tab === 'inspiration') {
-      const next: Record<string, unknown> = {
-        ...parameters,
-        personalNote: previewNote,
-      }
-      if (previewInspiration) next.inspirationUploadId = previewInspiration
-      const updated = await persist(next, { jewelerNotes: previewJewelerNotes })
-      if (updated) closePanel()
-      return
-    }
-    closePanel()
+    const sizeTab = tab === 'size' && sizeDraft != null && !sizeLocked
+    const updated = await saveDrafts()
+    if (updated === null) return
+    const current = updated === 'unchanged' ? design : updated
+    if (sizeTab && current) offerSizeLock(current)
+    else closePanel()
   }
 
   const onGenerateInspiration = async () => {
@@ -802,6 +825,8 @@ export function DesignStudioScreen() {
                   }}
                   moving={moving}
                   onToggleMove={() => setMoving((on) => !on)}
+                  bandName={bandName}
+                  onOpenBand={() => selectTab('setting')}
                 />
               ) : null}
               {tab === 'elements' && elementsDraft ? (

@@ -35,6 +35,26 @@ function fail(name, detail = '') {
   console.error(`  FAIL  ${name}${detail ? ' — ' + detail : ''}`);
 }
 
+/** A flat-colour PNG photo, made by the API's own encoder (the build this run starts). */
+function solidPng(width, height) {
+  const { encodePng } = require(path.join(ROOT, 'dist', 'jewelry', 'png.js'));
+  const data = new Uint8Array(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) data.set([40, 140, 150, 255], i);
+  return encodePng({ width, height, data });
+}
+
+/** Uploads a file the way the app does (multipart `file`); returns its upload id. */
+async function uploadPng(token, bytes, filename) {
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: 'image/png' }), filename);
+  const res = await fetch(`${BASE}/uploads`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+  const text = await res.text();
+  if (res.status !== 201) throw new Error(`POST /uploads got ${res.status}: ${text.slice(0, 300)}`);
+  const id = unwrap(JSON.parse(text))?.id;
+  if (!id) throw new Error(`POST /uploads returned no id: ${text.slice(0, 300)}`);
+  return id;
+}
+
 async function api(method, urlPath, { token, body, expectStatus } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -78,7 +98,8 @@ function unwrap(json) {
   return json;
 }
 
-async function waitForHealth(timeoutMs = 60000) {
+// A loaded machine can take longer than a minute to boot the API: SMOKE_HEALTH_TIMEOUT_MS raises it.
+async function waitForHealth(timeoutMs = Number(process.env.SMOKE_HEALTH_TIMEOUT_MS) || 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -342,23 +363,28 @@ async function main() {
       } catch (e) {
         fail('render-jobs', e.message);
       }
+      // This run has no AI key (env above): the API refuses honestly, with no stand-in picture.
       try {
-        const r = await api('POST', '/ai/inspiration', {
+        // A success does not throw: that is the failure here. A 503 throws into the check below.
+        await api('POST', '/ai/inspiration', {
           token: designerToken,
           body: { designId, prompt: 'classic solitaire' },
         });
-        ok('ai/inspiration', JSON.stringify(unwrap(r.json)).slice(0, 80));
+        fail('ai/inspiration without a key', 'expected 503 AI_NOT_CONFIGURED, got a success');
       } catch (e) {
-        fail('ai/inspiration', e.message);
+        if (e.status === 503 && e.body?.code === 'AI_NOT_CONFIGURED') ok('ai/inspiration without a key', 'refused: AI_NOT_CONFIGURED');
+        else fail('ai/inspiration without a key', e.message);
       }
     }
 
-    // Visualization — flag + paywall; overlay upload must differ from the selfie.
-    if (designId && uploadId) {
+    // Visualization — flag + paywall; the design is composed onto a real photo, so the output differs
+    // from the selfie. The photo is a real PNG uploaded as the app uploads it.
+    if (designId) {
       try {
+        const selfieId = await uploadPng(designerToken, solidPng(96, 72), 'hand.png');
         const r = await api('POST', '/visualization/jobs', {
           token: designerToken,
-          body: { designId, inputUploadId: uploadId },
+          body: { designId, inputUploadId: selfieId },
         });
         const job = unwrap(r.json);
         if (!job?.outputUploadId) throw new Error('missing outputUploadId');

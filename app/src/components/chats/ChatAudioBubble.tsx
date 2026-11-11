@@ -2,10 +2,14 @@ import { Image, type ImageSourcePropType, Pressable, StyleSheet, Text, useWindow
 import { Pause, Play } from 'lucide-react-native'
 import { colors } from '@/src/theme/tokens'
 import { formatVoiceDuration } from '@/src/lib/voiceNotes'
+import { DeliveryTick } from '@/src/components/chats/DeliveryTick'
+import type { Delivery } from '@/src/lib/chatThread'
 
 type ChatAudioBubbleProps = {
   time: string
   side: 'incoming' | 'outgoing'
+  /** Outgoing only: sent / read by the other side. */
+  delivery?: Delivery
   playing: boolean
   /** Elapsed/total while this note plays; total 0 until first playback. */
   positionMs?: number
@@ -24,6 +28,7 @@ const BARS = 18
 export function ChatAudioBubble({
   time,
   side,
+  delivery,
   playing,
   positionMs = 0,
   durationMs = 0,
@@ -107,6 +112,7 @@ export function ChatAudioBubble({
           outgoing ? { marginRight: AVATAR + AVATAR_GAP } : { marginLeft: AVATAR + AVATAR_GAP },
         ]}
       >
+        {outgoing && delivery ? <DeliveryTick delivery={delivery} /> : null}
         <Text style={styles.time}>{time}</Text>
       </View>
     </View>
@@ -205,6 +211,7 @@ const styles = StyleSheet.create({
   meta: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
   },
   time: {
     fontFamily: 'Heebo',

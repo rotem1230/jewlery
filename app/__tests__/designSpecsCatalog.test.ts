@@ -30,6 +30,19 @@ describe('design specification with the client catalogue', () => {
     expect(rows({ setting: { headCode: 'NONE' } })['שיבוץ']).toBe('ללא בית לאבן')
   })
 
+  it('a ring stone with no head chosen: the basket the model shows, also beside a band', () => {
+    const ring = (parameters: Record<string, unknown>) =>
+      Object.fromEntries(specsFromParameters(parameters, 'טבעת', 'RING').map((row) => [row.label, row.value]))
+    const stones = [{ stoneCode: 'SAPPHIRE', sizeMm: 5 }]
+    expect(ring({ stones })['שיבוץ']).toBe('סל (Basket)')
+    expect(ring({ stones, setting: { band: { settingCode: 'PAVE', stoneCode: 'DIAMOND' } } })['שיבוץ']).toBe('סל (Basket)')
+    // No stone, or an older pavé design (its stones were the band): no head to name.
+    expect(ring({})['שיבוץ']).toBeUndefined()
+    expect(ring({ stones, setting: { settingCode: 'PAVE' } })['שיבוץ']).toBe(rows({ setting: { settingCode: 'PAVE' } })['שיבוץ'])
+    // Not a ring: nothing is added.
+    expect(Object.fromEntries(specsFromParameters({ stones }, 'שרשרת', 'NECKLACE').map((row) => [row.label, row.value]))['שיבוץ']).toBeUndefined()
+  })
+
   it('elements with their text, style, size and place', () => {
     const value = rows({
       elements: [

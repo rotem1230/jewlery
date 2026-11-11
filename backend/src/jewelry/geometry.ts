@@ -388,8 +388,10 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
     };
   }
   if (headAsked === 'NONE') head = null;
-  // A ring's first stone stands in a basket head unless another head (or none) is chosen.
-  else if (kind === 'RING' && !head && !bandDef && stones.length) head = 'BASKET';
+  // A ring's first stone stands in a basket head unless another head (or none) is chosen. A band
+  // setting holds its own small stones, so it does not take the head away; only an older pavé
+  // design (the setting itself was the band, made of its first stone) keeps its stones flush.
+  else if (kind === 'RING' && !head && !(bandDef && !bandRecord) && stones.length) head = 'BASKET';
 
   const style = typeof size.earringStyleCode === 'string' && size.earringStyleCode.toLowerCase() === 'drop' ? 'drop' : 'stud';
   const thickness = Math.max(bandThicknessMm(bandWidth), band ? bandMetalThicknessMm(band.stoneMm) : 0);
