@@ -12,7 +12,7 @@
 - **אפליקציה (React Native, בלי Expo):** נבנית בענן של Expo (EAS). APK ל-Android, ו-iOS ב-TestFlight.
 - **קוד:** סבב 5 (התאמה מלאה ל-PRD) הושלם ונדחף ל-GitHub. אחריו נוספו: אייקונים, סרגל ניווט RTL, תיקון כפתורים, והתחברות עם Apple.
 - **17.10:** ייצוא STL/OBJ/HD, תמונות התצוגה של העיצובים וההדמיה על תמונה אישית נבנים מהגיאומטריה של העיצוב עצמו — אין יותר תחליפים או מודלי דמה. השרת בפרודקשן עודכן. **האפליקציה צריכה בנייה חדשה ב-EAS כדי שהמשתמשים יקבלו את השינויים** (סעיף 7).
-- **23.11:** כל הערות הלקוחה תוקנו בקוד ונבדקו (סעיף 6, "הערות הלקוחה"). הקוד **לא נדחף**, והמיגרציה **לא רצה** בפרודקשן.
+- **23.11:** כל הערות הלקוחה תוקנו ונבדקו (סעיף 6, "הערות הלקוחה"). גיבוי, ואחריו המיגרציה בפרודקשן; הקוד נדחף ל-main (`b7fa563`, CI ירוק). Render לא פרס אוטומטית (החיבור ל-GitHub בחשבון הלקוחה לא נקלט — כנראה כי ה-GitHub `rotem1230` כבר מקושר למשתמש Render אחר); המשתמש פרס ידנית, והשרת החי בגרסה החדשה (נבדק: `unlock` קיים, 27 מידות, 15 צורות). בניות: APK ו-iOS #15 (לא הועלה ל-TestFlight).
 - **מה פתוח עכשיו (לפי סדר):** סעיף 7.
 
 ---
@@ -77,9 +77,9 @@ git log --oneline -5
 |---|---|
 | כתובת | **https://api.malinovskyjewelry.com** (CNAME `api` → `jewlery-djia.onrender.com` ב-cPanel של LiveDNS) — API ב-`/api/v1`, בריאות ב-`/api/v1/health` |
 | חשבון (של הלקוחה, מ-18.10) | Web Service `srv-dbagi1rrjlhs73a6hadg` (**Starter**, פרנקפורט), Postgres `dpg-dbafqs67bikc73eflbgg` (בתשלום, פרנקפורט, עם גיבויים). כתובת חיצונית מקומית ב-`backend/.env.render-new.local` (gitignored, לא להדפיס) |
-| בנייה ופריסה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile`. **push ל-`main` = פריסה.** מיגרציות לא רצות בעלייה: גיבוי (`pg_dump`) ← `migrate deploy` מהמחשב ← ורק אז push |
+| בנייה ופריסה | Docker, Root Directory `backend`, Dockerfile Path `./Dockerfile`. **push ל-`main` = פריסה** — אבל מ-23.11 הפריסה האוטומטית לא רצה (ה-GitHub לא נקלט בחשבון הלקוחה): אחרי push לבדוק שהשרת התעדכן, ואם לא — Manual Deploy. מיגרציות לא רצות בעלייה: גיבוי (`pg_dump`) ← `migrate deploy` מהמחשב ← ורק אז push |
 | חשבון ישן (Free, אורגון) | שירות `jewlery` (`srv-db7nduo473hc73e0gir0`, `jewlery.onrender.com`) + מסד `jewelry-db` — **לא בשימוש מ-18.10**, הנתונים בו קפואים. **המסד החינמי נמחק אוטומטית ב-13.11.2026.** בניות אפליקציה מלפני 18.10 פונות לכתובת הישנה ויפסיקו לעבוד אחרי המחיקה. לכבות את השירות כשכל הבודקים על בנייה חדשה |
-| מיגרציות | כולן הוחלו על המסד בחשבון החדש, האחרונה `20261025120000_client_catalog` (25.10) |
+| מיגרציות | כולן הוחלו על המסד בחשבון החדש, האחרונה `20261123120000_client_notes` (23.11, גיבוי לפני: `backups/prod-before-client-notes-20261123.dump`) |
 | מסלולים (19.10) | seed הורץ ב-production אחרי הפריסה של `133f817`: 9 המסלולים של טבלת התמחור. גיבוי לפני: `E:/claude-work/malinvosky/backups/prod-before-pricing-20261019-1628.dump` |
 | `lead_definition.enforceQuota` | **true** מ-19.10 — צורף בלי לידים פנויים לא מקבל בקשות עד הרבעון הבא |
 | seed | הורץ ב-production (בלי חשבונות דמו): קטלוג, מסלולים, מידות טבעת PRD, תבניות הודעה בעברית |
@@ -141,6 +141,8 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
 | **Android APK (26.10, קטלוג הלקוחה)** — אותו קוד | https://expo.dev/artifacts/eas/qYZFF6MbSEegKzqESyOoon6x6YwwxHCJVLRzoyw5FUs.apk (build `e8a744f9`) |
 | **iOS #14 (11.11)** — סל לאבן ליד שיבוץ בטבעת, "סיימתי" שומר הכול, שאלה ביציאה, כפתור "מעבר לעיצוב", וי בתמונה/הקלטה | הועלה ל-App Store Connect / TestFlight (build `d72fac05`, submission `83b67a2d` FINISHED) |
 | **Android APK (11.11)** — אותו קוד | https://expo.dev/artifacts/eas/Wmfp-VHYSXUbsthu9szYfGhSTv3PUykiCptgnhl2ViU.apk (build `4c3fde67`) |
+| **iOS #15 (23.11)** — הערות הלקוחה | נבנה (build `ae818ccf`), **לא הועלה ל-TestFlight**. להעלאה: `EAS_NO_VCS=1 eas submit -p ios --id ae818ccf-1077-4fc4-9df1-b24c4f33d4f4 --non-interactive` |
+| **Android APK (23.11)** — אותו קוד | https://expo.dev/artifacts/eas/re0kJK8ZLIgVt2FWCNdoqopIAb-UGE7dpXyn9XIq28k.apk (build `b4bf7111`) |
 
 הקרדיטים החינמיים של EAS לחודש נוצלו — כל בנייה עולה כסף, רק באישור המשתמש. iOS בלי יכולת (capability) חדשה רץ לא-אינטראקטיבית (מפתח ASC שמור ב-EAS).
 
@@ -293,7 +295,7 @@ EAS_NO_VCS=1 eas build:view <build-id> --json
   - **עוד לא נבדק:** על מכשיר אמיתי.
 - **בפרודקשן (25.10):** גיבוי `E:/claude-work/malinvosky/backups/prod-before-client-catalog-20261025-1711.dump`, ואחריו המיגרציה. ה-API החי מחזיר 24 אבנים, 22 שיבוצים ו-23 אלמנטים. הקוד ב-`29e6e86` נדחף ל-main, ו-Render פרס אותו.
 
-### הערות הלקוחה (23.11) — בקוד, **לא נדחף ולא בפרודקשן**
+### הערות הלקוחה (23.11) — בפרודקשן: מיגרציה, קוד `b7fa563` (פריסה ידנית ב-Render)
 22 הערות מה-PDF ועוד 6 הערות בצ'אט. התוכנית וההחלטות נמצאות ב-`E:/claude-work/malinvosky/plan-client-notes-1123.md`.
 
 **כלל:** חוקים חדשים חלים רק על מה שנבחר עכשיו. עיצוב שמור שומר על הערכים הישנים שלו.
