@@ -33,8 +33,82 @@ describe('catalogErrors', () => {
 
   it('a cut the stone does not come in, a colour off the chart', () => {
     expect(ring({ stones: [{ stoneCode: 'TURQUOISE', cutCode: 'ROUND' }] })).toEqual(['/stones/0/cutCode TURQUOISE comes only as CABOCHON, CABOCHON_OVAL']);
-    expect(ring({ stones: [{ stoneCode: 'RUBY', cutCode: 'PRINCESS' }] })).toEqual(['/stones/0/cutCode is not a cut of the catalogue']);
+    expect(ring({ stones: [{ stoneCode: 'RUBY', cutCode: 'TRAPEZOID' }] })).toEqual(['/stones/0/cutCode is not a cut of the catalogue']);
     expect(ring({ stones: [{ stoneCode: 'RUBY', colorCode: 'PINKISH' }] })).toEqual(['/stones/0/colorCode is not a colour of the chart']);
+    // The fancy shapes of the client's notes (23.11).
+    expect(ring({ stones: [{ stoneCode: 'RUBY', cutCode: 'PRINCESS' }, { stoneCode: 'DIAMOND', cutCode: 'PEAR' }] })).toEqual([]);
+  });
+
+  it('a stone only in the colours it comes in (a diamond is white / clear); effects are gone', () => {
+    expect(ring({ stones: [{ stoneCode: 'DIAMOND', colorCode: 'RUBY' }] })).toEqual(['/stones/0/colorCode RUBY is not a colour DIAMOND comes in']);
+    expect(ring({ stones: [{ stoneCode: 'SAPPHIRE', colorCode: 'CRYSTAL_AB' }] })).toEqual([
+      '/stones/0/colorCode CRYSTAL_AB is not a colour SAPPHIRE comes in',
+    ]);
+    expect(ring({ setting: { band: { settingCode: 'BAND_BAR', stoneCode: 'DIAMOND', colorCode: 'SAPPHIRE', stoneSizeMm: 1 } } })).toEqual([
+      '/setting/band/colorCode SAPPHIRE is not a colour DIAMOND comes in',
+    ]);
+    // A stone of an admin's own (not in the catalogue): any chart colour, but no effect.
+    expect(ring({ stones: [{ stoneCode: 'BLACK_ONYX', colorCode: 'JET' }] })).toEqual([]);
+    expect(ring({ stones: [{ stoneCode: 'BLACK_ONYX', colorCode: 'CRYSTAL_AB' }] })).toEqual([
+      '/stones/0/colorCode CRYSTAL_AB is not a colour BLACK_ONYX comes in',
+    ]);
+  });
+
+  it('an older band saved with no stone kind (a diamond) keeps its colour', () => {
+    const previous = { setting: { band: { settingCode: 'BAND_BAR', colorCode: 'SAPPHIRE', stoneSizeMm: 1 } } };
+    expect(catalogErrors('RING', previous, previous)).toEqual([]);
+    // The studio fills in the diamond it always was.
+    expect(catalogErrors('RING', { setting: { band: { ...previous.setting.band, stoneCode: 'DIAMOND' } } }, previous)).toEqual([]);
+  });
+
+  it('a saved stone keeps its colour: only a stone or colour chosen now is checked', () => {
+    const previous = {
+      stones: [{ stoneCode: 'DIAMOND', colorCode: 'RUBY' }],
+      setting: { band: { settingCode: 'BAND_BAR', stoneCode: 'DIAMOND', colorCode: 'SAPPHIRE', stoneSizeMm: 1 } },
+    };
+    const next = {
+      size: { standard: 'IL', sizeCode: '54', bandWidthMm: 4 },
+      stones: [{ stoneCode: 'DIAMOND', colorCode: 'RUBY', sizeMm: 5 }],
+      setting: { band: { settingCode: 'BAND_BAR', stoneCode: 'DIAMOND', colorCode: 'SAPPHIRE', stoneSizeMm: 1, count: 8 } },
+    };
+    expect(catalogErrors('RING', next, previous)).toEqual([]);
+    // The same colour on a new stone is a new choice.
+    expect(catalogErrors('RING', { ...next, stones: [...next.stones, { stoneCode: 'DIAMOND', colorCode: 'RUBY' }] }, previous)).toEqual([
+      '/stones/1/colorCode RUBY is not a colour DIAMOND comes in',
+    ]);
+  });
+
+  it('a ring size: any Israeli size 38–80 (half sizes too), US 0–16; a size saved before stays', () => {
+    const size = (standard: string, sizeCode: unknown, previous?: unknown) =>
+      catalogErrors('RING', { size: { standard, sizeCode, bandWidthMm: 3 } }, previous);
+    expect(size('IL', '53')).toEqual([]);
+    expect(size('IL', '53.5')).toEqual([]);
+    expect(size('US', '6.00')).toEqual([]);
+    expect(size('IL', '200')).toEqual(['/size/sizeCode must be an Israeli size 38–80']);
+    expect(size('IL', 'big')).toEqual(['/size/sizeCode must be an Israeli size 38–80']);
+    expect(size('US', '30')).toEqual(['/size/sizeCode must be a US size 0–16']);
+    expect(size('IL', '200', { size: { standard: 'IL', sizeCode: '200' } })).toEqual([]);
+  });
+
+  it('a ring shank: single, split, double or triple; a split shank carries no band of stones', () => {
+    const shank = (shankStyle: unknown, extra: Record<string, unknown> = {}) =>
+      catalogErrors('RING', { size: { standard: 'IL', sizeCode: '54', bandWidthMm: 4, shankStyle }, ...extra });
+    for (const style of ['SINGLE', 'SPLIT', 'DOUBLE', 'TRIPLE']) expect(shank(style)).toEqual([]);
+    expect(shank('QUAD')).toEqual(['/size/shankStyle must be SINGLE, SPLIT, DOUBLE or TRIPLE']);
+    expect(shank('SPLIT', { setting: { band: { settingCode: 'BAND_BAR', stoneCode: 'DIAMOND', stoneSizeMm: 1 } } })).toEqual([
+      '/setting/band is not available on a split shank',
+    ]);
+    expect(shank('DOUBLE', { setting: { band: { settingCode: 'BAND_BAR', stoneCode: 'DIAMOND', stoneSizeMm: 1 } } })).toEqual([]);
+    expect(catalogErrors('NECKLACE', { size: { shankStyle: 'SPLIT' } })).toEqual(['/size/shankStyle is for rings only']);
+  });
+
+  it('an older design whose setting is itself a band ("PAVE") cannot take a split shank either', () => {
+    const ring = (shankStyle: string) =>
+      catalogErrors('RING', { size: { standard: 'IL', sizeCode: '54', bandWidthMm: 4, shankStyle }, setting: { settingCode: 'PAVE' } });
+    expect(ring('SPLIT')).toEqual(['/setting/band is not available on a split shank']);
+    expect(ring('SINGLE')).toEqual([]);
+    // A head saved as the older settingCode is not a band.
+    expect(catalogErrors('RING', { size: { shankStyle: 'SPLIT' }, setting: { settingCode: 'BASKET' } })).toEqual([]);
   });
 
   it('a stone from 2 mm up to 1.5 carat', () => {

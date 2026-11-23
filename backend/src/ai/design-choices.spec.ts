@@ -32,6 +32,19 @@ describe('describeChoices', () => {
     expect(describeChoices(parameters, catalog).stones).toEqual(['oval sapphire', 'diamond']);
   });
 
+  it('names the fancy shapes and the shank of the client notes of 23.11', () => {
+    const parameters = {
+      size: { standard: 'IL', sizeCode: '54', bandWidthMm: 3, shankStyle: 'SPLIT' },
+      stones: [{ stoneCode: 'SAPPHIRE', cutCode: 'PEAR' }, { stoneCode: 'DIAMOND', cutCode: 'PRINCESS' }, { stoneCode: 'RUBY', cutCode: 'BAGUETTE' }],
+    };
+    const choices = describeChoices(parameters, catalog);
+    expect(choices.stones).toEqual(['pear-shaped sapphire', 'princess-cut diamond', 'baguette ruby']);
+    expect(choices.shank).toBe('split shank');
+    expect(describeChoices({ size: { shankStyle: 'DOUBLE' } }, catalog).shank).toBe('double shank (two bands side by side)');
+    // A single shank is the usual ring: nothing to say.
+    expect(describeChoices({ size: { shankStyle: 'SINGLE' } }, catalog).shank).toBeUndefined();
+  });
+
   it('says nothing the designer did not choose (no assumed defaults)', () => {
     expect(describeChoices({}, catalog)).toEqual({ stones: [], elements: [] });
     expect(describeChoices(null, catalog)).toEqual({ stones: [], elements: [] });

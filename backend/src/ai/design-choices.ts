@@ -9,6 +9,8 @@ export type DesignChoices = {
   setting?: string;
   /** A band setting: a row of stones along a ring band. */
   band?: string;
+  /** A ring's shank other than a single band (split, double, triple). */
+  shank?: string;
   finish?: string;
   elements: string[];
 };
@@ -50,6 +52,22 @@ const CUT_WORDS: Record<string, string> = {
   CABOCHON: 'cabochon',
   CABOCHON_OVAL: 'oval cabochon',
   ROSE: 'rose-cut',
+  PRINCESS: 'princess-cut',
+  CUSHION: 'cushion-cut',
+  ASSCHER: 'asscher-cut',
+  RADIANT: 'radiant-cut',
+  PEAR: 'pear-shaped',
+  MARQUISE: 'marquise',
+  HEART: 'heart-shaped',
+  BAGUETTE: 'baguette',
+  TRILLION: 'trillion-cut',
+};
+
+/** A ring's shank in words (a single band goes without saying). */
+const SHANK_WORDS: Record<string, string> = {
+  SPLIT: 'split shank',
+  DOUBLE: 'double shank (two bands side by side)',
+  TRIPLE: 'triple shank (three bands side by side)',
 };
 
 function cutWords(value: string | null): string {
@@ -97,6 +115,9 @@ export function describeChoices(parameters: unknown, catalog: ChoiceCatalog): De
     const rows = typeof band?.rows === 'number' && band.rows > 1 ? ` in ${Math.round(band.rows)} rows` : '';
     choices.band = `${settingName(catalog.settings, bandCode)} band set with ${name(catalog.stones, bandStone, stoneDef(bandStone)?.nameEn)} stones${rows}`;
   }
+
+  const shank = code(record(params.size)?.shankStyle)?.toUpperCase();
+  if (shank && SHANK_WORDS[shank]) choices.shank = SHANK_WORDS[shank];
 
   const finishCode = code(params.finishCode);
   if (finishCode) choices.finish = `${name(catalog.finishes, finishCode)} finish`;

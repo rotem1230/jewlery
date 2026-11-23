@@ -47,7 +47,8 @@ export function StyleSelectScreen() {
       const id = await createWizardDesign(category, t('categoryEarrings'), {
         size: { earringStyleCode: selectedId },
       })
-      navigation.navigate('DesignStudio', { designId: id })
+      // `start`: the studio opens on the first design step (for earrings, the metal).
+      navigation.navigate('DesignStudio', { designId: id, start: true })
     } catch (err) {
       wizardFailAlert(t('designCreateFailed'), err)
     } finally {
@@ -58,7 +59,7 @@ export function StyleSelectScreen() {
   return (
     <View style={styles.root}>
       <CheckerBackdrop />
-      <HomeHeader onBack={() => navigation.goBack()} />
+      <HomeHeader onBack={() => navigation.goBack()} help={{ title: t('helpStyleTitle'), body: t('helpStyleBody') }} />
       <View style={styles.content}>
         <View style={styles.column}>
           <View style={styles.headingBlock}>

@@ -1,9 +1,11 @@
 import { type ReactNode } from 'react'
-import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native'
+import { Alert, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import Svg, { Path } from 'react-native-svg'
+import Svg, { Circle, Path } from 'react-native-svg'
 import { ChevronLeft } from 'lucide-react-native'
 import { BrandLogo } from '@/src/components/brand/BrandLogo'
+import { openAccessibility } from '@/src/lib/accessibilityLink'
+import { useTranslation } from '@/src/i18n'
 import { colors } from '@/src/theme/tokens'
 
 type HomeHeaderProps = {
@@ -14,6 +16,25 @@ type HomeHeaderProps = {
   center?: ReactNode
   /** Figma wizard header — back chevron overlaid on the arch bay. */
   onBack?: () => void
+  /** A "?" that explains how to go on from this screen (the client's notes of 23.11). */
+  help?: { title: string; body: string }
+}
+
+/** The universal accessibility figure (a person in a circle). */
+function AccessibilityGlyph({ color }: { color: string }) {
+  return (
+    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="12" r="10.2" stroke={color} strokeWidth={1.6} />
+      <Circle cx="12" cy="6.9" r="1.45" fill={color} />
+      <Path
+        d="M7.2 9.6c1.6.5 3.2.75 4.8.75s3.2-.25 4.8-.75M12 10.35v3.4M12 13.75l-2.3 4.3M12 13.75l2.3 4.3"
+        stroke={color}
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  )
 }
 
 /**
@@ -25,7 +46,9 @@ export function HomeHeader({
   showLogo = true,
   center,
   onBack,
+  help,
 }: HomeHeaderProps) {
+  const { t } = useTranslation()
   const insets = useSafeAreaInsets()
   const { width } = useWindowDimensions()
   const scale = width / 375
@@ -62,10 +85,34 @@ export function HomeHeader({
         ) : null}
 
         {onBack ? (
-          <Pressable onPress={onBack} hitSlop={12} accessibilityRole="button" style={styles.backSlot}>
+          <Pressable onPress={onBack} hitSlop={12} accessibilityRole="button" accessibilityLabel={t('jwBack')} style={styles.backSlot}>
             <ChevronLeft size={24} color={colors.ink} strokeWidth={1.5} />
           </Pressable>
         ) : null}
+
+        {/* Accessibility on every screen; the screen's own "?" beside it when it has one. */}
+        <View style={styles.cornerSlot}>
+          <Pressable
+            onPress={openAccessibility}
+            hitSlop={10}
+            style={styles.cornerBtn}
+            accessibilityRole="button"
+            accessibilityLabel={t('a11yOpen')}
+          >
+            <AccessibilityGlyph color={colors.brand} />
+          </Pressable>
+          {help ? (
+            <Pressable
+              onPress={() => Alert.alert(help.title, help.body)}
+              hitSlop={10}
+              style={styles.cornerBtn}
+              accessibilityRole="button"
+              accessibilityLabel={t('helpOpen')}
+            >
+              <Text style={styles.helpMark}>?</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
     </View>
   )
@@ -95,5 +142,32 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     zIndex: 3,
+  },
+  cornerSlot: {
+    position: 'absolute',
+    right: 16,
+    top: 0,
+    bottom: 0,
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 3,
+  },
+  cornerBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E3DEF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  helpMark: {
+    fontFamily: 'Heebo',
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.brand,
+    marginTop: -1,
   },
 })

@@ -8,12 +8,21 @@ import { StoreProvider } from '@/src/store/Provider'
 import { RootNavigator } from '@/src/navigation/RootNavigator'
 import { navigationRef } from '@/src/navigation/navigationRef'
 import { warmUpBackend } from '@/src/lib/api'
+import { setAccessibilityOpener } from '@/src/lib/accessibilityLink'
 import { colors } from '@/src/theme/tokens'
 
 export default function App() {
   // The hosted API sleeps when idle: start waking it while the session is being restored.
   useEffect(() => {
     void warmUpBackend()
+  }, [])
+
+  // The accessibility icon on every header opens the accessibility page.
+  useEffect(() => {
+    setAccessibilityOpener(() => {
+      if (navigationRef.isReady()) navigationRef.navigate('Accessibility')
+    })
+    return () => setAccessibilityOpener(null)
   }, [])
 
   return (

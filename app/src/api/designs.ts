@@ -74,6 +74,14 @@ export function lockDesign(
   return apiPost<DesignDetail>(`/designs/${id}/lock`, payload)
 }
 
+/**
+ * Opens fields the designer locked earlier (an older studio offered to lock the size): the
+ * designer's own design, while it is not completed.
+ */
+export function unlockDesign(id: string, payload: { fields: string[] }): Promise<DesignDetail> {
+  return apiPost<DesignDetail>(`/designs/${id}/unlock`, payload)
+}
+
 export function transitionDesign(id: string, toStatus: DesignStatus): Promise<DesignDetail> {
   return apiPost<DesignDetail>(`/designs/${id}/transition`, { toStatus })
 }

@@ -11,9 +11,10 @@ import { UploadsService } from '../uploads/uploads.service';
 export const PREVIEW_SIZE = 640;
 /**
  * Bump when the geometry or renderer changes how pieces look, with a migration that clears
- * `designs.previewVersion` so the sweep redraws every picture (2: the client catalogue).
+ * `designs.previewVersion` so the sweep redraws every picture (2: the client catalogue; 3: heads on
+ * the band, shapes and shanks of the notes of 23.11).
  */
-export const PREVIEW_RENDER_VERSION = 2;
+export const PREVIEW_RENDER_VERSION = 3;
 
 /** What a picture depends on: the piece's spec and the renderer version (not titles or notes). */
 export function previewKey(spec: JewelrySpec): string {

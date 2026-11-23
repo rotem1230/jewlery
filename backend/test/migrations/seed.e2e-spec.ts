@@ -151,28 +151,44 @@ describe('database seed', () => {
     ]);
   });
 
-  it('the ring size chart follows the PRD, and sizes it dropped are no longer offered', async () => {
+  it('the ring size chart has every size 44–70 (the PRD sizes as the PRD gives them); sizes it dropped are no longer offered', async () => {
     expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
-    // A database seeded before: its US 5.00 row is still active.
+    // A database seeded before: its US 9.00 row (not in the chart) is still active.
     await db.sql.$executeRawUnsafe(
       `INSERT INTO "size_charts" ("id", "itemTypeId", "standard", "sizeCode", "sortOrder", "isActive")
-       SELECT gen_random_uuid(), "id", 'US', '5.00', 0, true FROM "item_types" WHERE "code" = 'RING'`,
+       SELECT gen_random_uuid(), "id", 'US', '9.00', 0, true FROM "item_types" WHERE "code" = 'RING'
+       ON CONFLICT ("itemTypeId", "standard", "sizeCode") DO UPDATE SET "isActive" = true`,
     );
     expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
     const active = await db.sql.$queryRawUnsafe<Array<{ standard: string; sizeCode: string }>>(
       `SELECT s."standard", s."sizeCode" FROM "size_charts" s JOIN "item_types" i ON i."id" = s."itemTypeId"
         WHERE i."code" = 'RING' AND s."isActive" ORDER BY s."standard", s."sortOrder"`,
     );
-    expect(active.filter((r) => r.standard === 'IL').map((r) => r.sizeCode)).toEqual(['52', '54', '56', '58', '60', '62', '64']);
-    expect(active.filter((r) => r.standard === 'US').map((r) => r.sizeCode)).toEqual([
-      '6.00',
-      '7.00',
-      '7.75',
-      '8.50',
-      '9.25',
-      '10.00',
-      '10.75',
-    ]);
+    expect(active.filter((r) => r.standard === 'IL').map((r) => r.sizeCode)).toEqual(Array.from({ length: 27 }, (_, i) => String(44 + i)));
+    const us = active.filter((r) => r.standard === 'US').map((r) => r.sizeCode);
+    expect(us).toHaveLength(27);
+    expect(us).toEqual(expect.arrayContaining(['6.00', '7.00', '7.75', '8.50', '9.25', '10.00', '10.75']));
+    expect(us).not.toContain('9.00');
+  });
+
+  it('metals: gold 14K / 18K and silver, no 12K or platinum; an admin who turns platinum back on keeps it', async () => {
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    const offered = () =>
+      db.sql
+        .$queryRawUnsafe<Array<{ metal: string; purity: string }>>(
+          `SELECT m."code" AS metal, p."code" AS purity FROM "metals" m JOIN "metal_purities" p ON p."metalId" = m."id"
+            WHERE m."isActive" AND p."isActive" ORDER BY m."code", p."code"`,
+        )
+        .then((rows) => rows.map((r) => `${r.metal}:${r.purity}`));
+    const made = ['ROSE_GOLD:14K', 'ROSE_GOLD:18K', 'SILVER:925', 'WHITE_GOLD:14K', 'WHITE_GOLD:18K', 'YELLOW_GOLD:14K', 'YELLOW_GOLD:18K'];
+    expect(await offered()).toEqual(made);
+    // (Where 12K and platinum were seeded before, the migration of 23.11 turned them off once.)
+    await db.sql.$executeRawUnsafe(
+      `WITH m AS (INSERT INTO "metals" ("id", "code", "labelHe") VALUES (gen_random_uuid(), 'PLATINUM', 'פלטינה') RETURNING "id")
+       INSERT INTO "metal_purities" ("id", "metalId", "code") SELECT gen_random_uuid(), "id", '950' FROM m`,
+    );
+    expect(seed({ NODE_ENV: 'production' }).ok).toBe(true);
+    expect(await offered()).toEqual(['PLATINUM:950', ...made]);
   });
 
   it('refuses to seed demo accounts in production', async () => {

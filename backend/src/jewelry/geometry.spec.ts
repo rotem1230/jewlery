@@ -1,5 +1,5 @@
 import { ELEMENTS, SETTINGS, bandMetalThicknessMm, placementControls } from './catalog';
-import { buildJewelry, modelBounds, placementFromPoint, ringInnerDiameterMm, specFromParameters, JewelryModel } from './geometry';
+import { buildJewelry, dragPlacement, modelBounds, placementFromPoint, ringInnerDiameterMm, ringLayout, specFromParameters, JewelryModel } from './geometry';
 
 const triangles = (model: JewelryModel, material?: 'metal' | 'stone') =>
   model.parts.filter((p) => !material || p.material === material).reduce((s, p) => s + p.mesh.indices.length / 3, 0);
@@ -32,8 +32,8 @@ describe('jewelry geometry', () => {
       if (p[i + 1] < 0) innerRadius = Math.min(innerRadius, Math.hypot(p[i], p[i + 1]));
     }
     expect(innerRadius * 2).toBeCloseTo(56 / Math.PI, 1);
-    // The head and stone stand above the band.
-    expect(max[1]).toBeGreaterThan(56 / Math.PI / 2 + spec.ring.bandThicknessMm + 3);
+    // The head and stone stand on top of the band (low, on the band itself: notes of 23.11).
+    expect(max[1]).toBeGreaterThan(56 / Math.PI / 2 + spec.ring.bandThicknessMm + 1.5);
   });
 
   it('a 6-prong head has more metal than a 4-prong one, a bezel differs from both', () => {
@@ -372,5 +372,190 @@ describe('the client catalogue in the geometry', () => {
     expect(placementControls('EARRINGS', 'ELEMENT', 0, { stones: 1, centreHead: true }).angle).toBe(true);
     expect(placementControls('EARRINGS', 'ELEMENT', 0, { stones: 1, centreHead: true, earringStyle: 'drop' }).angle).toBe(false);
     expect(placementControls('EARRINGS', 'ELEMENT', 1, { stones: 1, centreHead: true, earringStyle: 'drop' }).across).toBe('DISTANCE');
+  });
+});
+
+describe('the client notes of 23.11: the head on the band, shapes, elements by the head, shanks', () => {
+  const params = (extra: Record<string, unknown> = {}, size: Record<string, unknown> = {}) => ({
+    size: { standard: 'IL', sizeCode: '54', bandWidthMm: 3, ...size },
+    ...extra,
+  });
+  const ring = (extra: Record<string, unknown> = {}, size: Record<string, unknown> = {}) =>
+    buildJewelry(specFromParameters('RING', params(extra, size)));
+  const radii = (positions: number[]) => {
+    const out: number[] = [];
+    for (let i = 0; i < positions.length; i += 3) out.push(Math.hypot(positions[i], positions[i + 1]));
+    return out;
+  };
+  const deg = (rad: number) => (rad * 180) / Math.PI;
+  /** Band metal (not the head above it) within 3° of `angleDeg`: its triangles' z ranges. */
+  const bandFaces = (model: JewelryModel, angleDeg: number) => {
+    const { positions: p, indices } = model.parts.find((x) => x.material === 'metal')!.mesh;
+    const { innerDiameterMm, bandThicknessMm } = model.spec.ring;
+    const ro = innerDiameterMm / 2 + bandThicknessMm;
+    const near = (v: number) => {
+      const a = deg(Math.atan2(p[v * 3 + 1], p[v * 3]));
+      return Math.abs(((a - angleDeg + 540) % 360) - 180) < 3 && Math.hypot(p[v * 3], p[v * 3 + 1]) <= ro + 0.05;
+    };
+    const faces: Array<[number, number]> = [];
+    for (let i = 0; i < indices.length; i += 3) {
+      const tri = [indices[i], indices[i + 1], indices[i + 2]];
+      if (!tri.every(near)) continue;
+      const zs = tri.map((v) => p[v * 3 + 2]);
+      faces.push([Math.min(...zs), Math.max(...zs)]);
+    }
+    return faces;
+  };
+  /** Whether band metal covers the point `z` across the band at `angleDeg`. */
+  const covers = (model: JewelryModel, angleDeg: number, z: number) => bandFaces(model, angleDeg).some(([lo, hi]) => lo <= z && z <= hi);
+  /** How far across the band its metal reaches at `angleDeg` (either side). */
+  const reach = (model: JewelryModel, angleDeg: number) => Math.max(...bandFaces(model, angleDeg).map(([lo, hi]) => Math.max(-lo, hi)));
+
+  it('the centre stone sits on the band, not on legs above it, and never pokes into the finger', () => {
+    for (const [sizeMm, bandWidthMm] of [[5.2, 3], [7.3, 2], [3, 1.5]]) {
+      for (const headCode of ['BASKET', 'BEZEL', 'PEG_HEAD', 'TRELLIS']) {
+        const model = ring({ stones: [{ stoneCode: 'DIAMOND', sizeMm }], setting: { headCode } }, { bandWidthMm });
+        const { innerDiameterMm, bandThicknessMm } = model.spec.ring;
+        const ri = innerDiameterMm / 2;
+        const ro = ri + bandThicknessMm;
+        const r = radii(model.parts.find((p) => p.material === 'stone')!.mesh.positions);
+        const culet = Math.min(...r);
+        const top = Math.max(...r);
+        const label = `${headCode} ${sizeMm}mm on ${bandWidthMm}mm`;
+        // The pavilion reaches down to the band: no gap (gallery / "legs") under the stone.
+        expect({ label, onBand: culet <= ro + 0.05 }).toEqual({ label, onBand: true });
+        expect({ label, insideRing: culet >= ri + 0.25 }).toEqual({ label, insideRing: true });
+        // The table stands a little over the band (crown + part of the pavilion), not 3–4 mm up.
+        expect({ label, low: top - ro <= sizeMm * 0.5 }).toEqual({ label, low: true });
+      }
+    }
+  });
+
+  it('a head chosen in the setting tab shows by itself, before any stone is added', () => {
+    const none = ring({ setting: { headCode: 'NONE' } });
+    for (const headCode of ['BASKET', 'BEZEL', 'HALF_BEZEL', 'ILLUSION']) {
+      const model = ring({ setting: { headCode } });
+      expect(model.spec.setting).toBe(headCode);
+      expect(model.parts.filter((p) => p.material === 'stone')).toEqual([]);
+      expect({ headCode, more: triangles(model, 'metal') > triangles(none, 'metal') + 50 }).toEqual({ headCode, more: true });
+      // It stands on the top of the band.
+      expect(modelBounds(model).max[1]).toBeGreaterThan(modelBounds(none).max[1] + 0.8);
+    }
+  });
+
+  it('an element moved toward the head lies right against it, on the side it came from', () => {
+    const spec = (angleDeg: number) =>
+      specFromParameters(
+        'RING',
+        params({
+          stones: [{ stoneCode: 'DIAMOND', sizeMm: 5.2 }],
+          setting: { headCode: 'BASKET' },
+          elements: [{ elementCode: 'HEART', sizeMm: 4, placement: { angleDeg } }],
+        }),
+      );
+    for (const angleDeg of [93, 100]) {
+      const layout = ringLayout(spec(angleDeg));
+      const seat = layout.elements[0];
+      const gapMm = (seat.angle - layout.headAngle!) * layout.outerRadiusMm - layout.headHalfMm - seat.halfMm;
+      expect({ angleDeg, touching: gapMm >= -0.01 && gapMm <= 0.15 }).toEqual({ angleDeg, touching: true });
+    }
+    // Further away it stays where it was put.
+    expect(deg(ringLayout(spec(150)).elements[0].angle)).toBeCloseTo(150, 5);
+    // From the other side, it stays on the other side.
+    expect(deg(ringLayout(spec(87)).elements[0].angle)).toBeLessThan(90);
+  });
+
+  it('a double / triple shank is two / three bands side by side, joined under the head', () => {
+    const width = (model: JewelryModel) => {
+      const b = modelBounds(model);
+      return b.max[2] - b.min[2];
+    };
+    const single = ring({}, { bandWidthMm: 2 });
+    const double = ring({}, { bandWidthMm: 2, shankStyle: 'DOUBLE' });
+    const triple = ring({}, { bandWidthMm: 2, shankStyle: 'TRIPLE' });
+    expect(double.spec.ring.shankStyle).toBe('DOUBLE');
+    expect(single.spec.ring.shankStyle).toBe('SINGLE');
+    expect(width(double)).toBeGreaterThan(2 * 2 + 0.7);
+    expect(width(triple)).toBeGreaterThan(width(double) + 2);
+    expect(width(single)).toBeLessThan(2.1);
+    // At the bottom of a double shank: metal on both bands, a gap between them.
+    expect(covers(double, 270, 1.5)).toBe(true);
+    expect(covers(double, 270, -1.5)).toBe(true);
+    expect(covers(double, 270, 0)).toBe(false);
+    expect(covers(single, 270, 0)).toBe(true);
+    // Under the head the bands are joined.
+    const headed = ring({ stones: [{ stoneCode: 'DIAMOND', sizeMm: 5.2 }], setting: { headCode: 'BASKET' } }, { bandWidthMm: 2, shankStyle: 'DOUBLE' });
+    expect(covers(headed, 90, 0)).toBe(true);
+    // A band of stones runs on every shank.
+    const set = ring({ setting: { headCode: 'NONE', band: { settingCode: 'BAND_CHANNEL', stoneCode: 'DIAMOND', stoneSizeMm: 1.5, count: 4 } } }, { bandWidthMm: 2.5, shankStyle: 'DOUBLE' });
+    const stoneZ = set.parts.find((p) => p.material === 'stone')!.mesh.positions.filter((_, i) => i % 3 === 2);
+    expect(stoneZ.some((z) => z > 1) && stoneZ.some((z) => z < -1)).toBe(true);
+  });
+
+  it('a split shank opens into two arms toward the top and is one band at the bottom', () => {
+    const stone = { stones: [{ stoneCode: 'DIAMOND', sizeMm: 5.2 }], setting: { headCode: 'BASKET' } };
+    const split = ring(stone, { bandWidthMm: 3, shankStyle: 'SPLIT' });
+    const plain = ring(stone, { bandWidthMm: 3 });
+    // Shoulder (40° from the top): two arms with an opening between them, spread wider than the band.
+    expect(covers(split, 50, 0)).toBe(false);
+    expect(covers(plain, 50, 0)).toBe(true);
+    expect(covers(split, 50, 1.5)).toBe(true);
+    expect(covers(split, 50, -1.5)).toBe(true);
+    expect(reach(split, 50)).toBeGreaterThan(1.5 + 0.3);
+    // Bottom: one band, as wide as chosen.
+    expect(covers(split, 270, 0)).toBe(true);
+    expect(reach(split, 270)).toBeCloseTo(1.5, 1);
+  });
+
+  it('a split shank sets no row of stones, also for an older design whose setting is the band itself', () => {
+    const legacy = ring({ setting: { settingCode: 'PAVE' } }, { bandWidthMm: 3, shankStyle: 'SPLIT' });
+    expect(legacy.parts.some((p) => p.material === 'stone')).toBe(false);
+    const single = ring({ setting: { settingCode: 'PAVE' } }, { bandWidthMm: 3 });
+    expect(single.parts.some((p) => p.material === 'stone')).toBe(true);
+  });
+
+  it('dragging an element across the head keeps it against the head, on the side it came from', () => {
+    const spec = specFromParameters(
+      'RING',
+      params({
+        stones: [{ stoneCode: 'DIAMOND', sizeMm: 5.2 }],
+        setting: { headCode: 'BASKET' },
+        elements: [{ elementCode: 'HEART', sizeMm: 4, placement: { angleDeg: 120 } }],
+      }),
+    );
+    const layout = ringLayout(spec);
+    const zone = deg((layout.headHalfMm + layout.elements[0].halfMm) / layout.outerRadiusMm);
+    const top = (angleDeg: number): [number, number, number] => [Math.cos((angleDeg * Math.PI) / 180) * 12, Math.sin((angleDeg * Math.PI) / 180) * 12, 0];
+    // Coming from 120° (one side), the finger passes the head's middle (88°): it stays on its side.
+    expect(dragPlacement(spec, { kind: 'element', index: 0 }, top(88), 120).angleDeg).toBeCloseTo(90 + zone, 0);
+    // From the other side (60°), the same point keeps it on that side.
+    expect(dragPlacement(spec, { kind: 'element', index: 0 }, top(92), 60).angleDeg).toBeCloseTo(90 - zone, 0);
+    // Away from the head the finger decides, as before.
+    expect(dragPlacement(spec, { kind: 'element', index: 0 }, top(200), 120).angleDeg).toBeCloseTo(200, 5);
+    // A stone is placed where the finger is.
+    expect(dragPlacement(spec, { kind: 'stone', index: 1 }, top(88), 120).angleDeg).toBeCloseTo(88, 5);
+  });
+
+  it('every fancy shape builds a stone of its own proportions', () => {
+    const extent = (model: JewelryModel) => {
+      const p = model.parts.find((x) => x.material === 'stone')!.mesh.positions;
+      const xs = p.filter((_, i) => i % 3 === 0);
+      const zs = p.filter((_, i) => i % 3 === 2);
+      return { along: Math.max(...xs) - Math.min(...xs), across: Math.max(...zs) - Math.min(...zs) };
+    };
+    const shapes: Record<string, number> = { PRINCESS: 1, ASSCHER: 1, CUSHION: 0.95, RADIANT: 0.8, PEAR: 0.62, MARQUISE: 0.5, HEART: 1, BAGUETTE: 0.35, TRILLION: 0.87 };
+    for (const [cutCode, ratio] of Object.entries(shapes)) {
+      const model = ring({ stones: [{ stoneCode: 'SAPPHIRE', cutCode, sizeMm: 7 }], setting: { headCode: 'BASKET' } }, { bandWidthMm: 4 });
+      expect(model.spec.stones[0].shape).toBe(cutCode);
+      const e = extent(model);
+      expect({ cutCode, along: Math.round(e.along) }).toEqual({ cutCode, along: 7 });
+      expect({ cutCode, ratio: Math.abs(e.across / e.along - ratio) < 0.08 }).toEqual({ cutCode, ratio: true });
+      for (const part of model.parts) expect(part.mesh.positions.every(Number.isFinite)).toBe(true);
+    }
+  });
+
+  it('dragging across a double shank reaches its outer band', () => {
+    const spec = specFromParameters('RING', params({}, { bandWidthMm: 2, shankStyle: 'DOUBLE' }));
+    expect(placementFromPoint(spec, [0, -10, 2.4]).offsetMm).toBeCloseTo(2.4, 5);
   });
 });

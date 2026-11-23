@@ -27,15 +27,15 @@ describe('PRD gaps', () => {
     await t.close();
   });
 
-  describe('ring sizes (PRD 5.4: IL 52–64 with their US sizes and diameters)', () => {
+  describe('ring sizes (PRD 5.4: IL 52–64 with their US sizes and diameters; every size 44–70 since 23.11)', () => {
     type Row = { standard: string; sizeCode: string; diameterMinMm: string | null; diameterMaxMm: string | null };
 
-    it('the ring chart lists the PRD sizes, from IL 52 / US 6.00 to IL 64 / US 10.75', async () => {
+    it('the ring chart lists the PRD sizes as the PRD gives them, among every size 44–70', async () => {
       const res = await t.http.get(`${API}/wizard/size-charts/RING`).expect(200);
       const rows = res.body.data as Row[];
       const codes = (standard: string) => rows.filter((row) => row.standard === standard).map((row) => row.sizeCode);
-      expect(codes('IL')).toEqual(['52', '54', '56', '58', '60', '62', '64']);
-      expect(codes('US')).toEqual(['6.00', '7.00', '7.75', '8.50', '9.25', '10.00', '10.75']);
+      expect(codes('IL')).toEqual(expect.arrayContaining(['52', '54', '56', '58', '60', '62', '64']));
+      expect(codes('US')).toEqual(expect.arrayContaining(['6.00', '7.00', '7.75', '8.50', '9.25', '10.00', '10.75']));
       const il52 = rows.find((row) => row.standard === 'IL' && row.sizeCode === '52');
       const il64 = rows.find((row) => row.standard === 'IL' && row.sizeCode === '64');
       expect([Number(il52?.diameterMinMm), Number(il52?.diameterMaxMm)]).toEqual([16.55, 16.95]);

@@ -1,10 +1,14 @@
 import {
   BAND_STONE_SIZES_MM,
+  CUSTOM_RING_SIZE_MAX_IL,
+  CUSTOM_RING_SIZE_MIN_IL,
   CUTS,
   EARRING_ORBIT_MAX_MM,
   MAX_ELEMENT_TEXT,
   MAX_ROTATION_DEG,
+  SHANK_STYLES,
   STONE_MIN_MM,
+  allowedColors,
   allowedCuts,
   bandWidthForStonesMm,
   elementDef,
@@ -18,21 +22,42 @@ import {
 import { MAX_BAND_STONES } from './geometry';
 
 /**
- * The client catalogue's rules for design parameters: cuts each stone comes in, chart colours,
- * stones from 2 mm to 1.5 ct, element sizes and texts, the heads and band styles of the pictures,
- * the pavé table. Only what is there is checked: older designs (a `shape`, x/y/z placements, prong
- * settings, the round initial) and codes the catalogue does not know (stones an admin added) pass.
- * Errors read like the JSON-schema ones ("/stones/0/cutCode …").
+ * The client catalogue's rules for design parameters: cuts each stone comes in, the colours each
+ * stone comes in, stones from 2 mm to 1.5 ct, element sizes and texts, the heads and band styles of
+ * the pictures, the pavé table, the ring's shank and size. Only what is there is checked: older
+ * designs (a `shape`, x/y/z placements, prong settings, the round initial) and codes the catalogue
+ * does not know (stones an admin added) pass. A rule that came after a design was saved (a stone's
+ * own colours, the size range: the client's notes of 23.11.2026) holds only for what is chosen now:
+ * `previous` (the saved parameters) keeps what was saved before. Errors read like the JSON-schema
+ * ones ("/stones/0/cutCode …").
  */
-export function catalogErrors(itemType: string, parameters: unknown): string[] {
+export function catalogErrors(itemType: string, parameters: unknown, previous?: unknown): string[] {
   const params = record(parameters);
   if (!params) return [];
+  const before = record(previous);
   const errors: string[] = [];
-  if (Array.isArray(params.stones)) params.stones.forEach((s, i) => stoneErrors(record(s), `/stones/${i}`, errors));
+  // Each saved (stone, colour) pair excuses one stone of the new parameters: a stone added now in
+  // the same colour is a new choice, checked.
+  const saved = new Map<string, number>();
+  if (Array.isArray(before?.stones)) {
+    for (const s of before.stones) {
+      const key = colorKey(record(s));
+      if (key) saved.set(key, (saved.get(key) ?? 0) + 1);
+    }
+  }
+  if (Array.isArray(params.stones)) params.stones.forEach((s, i) => stoneErrors(record(s), `/stones/${i}`, errors, saved));
   if (Array.isArray(params.elements)) params.elements.forEach((e, i) => elementErrors(record(e), `/elements/${i}`, errors));
+  const size = record(params.size);
+  if (size) sizeErrors(itemType, size, record(before?.size), errors);
   const setting = record(params.setting);
-  if (setting) settingErrors(itemType, setting, record(params.size), errors);
+  if (setting) settingErrors(itemType, setting, size, record(record(before?.setting)?.band), errors);
   return errors;
+}
+
+/** "DIAMOND:RUBY": a stone's kind and colour, as saved. */
+function colorKey(stone: Record<string, unknown> | null): string | null {
+  if (!stone || typeof stone.stoneCode !== 'string' || typeof stone.colorCode !== 'string') return null;
+  return `${stone.stoneCode}:${stone.colorCode.toUpperCase()}`;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -64,10 +89,31 @@ function placementErrors(value: unknown, path: string, errors: string[]): void {
   numberErrors(p.rotationDeg, `${path}/rotationDeg`, -MAX_ROTATION_DEG, MAX_ROTATION_DEG, `-${MAX_ROTATION_DEG}–${MAX_ROTATION_DEG}`, errors);
 }
 
-function stoneErrors(stone: Record<string, unknown> | null, path: string, errors: string[]): void {
+/**
+ * A stone of the catalogue only in a colour it comes in — unless the same stone in the same colour
+ * was saved before (`saved`: pairs not yet matched; one is used up per stone).
+ */
+function stoneColorErrors(stoneCode: unknown, colorCode: unknown, path: string, errors: string[], saved: Map<string, number>): void {
+  if (typeof colorCode !== 'string' || !paletteColor(colorCode.toUpperCase())) return;
+  // A stone the catalogue does not know (an admin's own) takes any chart colour, but no effect.
+  const code = stoneDef(stoneCode)?.code ?? (typeof stoneCode === 'string' ? stoneCode : '');
+  if (!code) return;
+  const color = colorCode.toUpperCase();
+  if (allowedColors(code).includes(color)) return;
+  const key = `${code}:${color}`;
+  const left = saved.get(key) ?? 0;
+  if (left > 0) {
+    saved.set(key, left - 1);
+    return;
+  }
+  errors.push(`${path} ${color} is not a colour ${code} comes in`);
+}
+
+function stoneErrors(stone: Record<string, unknown> | null, path: string, errors: string[], saved: Map<string, number>): void {
   if (!stone) return;
   placementErrors(stone.placement, `${path}/placement`, errors);
   colorErrors(stone.colorCode, `${path}/colorCode`, errors);
+  stoneColorErrors(stone.stoneCode, stone.colorCode, `${path}/colorCode`, errors, saved);
   const def = stoneDef(stone.stoneCode);
   let cut: CutCode | null = null;
   if (stone.cutCode !== undefined && stone.cutCode !== null) {
@@ -109,13 +155,54 @@ function elementErrors(element: Record<string, unknown> | null, path: string, er
   }
 }
 
-function settingErrors(itemType: string, setting: Record<string, unknown>, size: Record<string, unknown> | null, errors: string[]): void {
+/**
+ * A ring's shank (one of the catalogue's) and size: an Israeli size 38–80 (to one decimal: a size
+ * typed in), a US size 0–16. A size saved before passes as it is.
+ */
+function sizeErrors(itemType: string, size: Record<string, unknown>, before: Record<string, unknown> | null, errors: string[]): void {
+  const shank = size.shankStyle;
+  if (shank !== undefined && shank !== null) {
+    if (itemType !== 'RING') errors.push('/size/shankStyle is for rings only');
+    else if (typeof shank !== 'string' || !SHANK_STYLES.some((s) => s.code === shank)) {
+      errors.push(`/size/shankStyle must be ${SHANK_STYLES.map((s) => s.code).join(', ').replace(/, ([^,]*)$/, ' or $1')}`);
+    }
+  }
+  if (itemType !== 'RING' || size.sizeCode === undefined || size.sizeCode === null) return;
+  if (before && before.sizeCode === size.sizeCode && before.standard === size.standard) return;
+  const standard = typeof size.standard === 'string' ? size.standard.toUpperCase() : '';
+  const code = typeof size.sizeCode === 'string' ? size.sizeCode.trim() : '';
+  const n = /^\d{1,2}(\.\d{1,2})?$/.test(code) ? Number(code) : NaN;
+  if (standard === 'IL' || standard === 'EU') {
+    if (!(n >= CUSTOM_RING_SIZE_MIN_IL && n <= CUSTOM_RING_SIZE_MAX_IL)) {
+      errors.push(`/size/sizeCode must be an Israeli size ${CUSTOM_RING_SIZE_MIN_IL}–${CUSTOM_RING_SIZE_MAX_IL}`);
+    }
+  } else if (standard === 'US') {
+    if (!(n >= 0 && n <= 16)) errors.push('/size/sizeCode must be a US size 0–16');
+  }
+}
+
+function settingErrors(
+  itemType: string,
+  setting: Record<string, unknown>,
+  size: Record<string, unknown> | null,
+  savedBand: Record<string, unknown> | null,
+  errors: string[],
+): void {
   const headCode = setting.headCode;
   if (headCode !== undefined && headCode !== null && headCode !== 'NONE' && settingDef(headCode)?.kind !== 'HEAD') {
     errors.push('/setting/headCode is not a head of the catalogue');
   }
   const band = record(setting.band);
-  if (!band) return;
+  if (!band) {
+    // An older design's band is its setting itself ("PAVE"), as the geometry reads it: a split
+    // shank carries none either.
+    const older = (typeof headCode === 'string' && headCode.trim()) || setting.settingCode;
+    const code = typeof older === 'string' ? older.trim().toUpperCase() : '';
+    if (itemType === 'RING' && size?.shankStyle === 'SPLIT' && settingDef(code)?.kind === 'BAND') {
+      errors.push('/setting/band is not available on a split shank');
+    }
+    return;
+  }
   if (itemType !== 'RING') {
     errors.push('/setting/band is for rings only');
     return;
@@ -125,10 +212,15 @@ function settingErrors(itemType: string, setting: Record<string, unknown>, size:
     errors.push('/setting/band/settingCode is not a band setting of the catalogue');
     return;
   }
+  // A split shank's two arms carry no row of stones (the geometry sets bands on whole bands only).
+  if (size?.shankStyle === 'SPLIT') errors.push('/setting/band is not available on a split shank');
   if (band.stoneCode !== undefined && band.stoneCode !== null && !stoneDef(band.stoneCode)) {
     errors.push('/setting/band/stoneCode is not a stone of the catalogue');
   }
   colorErrors(band.colorCode, '/setting/band/colorCode', errors);
+  // A band saved with no stone kind was a diamond (as it is checked now).
+  const savedKey = colorKey(savedBand && { ...savedBand, stoneCode: savedBand.stoneCode ?? 'DIAMOND' });
+  stoneColorErrors(band.stoneCode ?? 'DIAMOND', band.colorCode, '/setting/band/colorCode', errors, new Map(savedKey ? [[savedKey, 1]] : []));
   const stoneMm = band.stoneSizeMm;
   if (stoneMm !== undefined && stoneMm !== null && !BAND_STONE_SIZES_MM.includes(stoneMm as number)) {
     errors.push(`/setting/band/stoneSizeMm must be one of ${BAND_STONE_SIZES_MM.join(', ')}`);

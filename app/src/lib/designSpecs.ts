@@ -1,5 +1,5 @@
 import type { DesignDetail } from '@/src/types/api'
-import { colorName, elementName, finishName, metalName, settingName, shapeName, stoneName, variantName } from '@/src/lib/catalogLabels'
+import { colorName, elementName, finishName, metalName, settingName, shankName, shapeName, stoneName, variantName } from '@/src/lib/catalogLabels'
 import { caratEstimate, settingDef, type CutCode } from '@/src/lib/jewelryCatalog.generated'
 import { hasCentreHead } from '@/src/lib/studioParams'
 
@@ -33,6 +33,9 @@ export function specsFromParameters(
     if (code) rows.push({ label: 'מידה', value: standard ? `${code} (${standard})` : code })
     const width = str(size.bandWidthMm)
     if (width) rows.push({ label: 'רוחב הטבעת', value: `${width} מ״מ` })
+    // A split / double / triple shank (a single one is the plain ring).
+    const shank = str(size.shankStyle)
+    if (shank && shank !== 'SINGLE') rows.push({ label: 'שינה', value: shankName(shank) })
     const necklace = str(size.necklaceLengthCm)
     if (necklace) rows.push({ label: 'אורך', value: `${necklace} ס״מ` })
     const wrist = str(size.wristCircumferenceCm)

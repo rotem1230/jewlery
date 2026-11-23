@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { scratchDatabase, ScratchDatabase } from '../utils/migration-db';
 
 /**
@@ -526,5 +528,130 @@ describe('data migrations on existing data', () => {
     expect(element.get('INITIAL')).toBe(false);
     expect(element.get('HEART')).toBe(false);
     expect(element.get('ANGEL_WINGS')).toBe(true);
+  });
+
+  it("the client notes of 23.11: metals, every ring size, the new cuts, the guide; an admin's own rows and edits kept", async () => {
+    db = await scratchDatabase('mig_notes_1123');
+    db.migrateTo('20261025120000_client_catalog');
+    const ring = randomUUID();
+    await db.sql.$executeRawUnsafe(`INSERT INTO "item_types" ("id", "code", "labelHe") VALUES ($1::uuid, 'RING', 'טבעת')`, ring);
+    const necklace = randomUUID();
+    await db.sql.$executeRawUnsafe(`INSERT INTO "item_types" ("id", "code", "labelHe") VALUES ($1::uuid, 'NECKLACE', 'שרשרת')`, necklace);
+    // The metals as seeded before: 12K gold and platinum offered.
+    const metal = async (code: string, purities: string[]) => {
+      const id = randomUUID();
+      await db.sql.$executeRawUnsafe(`INSERT INTO "metals" ("id", "code", "labelHe") VALUES ($1::uuid, $2, $2)`, id, code);
+      for (const purity of purities) {
+        await db.sql.$executeRawUnsafe(
+          `INSERT INTO "metal_purities" ("id", "metalId", "code") VALUES ($1::uuid, $2::uuid, $3)`,
+          randomUUID(),
+          id,
+          purity,
+        );
+      }
+    };
+    await metal('YELLOW_GOLD', ['12K', '14K', '18K']);
+    await metal('PLATINUM', ['950']);
+    await metal('SILVER', ['925']);
+    // The earlier ring chart, an EU row an admin added, and a necklace length.
+    const size = async (typeId: string, standard: string, sizeCode: string, sortOrder: number, mm: number | null) =>
+      db.sql.$executeRawUnsafe(
+        `INSERT INTO "size_charts" ("id", "itemTypeId", "standard", "sizeCode", "diameterMinMm", "diameterMaxMm", "sortOrder")
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $5, $6)`,
+        randomUUID(),
+        typeId,
+        standard,
+        sizeCode,
+        mm,
+        sortOrder,
+      );
+    await size(ring, 'IL', '52', 0, 16.5);
+    await size(ring, 'US', '6.00', 0, 16.5);
+    await size(ring, 'US', '9.00', 3, 18.9);
+    await size(ring, 'EU', '60', 9, 19.1);
+    await size(necklace, 'IL', '45', 0, null);
+    // The Hebrew ring guide as first seeded; the English one an admin wrote.
+    const migration = readFileSync(join(__dirname, '../../prisma/migrations/20261123120000_client_notes/migration.sql'), 'utf8');
+    const legacyTips = JSON.parse(/-> 'tips' = '(.*)'::jsonb;/.exec(migration)![1].replace(/''/g, "'")) as string[];
+    const guide = async (locale: string, tips: string[]) =>
+      db.sql.$executeRawUnsafe(
+        `INSERT INTO "measurement_guides" ("id", "itemTypeId", "locale", "title", "body", "updatedAt") VALUES ($1::uuid, $2::uuid, $3, 'x', $4::jsonb, now())`,
+        randomUUID(),
+        ring,
+        locale,
+        JSON.stringify({ tips, table: [{ size: 'old' }] }),
+      );
+    await guide('he', legacyTips);
+    await guide('en', ['Measure at the end of the day.']);
+    const owner = await insertUser(null, '2026-01-01 10:00:00');
+    const design = randomUUID();
+    await db.sql.$executeRawUnsafe(
+      `INSERT INTO "designs" ("id", "ownerUserId", "itemTypeId", "parameters", "previewVersion", "updatedAt")
+       VALUES ($1::uuid, $2::uuid, $3::uuid, '{"metal":{"metalCode":"PLATINUM","purityCode":"950"}}'::jsonb, 2, now())`,
+      design,
+      owner,
+      ring,
+    );
+
+    db.migrateTo('20261123120000_client_notes');
+
+    const purities = await db.sql.$queryRawUnsafe<Array<{ metal: string; code: string; isActive: boolean }>>(
+      `SELECT m."code" AS "metal", p."code", p."isActive" FROM "metal_purities" p JOIN "metals" m ON m."id" = p."metalId"`,
+    );
+    const offered = (m: string, p: string) => purities.find((row) => row.metal === m && row.code === p)?.isActive;
+    expect(offered('YELLOW_GOLD', '12K')).toBe(false);
+    expect(offered('YELLOW_GOLD', '14K')).toBe(true);
+    expect(offered('SILVER', '925')).toBe(true);
+    const metals = await db.sql.$queryRawUnsafe<Array<{ code: string; isActive: boolean }>>(`SELECT "code", "isActive" FROM "metals"`);
+    expect(metals.find((m) => m.code === 'PLATINUM')?.isActive).toBe(false);
+
+    const sizeRows = () =>
+      db.sql.$queryRawUnsafe<Array<{ typeId: string; standard: string; sizeCode: string; min: string | null; isActive: boolean }>>(
+        `SELECT "itemTypeId"::text AS "typeId", "standard", "sizeCode", "diameterMinMm"::text AS "min", "isActive" FROM "size_charts"`,
+      );
+    const rows = await sizeRows();
+    const ringRows = rows.filter((r) => r.typeId === ring && r.isActive);
+    expect(ringRows.filter((r) => r.standard === 'IL').map((r) => Number(r.sizeCode)).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 27 }, (_, i) => 44 + i),
+    );
+    expect(ringRows.filter((r) => r.standard === 'US')).toHaveLength(27);
+    // IL 52 takes the PRD's diameters; the earlier chart's US 9.00 is retired, not deleted.
+    expect(ringRows.find((r) => r.standard === 'IL' && r.sizeCode === '52')?.min).toBe('16.55');
+    expect(rows.find((r) => r.standard === 'US' && r.sizeCode === '9.00')?.isActive).toBe(false);
+    // Rows the migration does not own are left as they were.
+    expect(rows.find((r) => r.standard === 'EU' && r.sizeCode === '60')?.isActive).toBe(true);
+    expect(rows.find((r) => r.typeId === necklace)?.isActive).toBe(true);
+
+    const shapes = await db.sql.$queryRawUnsafe<Array<{ stone: string; value: string }>>(
+      `SELECT s."code" AS "stone", o."value" FROM "stone_options" o JOIN "stones" s ON s."id" = o."stoneId" WHERE o."kind" = 'SHAPE' AND o."isActive"`,
+    );
+    const diamondShapes = shapes.filter((row) => row.stone === 'DIAMOND').map((row) => row.value);
+    expect(diamondShapes).toEqual(expect.arrayContaining(['PEAR', 'HEART', 'MARQUISE', 'PRINCESS', 'BAGUETTE', 'TRILLION']));
+    // Cabochon-only stones get no faceted cuts.
+    expect(shapes.filter((row) => row.stone === 'TURQUOISE').map((row) => row.value).sort()).toEqual(['CABOCHON', 'CABOCHON_OVAL']);
+
+    const guides = await db.sql.$queryRawUnsafe<Array<{ locale: string; body: { tips: string[]; table: unknown[] } }>>(
+      `SELECT "locale", "body" FROM "measurement_guides"`,
+    );
+    const he = guides.find((g) => g.locale === 'he')!;
+    expect(he.body.tips).not.toEqual(legacyTips);
+    expect(he.body.tips.length).toBeGreaterThanOrEqual(5);
+    expect(he.body.table.length).toBeGreaterThan(1);
+    expect(guides.find((g) => g.locale === 'en')!.body).toEqual({ tips: ['Measure at the end of the day.'], table: [{ size: 'old' }] });
+
+    // The design keeps its metal; its picture is drawn again.
+    const [saved] = await db.sql.$queryRawUnsafe<Array<{ parameters: unknown; previewVersion: number | null }>>(
+      `SELECT "parameters", "previewVersion" FROM "designs" WHERE "id" = $1::uuid`,
+      design,
+    );
+    expect(saved).toEqual({ parameters: { metal: { metalCode: 'PLATINUM', purityCode: '950' } }, previewVersion: null });
+
+    // Applied again (say, by hand after a failure half-way), nothing changes.
+    for (const statement of migration.split(/;\s*\n/)) {
+      const sql = statement.replace(/^\s*--.*$/gm, '').trim();
+      if (sql && !/^SET LOCAL/i.test(sql)) await db.sql.$executeRawUnsafe(sql);
+    }
+    expect(await sizeRows()).toEqual(expect.arrayContaining(rows));
+    expect(await sizeRows()).toHaveLength(rows.length);
   });
 });

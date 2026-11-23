@@ -4,8 +4,15 @@ import { StudioChips } from '@/src/components/studio/StudioChips'
 import { StudioColorGrid } from '@/src/components/studio/StudioColorGrid'
 import { StudioPlacementControls } from '@/src/components/studio/StudioPlacementControls'
 import { StudioSlider } from '@/src/components/studio/StudioSlider'
-import { BrandButton } from '@/src/components/ui/BrandButton'
-import { CUTS, STONES, allowedCuts, paletteColor, stoneDef } from '@/src/lib/jewelryCatalog.generated'
+import {
+  BAND_STONE_SIZES_MM,
+  CUTS,
+  STONES,
+  allowedColors,
+  allowedCuts,
+  paletteColor,
+  stoneDef,
+} from '@/src/lib/jewelryCatalog.generated'
 import {
   STUDIO_MAX_STONES,
   addStone,
@@ -15,6 +22,7 @@ import {
   stoneSizeRange,
   withCut,
   withStoneCode,
+  type StudioBand,
   type StudioItemType,
   type StudioPlacement,
   type StudioStone,
@@ -36,12 +44,19 @@ type StudioStonePanelProps = {
   /** The stone being moved by dragging on the model, if any. */
   moving: boolean
   onToggleMove: () => void
-  /** The ring's band of small stones (its name), whose stones the setting tab chooses. */
+  /**
+   * The ring's band of small stones (style chosen in the setting tab): its stones are chosen here,
+   * in a section of their own (the client's notes of 23.11).
+   */
+  band?: StudioBand | null
   bandName?: string | null
-  onOpenBand?: () => void
+  onBandChange?: (band: StudioBand) => void
 }
 
-/** The stone tab: the client's stones, their cuts, chart colours, size up to 1.5 ct and place. */
+/**
+ * The stone tab: the client's stones, their shapes, the colours each comes in, size up to 1.5 ct
+ * and place; then the band's small stones when the ring has a band setting.
+ */
 export function StudioStonePanel({
   itemType,
   stones,
@@ -53,8 +68,9 @@ export function StudioStonePanel({
   onSelect,
   moving,
   onToggleMove,
+  band,
   bandName,
-  onOpenBand,
+  onBandChange,
 }: StudioStonePanelProps) {
   const { t, locale } = useTranslation()
   const [adding, setAdding] = useState(stones.length === 0)
@@ -87,14 +103,6 @@ export function StudioStonePanel({
 
   return (
     <View style={styles.root}>
-      {bandName ? (
-        <View style={styles.band}>
-          <Text style={styles.info}>{t('studioStoneBandHint').replace('{{band}}', bandName)}</Text>
-          {onOpenBand ? (
-            <BrandButton label={t('studioStoneBandOpen')} variant="outline" hug flex={false} onPress={onOpenBand} />
-          ) : null}
-        </View>
-      ) : null}
       <StudioChips
         items={[
           ...stones.map((stone, index) => ({
@@ -103,7 +111,7 @@ export function StudioStonePanel({
             selected: !adding && index === selected,
             swatch: paletteColor(stone.colorCode)?.hex,
           })),
-          ...(stones.length < STUDIO_MAX_STONES ? [{ id: 'add', label: `+ ${t('studioStoneAdd')}`, selected: adding }] : []),
+          ...(stones.length < STUDIO_MAX_STONES ? [{ id: 'add', label: `+ ${t(stones.length === 0 ? 'studioStoneAddFirst' : 'studioStoneAdd')}`, selected: adding }] : []),
         ]}
         onSelect={(id) => {
           if (id === 'add') {
@@ -116,7 +124,10 @@ export function StudioStonePanel({
       />
 
       {adding ? (
-        <StudioChips wrap items={catalog.map((stone) => ({ id: stone.code, label: en ? stone.nameEn : stone.nameHe }))} onSelect={add} />
+        <>
+          {stones.length > 0 ? <Text style={styles.info}>{t('studioStoneAddHint')}</Text> : null}
+          <StudioChips wrap items={catalog.map((stone) => ({ id: stone.code, label: en ? stone.nameEn : stone.nameHe }))} onSelect={add} />
+        </>
       ) : null}
 
       {current ? (
@@ -133,6 +144,44 @@ export function StudioStonePanel({
           onRemove={remove}
         />
       ) : null}
+
+      {band && onBandChange ? (
+        <BandStones band={band} name={bandName ?? band.settingCode} catalog={catalog} onChange={onBandChange} />
+      ) : null}
+    </View>
+  )
+}
+
+/** The band setting's small stones: their kind, the colours it comes in and their size (pavé table). */
+function BandStones({
+  band,
+  name,
+  catalog,
+  onChange,
+}: {
+  band: StudioBand
+  name: string
+  catalog: ReadonlyArray<{ code: string; nameHe: string; nameEn: string }>
+  onChange: (band: StudioBand) => void
+}) {
+  const { t, locale } = useTranslation()
+  const en = locale === 'en'
+  const mm = t('studioMm')
+  return (
+    <View testID="band-stones" style={styles.bandSection}>
+      <Text style={styles.section}>{t('studioBandStonesTitle').replace('{{band}}', name)}</Text>
+      <Text style={styles.info}>{t('studioBandStonesHint')}</Text>
+      <StudioChips
+        items={catalog.map((stone) => ({ id: stone.code, label: en ? stone.nameEn : stone.nameHe, selected: stone.code === band.stoneCode }))}
+        onSelect={(stoneCode) => onChange({ ...band, stoneCode, colorCode: stoneDef(stoneCode)?.defaultColor ?? band.colorCode })}
+      />
+      <StudioColorGrid value={band.colorCode} colors={allowedColors(band.stoneCode)} onChange={(colorCode) => onChange({ ...band, colorCode })} />
+      <Text style={styles.section}>{t('studioBandStoneSize')}</Text>
+      <StudioChips
+        wrap
+        items={BAND_STONE_SIZES_MM.map((size) => ({ id: String(size), label: `${size} ${mm}`, selected: size === band.stoneSizeMm }))}
+        onSelect={(size) => onChange({ ...band, stoneSizeMm: Number(size) })}
+      />
     </View>
   )
 }
@@ -193,7 +242,11 @@ function StoneEditor({ stone, index, itemType, catalog, parameters, bandWidthMm,
       />
 
       <Text style={styles.section}>{t('studioStoneColor')}</Text>
-      <StudioColorGrid value={stone.colorCode} onChange={(colorCode) => onChange({ ...stone, colorCode })} />
+      <StudioColorGrid
+        value={stone.colorCode}
+        colors={allowedColors(stone.stoneCode)}
+        onChange={(colorCode) => onChange({ ...stone, colorCode })}
+      />
 
       <StudioSlider
         label={t('studioStoneSize')}
@@ -206,6 +259,7 @@ function StoneEditor({ stone, index, itemType, catalog, parameters, bandWidthMm,
       />
 
       <StudioPlacementControls
+        ring={itemType === 'RING'}
         controls={itemControls(itemType, 'STONE', index, parameters)}
         placement={stone.placement}
         shownAngleDeg={shownAngleDeg(itemType, 'STONE', index, stone.placement, parameters)}
@@ -220,7 +274,13 @@ function StoneEditor({ stone, index, itemType, catalog, parameters, bandWidthMm,
 
 const styles = StyleSheet.create({
   root: { gap: 10 },
-  band: { gap: 6, alignItems: 'flex-end' },
+  bandSection: {
+    gap: 8,
+    marginTop: 6,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSubtle,
+  },
   editor: { gap: 8 },
   row: {
     flexDirection: 'row',

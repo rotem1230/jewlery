@@ -28,6 +28,20 @@ function prismaReturning(updatedAt: () => Date) {
       findUnique: async ({ where }: { where: { code: string } }) =>
         where.code === 'BRIGHT_CUT' ? { code: 'BRIGHT_CUT', minBandWidthMm: 2.5 } : null,
     },
+    metal: {
+      findUnique: async ({ where }: { where: { code: string } }) =>
+        ({
+          YELLOW_GOLD: {
+            code: 'YELLOW_GOLD',
+            isActive: true,
+            purities: [
+              { code: '14K', isActive: true },
+              { code: '12K', isActive: false },
+            ],
+          },
+          PLATINUM: { code: 'PLATINUM', isActive: false, purities: [{ code: '950', isActive: true }] },
+        })[where.code] ?? null,
+    },
   } as unknown as PrismaService;
 }
 
@@ -77,5 +91,22 @@ describe('WizardEngineService.validateParameters', () => {
     expect((await wizard.validateParameters('item-1', { size: { bandWidthMm: 2.5 }, setting: { headCode: 'BRIGHT_CUT' } })).valid).toBe(true);
     // No head: nothing to hold.
     expect((await wizard.validateParameters('item-1', { size: { bandWidthMm: 1 }, setting: { headCode: 'NONE', settingCode: 'BRIGHT_CUT' } })).valid).toBe(true);
+  });
+
+  it('a metal or purity chosen now must be one on offer; a design saved in it before keeps it', async () => {
+    const wizard = new WizardEngineService(prismaReturning(() => new Date('2026-01-01T00:00:00Z')));
+    const check = (metal: Record<string, string>, previous?: unknown) =>
+      wizard.validateParameters('item-1', { size: {}, metal }, previous);
+
+    expect((await check({ metalCode: 'YELLOW_GOLD', purityCode: '14K' })).valid).toBe(true);
+    expect((await check({ metalCode: 'YELLOW_GOLD', purityCode: '12K' })).errors).toEqual(['/metal/purityCode 12K is not offered for YELLOW_GOLD']);
+    expect((await check({ metalCode: 'YELLOW_GOLD', purityCode: '10K' })).errors).toEqual(['/metal/purityCode 10K is not offered for YELLOW_GOLD']);
+    expect((await check({ metalCode: 'PLATINUM', purityCode: '950' })).errors).toEqual(['/metal/metalCode PLATINUM is not offered']);
+    expect((await check({ metalCode: 'TITANIUM' })).errors).toEqual(['/metal/metalCode TITANIUM is not offered']);
+
+    // Saved before the change: the same metal and purity stay valid.
+    const older = { size: {}, metal: { metalCode: 'YELLOW_GOLD', purityCode: '12K' } };
+    expect((await check({ metalCode: 'YELLOW_GOLD', purityCode: '12K' }, older)).valid).toBe(true);
+    expect((await check({ metalCode: 'PLATINUM', purityCode: '950' }, { metal: { metalCode: 'PLATINUM', purityCode: '950' } })).valid).toBe(true);
   });
 });

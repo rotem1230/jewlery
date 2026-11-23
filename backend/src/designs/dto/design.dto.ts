@@ -121,6 +121,17 @@ export class AdminUnlockDesignDto {
   reason!: string;
 }
 
+/** The designer opens fields of their own design that were locked (an older studio offered a size lock). */
+export class UnlockDesignDto {
+  @ApiProperty({ type: [String], description: 'Locked parameter paths to open, e.g. ["size"]' })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  @ArrayMaxSize(50)
+  @MaxLength(100, { each: true })
+  fields!: string[];
+}
+
 export class LockDesignDto {
   @ApiProperty({ type: [String], description: 'Parameter paths to lock, e.g. ["size","metal"]' })
   @IsArray()

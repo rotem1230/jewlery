@@ -95,7 +95,8 @@ describe('Exports are made from the design itself', () => {
     const again = await t.http.post(`${API}/render-jobs`).set(user.auth).send({ designId: design.id, exportFormat: 'STL' }).expect(201);
     const edited = readStl(await download(t, user, again.body.data.outputUploadId));
     expect(edited.bandWidth).toBeCloseTo(6, 1);
-    expect(edited.extent[1]).toBeGreaterThan(stl.extent[1] + 4);
+    // The stone stands over the band: its head sits on the band (the client's notes of 23.11), not high above it.
+    expect(edited.extent[1]).toBeGreaterThan(stl.extent[1] + 2);
     expect(edited.triangles).toBeGreaterThan(stl.triangles);
   });
 

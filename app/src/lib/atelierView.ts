@@ -3,6 +3,17 @@ import type { AtelierBanner } from '@/src/types/api'
 
 export type ListingExpiry = { date: string; expired: boolean }
 
+/**
+ * Where "צפיה בפריט באטליה" goes after publishing: the atelier's designs (a designer lands on the
+ * jewelers otherwise), asking for a fresh list — the atelier tab stays mounted, so its list was
+ * loaded before the design was published (the client's notes of 23.11).
+ */
+export function viewInAtelierTarget(
+  now: number = Date.now(),
+): ['Atelier', { screen: 'AtelierList'; initial: false; params: { tab: 'designs'; refreshAt: number } }] {
+  return ['Atelier', { screen: 'AtelierList', initial: false, params: { tab: 'designs', refreshAt: now } }]
+}
+
 /** The end of a listing period as a day ("בתוקף עד …"); null when the listing has no end date. */
 export function listingExpiry(
   expiresAt: string | null | undefined,

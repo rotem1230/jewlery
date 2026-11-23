@@ -6,6 +6,8 @@ import { useTranslation } from '@/src/i18n'
 import { colors } from '@/src/theme/tokens'
 
 type StudioPlacementControlsProps = {
+  /** On a ring the item moves around the ring; on a chain, along it. */
+  ring?: boolean
   controls: PlacementControls
   placement: StudioPlacement
   /** The angle shown while the item is still in its automatic place. */
@@ -18,8 +20,12 @@ type StudioPlacementControlsProps = {
   onToggleMove: () => void
 }
 
-/** Where an item sits: along the piece, across the band (or from the earring's centre), its turn. */
+/**
+ * Where an item sits: around the ring (or along the chain), across the band (or from the earring's
+ * centre), and its turn on its own axis — named in plain words (the client's notes of 23.11).
+ */
 export function StudioPlacementControls({
+  ring = false,
   controls,
   placement,
   shownAngleDeg,
@@ -53,7 +59,7 @@ export function StudioPlacementControls({
       {moving ? <Text style={styles.hint}>{t('studioMoveOnModelOn')}</Text> : null}
       {controls.angle ? (
         <StudioSlider
-          label={t('studioPositionAlong')}
+          label={t(ring ? 'studioPositionAlongRing' : 'studioPositionAlong')}
           valueLabel={placement.angleDeg == null ? `${t('studioPositionAuto')} · ${Math.round(angle)}°` : `${Math.round(angle)}°`}
           value={angle}
           min={0}

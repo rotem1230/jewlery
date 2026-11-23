@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import type { SizeChartRow } from '@/src/types/api'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
@@ -11,6 +11,9 @@ import {
   type StudioSize,
 } from '@/src/lib/studioParams'
 import { NECKLACE_STYLES, necklaceStyleForLength } from '@/src/lib/necklaceLengths'
+import { RING_SIZE_FALLBACK, customRingSize, ringSizeLabel, ringSizeOptions } from '@/src/lib/ringSizes'
+import { SHANK_STYLES } from '@/src/lib/jewelryCatalog.generated'
+import { StudioChips } from '@/src/components/studio/StudioChips'
 
 const EARRING_LABEL: Record<string, TranslationKey> = {
   drop: 'styleEarringDrop',
@@ -23,7 +26,13 @@ type StudioSizePanelProps = {
   value: StudioSize
   onChange: (next: StudioSize) => void
   onMeasureGuide: () => void
+  /** The size was locked (an older studio offered to lock it): nothing changes until it is opened. */
   locked?: boolean
+  onUnlock?: () => void
+  /** A save or an unlock is running: the unlock button waits. */
+  busy?: boolean
+  /** Whether a size typed in is not one (so "סיימתי" waits for a size that is). */
+  onCustomInvalid?: (invalid: boolean) => void
 }
 
 function BandWidthSlider({ value, onChange }: { value: number; onChange: (mm: number) => void }) {
@@ -55,6 +64,8 @@ function BandWidthSlider({ value, onChange }: { value: number; onChange: (mm: nu
         fromPageX(event.nativeEvent.pageX)
       }}
       onResponderMove={(event) => fromPageX(event.nativeEvent.pageX)}
+      // The panel scrolls: a drag that drifts up or down stays on the slider.
+      onResponderTerminationRequest={() => false}
     >
       <View style={styles.track} pointerEvents="none">
         <View style={[styles.trackFill, { width: `${pct * 100}%` }]} />
@@ -64,25 +75,56 @@ function BandWidthSlider({ value, onChange }: { value: number; onChange: (mm: nu
   )
 }
 
-/** Figma Size tab: ring thickness sheet (chart already ran before studio). */
+/**
+ * Figma Size tab: the ring's band width, and — so a draft can be reused (the client's notes of
+ * 23.11) — its size (every size, or one typed in) and its shank (single, split, double, triple).
+ */
 export function StudioSizePanel({
   itemType,
-  charts: _charts,
+  charts,
   value,
   onChange,
   onMeasureGuide,
   locked,
+  onUnlock,
+  busy,
+  onCustomInvalid,
 }: StudioSizePanelProps) {
   const { t, locale } = useTranslation()
+  const en = locale === 'en'
   const necklaceStyle = necklaceStyleForLength(value.necklaceLengthCm)
   const [wristText, setWristText] = useState(() => String(value.wristCircumferenceCm ?? DEFAULT_WRIST_CM))
+  const [customText, setCustomText] = useState('')
+  const sizes = useMemo(() => ringSizeOptions(charts.length > 0 ? charts : RING_SIZE_FALLBACK), [charts])
+  const customInvalid = customText.trim() !== '' && !customRingSize(customText)
+  // While a size is still being typed ("5", "53.") it is not called wrong yet.
+  const customStillTyping = /^d?$|[.,]$/.test(customText.trim())
+  useEffect(() => {
+    onCustomInvalid?.(customInvalid)
+  }, [customInvalid, onCustomInvalid])
+  useEffect(() => () => onCustomInvalid?.(false), [onCustomInvalid])
   const edit = (next: StudioSize) => {
     if (!locked) onChange(next)
   }
 
   return (
     <View style={styles.root}>
-      {locked ? <Text style={styles.coming}>{t('studioSizeLocked')}</Text> : null}
+      {locked ? (
+        <View style={styles.lockBox}>
+          <Text style={styles.coming}>{t('studioSizeLocked')}</Text>
+          {onUnlock ? (
+            <Pressable
+              onPress={onUnlock}
+              disabled={busy}
+              style={[styles.unlock, busy ? styles.unlockBusy : null]}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: Boolean(busy) }}
+            >
+              <Text style={styles.unlockLabel}>{t('studioUnlockSize')}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
       {itemType === 'RING' ? (
         <>
           <View style={styles.bandRow}>
@@ -92,6 +134,54 @@ export function StudioSizePanel({
           <BandWidthSlider
             value={value.bandWidthMm}
             onChange={(bandWidthMm) => edit({ ...value, bandWidthMm })}
+          />
+
+          <View style={styles.bandRow}>
+            <Text style={styles.bandMm}>{ringSizeLabel(value)}</Text>
+            <Text style={styles.bandTitle}>{t('studioRingSizeTitle')}</Text>
+          </View>
+          <StudioChips
+            wrap
+            items={sizes.map((option) => ({
+              id: option.id,
+              label: option.size,
+              selected: option.standard === value.standard && option.sizeCode === value.sizeCode,
+            }))}
+            onSelect={(id) => {
+              const option = sizes.find((row) => row.id === id)
+              if (option) {
+                setCustomText('')
+                edit({ ...value, standard: option.standard, sizeCode: option.sizeCode })
+              }
+            }}
+          />
+          <TextInput
+            testID="custom-ring-size"
+            value={customText}
+            editable={!locked}
+            onChangeText={(text) => {
+              setCustomText(text)
+              const custom = customRingSize(text)
+              if (custom) edit({ ...value, ...custom })
+            }}
+            placeholder={t('sizeCustomPlaceholder')}
+            placeholderTextColor={colors.textSecondary}
+            accessibilityLabel={t('sizeCustomPlaceholder')}
+            keyboardType="decimal-pad"
+            maxLength={5}
+            style={styles.wristInput}
+          />
+          {customInvalid && !customStillTyping ? <Text style={styles.error}>{t('sizeCustomInvalid')}</Text> : null}
+
+          <Text style={styles.bandTitle}>{t('studioShankTitle')}</Text>
+          <StudioChips
+            wrap
+            items={SHANK_STYLES.map((style) => ({
+              id: style.code,
+              label: en ? style.labelEn : style.labelHe,
+              selected: style.code === (value.shankStyle ?? 'SINGLE'),
+            }))}
+            onSelect={(shankStyle) => edit({ ...value, shankStyle })}
           />
         </>
       ) : null}
@@ -142,7 +232,7 @@ export function StudioSizePanel({
         </Text>
       ) : null}
 
-      {itemType !== 'RING' && itemType !== 'EARRINGS' ? (
+      {itemType !== 'EARRINGS' ? (
         <Pressable onPress={onMeasureGuide}>
           <Text style={styles.guide}>{t('sizeGuideHint')}</Text>
         </Pressable>
@@ -253,6 +343,32 @@ const styles = StyleSheet.create({
     fontFamily: 'Heebo',
     fontSize: 13,
     color: colors.textSecondary,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  lockBox: {
+    gap: 8,
+    alignItems: 'flex-end',
+  },
+  unlock: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: colors.brand,
+  },
+  unlockBusy: { opacity: 0.5 },
+  unlockLabel: {
+    fontFamily: 'Heebo',
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.brand,
+  },
+  error: {
+    fontFamily: 'Heebo',
+    fontSize: 12,
+    color: '#B42318',
     textAlign: 'right',
     writingDirection: 'rtl',
   },

@@ -1,41 +1,25 @@
-import { useState } from 'react'
 import { Pressable, StyleSheet, Text, View } from 'react-native'
-import { STONE_PALETTE, paletteColor, type PaletteGroup } from '@/src/lib/jewelryCatalog.generated'
-import { useTranslation } from '@/src/i18n'
-import { colors } from '@/src/theme/tokens'
+import { paletteColor } from '@/src/lib/jewelryCatalog.generated'
+import { colors as theme } from '@/src/theme/tokens'
 
 type StudioColorGridProps = {
   value: string
   onChange: (colorCode: string) => void
+  /** The chart colours the stone comes in (its market colours: a diamond is white / clear only). */
+  colors: readonly string[]
 }
 
-/** The client's colour chart: 62 colours and 34 effects, any of them for any stone. */
-export function StudioColorGrid({ value, onChange }: StudioColorGridProps) {
-  const { t } = useTranslation()
+/**
+ * The stone's colours from the client's chart: only those it comes in, no effects (the client's
+ * notes of 23.11). A colour saved before that is no longer offered still shows by name.
+ */
+export function StudioColorGrid({ value, onChange, colors }: StudioColorGridProps) {
   const chosen = paletteColor(value)
-  const [group, setGroup] = useState<PaletteGroup>(chosen?.group ?? 'COLOR')
-  const swatches = STONE_PALETTE.filter((color) => color.group === group)
+  const swatches = colors.map((code) => paletteColor(code)).filter((color): color is NonNullable<typeof color> => color != null)
 
   return (
     <View style={styles.root}>
-      <View style={styles.head}>
-        <View style={styles.tabs}>
-          {(['COLOR', 'EFFECT'] as const).map((g) => (
-            <Pressable
-              key={g}
-              onPress={() => setGroup(g)}
-              style={[styles.tab, group === g && styles.tabOn]}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: group === g }}
-            >
-              <Text style={[styles.tabLabel, group === g && styles.tabLabelOn]}>
-                {t(g === 'COLOR' ? 'studioPaletteColors' : 'studioPaletteEffects')}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={styles.name}>{chosen?.name ?? value}</Text>
-      </View>
+      <Text style={styles.name}>{chosen?.name ?? value}</Text>
       <View style={styles.grid}>
         {swatches.map((color) => {
           const selected = color.code === value
@@ -60,23 +44,7 @@ export function StudioColorGrid({ value, onChange }: StudioColorGridProps) {
 
 const styles = StyleSheet.create({
   root: { gap: 8 },
-  head: {
-    flexDirection: 'row-reverse',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  tabs: { flexDirection: 'row-reverse', gap: 6 },
-  tab: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.formBorder,
-  },
-  tabOn: { borderColor: colors.brand, backgroundColor: '#EFECF8' },
-  tabLabel: { fontFamily: 'Heebo', fontSize: 12, color: colors.ink },
-  tabLabelOn: { color: colors.brand, fontWeight: '600' },
-  name: { fontFamily: 'Heebo', fontSize: 13, color: colors.textSecondary },
+  name: { fontFamily: 'Heebo', fontSize: 13, color: theme.textSecondary, textAlign: 'right' },
   grid: {
     flexDirection: 'row-reverse',
     flexWrap: 'wrap',
@@ -91,12 +59,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  ringOn: { borderColor: colors.brand },
+  ringOn: { borderColor: theme.brand },
   swatch: {
     width: 26,
     height: 26,
     borderRadius: 13,
     borderWidth: 1,
-    borderColor: colors.borderSubtle,
+    borderColor: theme.borderSubtle,
   },
 })

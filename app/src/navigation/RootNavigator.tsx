@@ -4,6 +4,7 @@ import { AuthStack } from './AuthStack'
 import { DesignerTabs } from './DesignerTabs'
 import { JewelerTabs } from './JewelerTabs'
 import type { RootStackParamList } from './types'
+import { AccessibilityScreen } from '@/src/screens/shared/AccessibilityScreen'
 
 const Stack = createNativeStackNavigator<RootStackParamList>()
 
@@ -20,6 +21,8 @@ export function RootNavigator() {
       ) : (
         <Stack.Screen name="DesignerMain" component={DesignerTabs} />
       )}
+      {/* Opened from the accessibility icon on every header, signed in or not. */}
+      <Stack.Screen name="Accessibility" component={AccessibilityScreen} />
     </Stack.Navigator>
   )
 }

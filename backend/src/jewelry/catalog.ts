@@ -8,8 +8,10 @@
  * Sources in the folder:
  * - stones: "אבנים.xlsx" / "Gemstones Names & Colors" and "Gemstones Overview"
  *   (Gemstones_Comprehensive_Marketing_and_Cutting_List_v4.xlsx), both lists together;
- * - colours: the "Colors" / "Effects" chart in "שיבוצים- איפה שיש הסבר לקביעת מידה" (hex sampled
- *   from the chart); every stone can be ordered in any of them (the client's choice, 25.10.2026);
+ * - colours: the "Colors" chart in "שיבוצים- איפה שיש הסבר לקביעת מידה" (hex sampled from the
+ *   chart). Since the client's notes of 23.11.2026 each stone comes only in its own market colours
+ *   (the sheet's list, matched to the chart; a diamond is white / clear only), and the chart's
+ *   "Effects" are not offered (kept so older designs still draw);
  * - settings: the setting-style pictures in the same zip (centre-stone heads and band styles);
  * - pavé metal: "pave_setting_parameters.xlsx";
  * - elements: "MyJewel_FINAL_Non_Set_Elements_Tech_Specs.xlsx".
@@ -146,7 +148,22 @@ export function paletteColor(code: unknown): PaletteColor | null {
 // Stones
 // ---------------------------------------------------------------------------------------------
 
-export type CutCode = 'ROUND' | 'OVAL' | 'EMERALD' | 'CABOCHON' | 'CABOCHON_OVAL' | 'ROSE';
+export type CutCode =
+  | 'ROUND'
+  | 'OVAL'
+  | 'PRINCESS'
+  | 'CUSHION'
+  | 'EMERALD'
+  | 'ASSCHER'
+  | 'RADIANT'
+  | 'PEAR'
+  | 'MARQUISE'
+  | 'HEART'
+  | 'BAGUETTE'
+  | 'TRILLION'
+  | 'ROSE'
+  | 'CABOCHON'
+  | 'CABOCHON_OVAL';
 
 export interface CutDef {
   code: CutCode;
@@ -154,22 +171,41 @@ export interface CutDef {
   labelEn: string;
   /** A smooth (unfaceted) top. */
   cabochon: boolean;
+  /** Width over length of the girdle (the size is the longest side). */
+  widthRatio: number;
 }
 
+/**
+ * The cuts: round and oval, the fancy shapes (the client's notes of 23.11.2026: "there are more
+ * shapes"), the rose cut and the cabochons.
+ */
 export const CUTS: readonly CutDef[] = [
-  { code: 'ROUND', labelHe: 'עגול (ברילייאנט)', labelEn: 'Round brilliant', cabochon: false },
-  { code: 'OVAL', labelHe: 'אובלי', labelEn: 'Oval', cabochon: false },
-  { code: 'EMERALD', labelHe: 'אמרלד (מרובע)', labelEn: 'Emerald (square)', cabochon: false },
-  { code: 'CABOCHON', labelHe: 'קבושון עגול', labelEn: 'Round cabochon', cabochon: true },
-  { code: 'CABOCHON_OVAL', labelHe: 'קבושון אובלי', labelEn: 'Oval cabochon', cabochon: true },
-  { code: 'ROSE', labelHe: 'רוז קאט', labelEn: 'Rose cut', cabochon: false },
+  { code: 'ROUND', labelHe: 'עגול (ברילייאנט)', labelEn: 'Round brilliant', cabochon: false, widthRatio: 1 },
+  { code: 'OVAL', labelHe: 'אובלי', labelEn: 'Oval', cabochon: false, widthRatio: 0.72 },
+  { code: 'PRINCESS', labelHe: 'פרינסס (ריבוע)', labelEn: 'Princess (square)', cabochon: false, widthRatio: 1 },
+  { code: 'CUSHION', labelHe: 'כרית (Cushion)', labelEn: 'Cushion', cabochon: false, widthRatio: 0.95 },
+  { code: 'EMERALD', labelHe: 'אמרלד (מרובע)', labelEn: 'Emerald (square)', cabochon: false, widthRatio: 0.72 },
+  { code: 'ASSCHER', labelHe: 'אשר (Asscher)', labelEn: 'Asscher', cabochon: false, widthRatio: 1 },
+  { code: 'RADIANT', labelHe: 'רדיאנט (Radiant)', labelEn: 'Radiant', cabochon: false, widthRatio: 0.8 },
+  { code: 'PEAR', labelHe: 'טיפה (Pear)', labelEn: 'Pear', cabochon: false, widthRatio: 0.62 },
+  { code: 'MARQUISE', labelHe: 'מרקיזה (Marquise)', labelEn: 'Marquise', cabochon: false, widthRatio: 0.5 },
+  { code: 'HEART', labelHe: 'לב (Heart)', labelEn: 'Heart', cabochon: false, widthRatio: 1 },
+  { code: 'BAGUETTE', labelHe: 'באגט (Baguette)', labelEn: 'Baguette', cabochon: false, widthRatio: 0.35 },
+  { code: 'TRILLION', labelHe: 'טריליון (משולש)', labelEn: 'Trillion (triangle)', cabochon: false, widthRatio: 0.87 },
+  { code: 'ROSE', labelHe: 'רוז קאט', labelEn: 'Rose cut', cabochon: false, widthRatio: 1 },
+  { code: 'CABOCHON', labelHe: 'קבושון עגול', labelEn: 'Round cabochon', cabochon: true, widthRatio: 1 },
+  { code: 'CABOCHON_OVAL', labelHe: 'קבושון אובלי', labelEn: 'Oval cabochon', cabochon: true, widthRatio: 0.72 },
 ];
+
+export function cutDef(code: unknown): CutDef | null {
+  return typeof code === 'string' ? CUTS.find((c) => c.code === code) ?? null : null;
+}
 
 export interface StoneDef {
   code: string;
   nameHe: string;
   nameEn: string;
-  /** The colours the client lists for the stone in the market (information; any chart colour can be ordered). */
+  /** The colours the client lists for the stone in the market, in words (the chart colours: STONE_CHART_COLORS). */
   marketColorsHe: string[];
   marketColorsEn: string[];
   /** The colour a new stone starts with (a chart colour). */
@@ -452,6 +488,47 @@ export function stoneDef(code: unknown): StoneDef | null {
   return typeof code === 'string' ? STONES.find((s) => s.code === code) ?? null : null;
 }
 
+/**
+ * The chart colours each stone comes in: its market colours in "אבנים.xlsx", matched to the colour
+ * chart (the client's notes of 23.11.2026: "not every stone comes in every colour; a diamond is
+ * white / clear only"). The first is not necessarily the default: `defaultColor` is.
+ */
+export const STONE_CHART_COLORS: Readonly<Record<string, readonly string[]>> = {
+  DIAMOND: ['CRYSTAL'],
+  MOISSANITE: ['CRYSTAL', 'JONQUIL', 'GREIGE', 'CHRYSOLITE', 'JET'],
+  SAPPHIRE: ['SAPPHIRE', 'COBALT', 'CAPRI_BLUE', 'LIGHT_SAPPHIRE', 'LIGHT_ROSE', 'ROSE', 'CITRINE', 'ERINITE', 'PADPARADSCHA', 'SUN', 'CRYSTAL'],
+  RUBY: ['RUBY', 'LIGHT_SIAM', 'SIAM', 'INDIAN_PINK', 'BURGUNDY'],
+  BLUE_TOPAZ: ['LIGHT_SAPPHIRE', 'SAPPHIRE', 'MONTANA'],
+  TSAVORITE: ['FERN_GREEN', 'EMERALD', 'PERIDOT'],
+  EMERALD: ['EMERALD', 'DARK_MOSS_GREEN', 'FERN_GREEN', 'ERINITE'],
+  TOURMALINE: ['ROSE', 'LIGHT_ROSE', 'FUCHSIA', 'FERN_GREEN', 'ERINITE', 'BLUE_ZIRCON', 'CITRINE', 'JET'],
+  AMETHYST: ['AMETHYST', 'LIGHT_AMETHYST', 'SMOKY_MAUVE', 'PURPLE_VELVET'],
+  LEMON_QUARTZ: ['JONQUIL', 'CITRINE'],
+  ROSE_QUARTZ: ['LIGHT_ROSE', 'BLUSH_ROSE', 'VINTAGE_ROSE'],
+  SMOKY_QUARTZ: ['SMOKED_TOPAZ', 'GREIGE', 'LIGHT_COLORADO_TOPAZ', 'MOCCA'],
+  CLEAR_QUARTZ: ['CRYSTAL'],
+  PRASIOLITE: ['CHRYSOLITE', 'PACIFIC_OPAL'],
+  CITRINE: ['CITRINE', 'SUNFLOWER', 'LIGHT_TOPAZ', 'TOPAZ'],
+  GARNET: ['SIAM', 'INDIAN_SIAM', 'BURGUNDY', 'LIGHT_SIAM'],
+  TANZANITE: ['TANZANITE', 'PURPLE_VELVET', 'DARK_INDIGO'],
+  PERIDOT: ['PERIDOT', 'OLIVINE', 'CHRYSOLITE'],
+  OPAL: ['WHITE_OPAL', 'CRYSTAL', 'FIREOPAL', 'JET'],
+  AQUAMARINE: ['AQUAMARINE', 'LIGHT_SAPPHIRE', 'LIGHT_TURQUOISE'],
+  CHALCEDONY: ['AIR_BLUE_OPAL', 'CHRYSOLITE_OPAL', 'VINTAGE_ROSE', 'WHITE_OPAL'],
+  LAPIS_LAZULI: ['COBALT', 'DARK_INDIGO'],
+  TURQUOISE: ['LIGHT_TURQUOISE', 'CARIBBEAN_BLUE_OPAL', 'BLUE_ZIRCON'],
+  LABRADORITE: ['BLACK_DIAMOND', 'MONTANA'],
+};
+
+/**
+ * The colours a stone can be ordered in: its own (above); a stone the catalogue does not know
+ * (added by an admin) takes any chart colour. Never an effect.
+ */
+export function allowedColors(stoneCode: unknown): readonly string[] {
+  const own = typeof stoneCode === 'string' ? STONE_CHART_COLORS[stoneCode] : undefined;
+  return own ?? STONE_PALETTE.filter((c) => c.group === 'COLOR').map((c) => c.code);
+}
+
 /** The cuts a stone is made in: cabochons only for the stones the sheet says are never faceted. */
 export function allowedCuts(stoneCode: unknown): CutCode[] {
   const def = stoneDef(stoneCode);
@@ -474,6 +551,17 @@ const CUT_WEIGHT_FACTOR: Record<CutCode, number> = {
   CABOCHON: 0.0026 * 0.45,
   CABOCHON_OVAL: 0.0026 * 0.45 * 0.72,
   ROSE: 0.0061 * 0.4 / 3.52,
+  // The fancy shapes: L × W × depth × the trade's factor for the shape (diamond), W and the depth
+  // as fractions of the length.
+  PRINCESS: 0.0083 * 1 * 0.7 / 3.52,
+  CUSHION: 0.0081 * 0.95 * 0.62 / 3.52,
+  ASSCHER: 0.008 * 1 * 0.65 / 3.52,
+  RADIANT: 0.0081 * 0.8 * 0.52 / 3.52,
+  PEAR: 0.0059 * 0.62 * 0.37 / 3.52,
+  MARQUISE: 0.0058 * 0.5 * 0.3 / 3.52,
+  HEART: 0.0059 * 1 * 0.6 / 3.52,
+  BAGUETTE: 0.00915 * 0.35 * 0.21 / 3.52,
+  TRILLION: 0.0057 * 0.87 * 0.45 / 3.52,
 };
 
 /** Estimated carat weight of a stone of `sizeMm` (girdle diameter or longest side). */
@@ -769,3 +857,65 @@ export function placementControls(
   if (kind === 'STONE' && index === 0 && piece.centreHead) return along(null);
   return along('BAND');
 }
+
+// ---------------------------------------------------------------------------------------------
+// The ring: shank and sizes
+// ---------------------------------------------------------------------------------------------
+
+export type ShankStyle = 'SINGLE' | 'SPLIT' | 'DOUBLE' | 'TRIPLE';
+
+/**
+ * The ring's shank (the client's notes of 23.11.2026): one band; a split shank (one band at the
+ * bottom that opens into two arms toward the top); or two / three bands side by side, joined
+ * under the head.
+ */
+export const SHANK_STYLES: ReadonlyArray<{ code: ShankStyle; labelHe: string; labelEn: string }> = [
+  { code: 'SINGLE', labelHe: 'שינה רגילה', labelEn: 'Single shank' },
+  { code: 'SPLIT', labelHe: 'שינה מפוצלת', labelEn: 'Split shank' },
+  { code: 'DOUBLE', labelHe: 'שתי שינות', labelEn: 'Double shank' },
+  { code: 'TRIPLE', labelHe: 'שלוש שינות', labelEn: 'Triple shank' },
+];
+
+/** A saved shank style, or SINGLE (none saved, or one the catalogue does not know). */
+export function shankStyleOf(value: unknown): ShankStyle {
+  const code = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  return SHANK_STYLES.some((s) => s.code === code) ? (code as ShankStyle) : 'SINGLE';
+}
+
+/** The PRD's ring sizes (5.4) as the PRD gives them: IL size → US size and inner diameter (mm). */
+const PRD_RING_SIZES: Readonly<Record<string, { us: string; minMm: number; maxMm: number }>> = {
+  '52': { us: '6.00', minMm: 16.55, maxMm: 16.95 },
+  '54': { us: '7.00', minMm: 17.19, maxMm: 17.19 },
+  '56': { us: '7.75', minMm: 17.83, maxMm: 17.83 },
+  '58': { us: '8.50', minMm: 18.47, maxMm: 18.47 },
+  '60': { us: '9.25', minMm: 19.1, maxMm: 19.1 },
+  '62': { us: '10.00', minMm: 19.76, maxMm: 19.76 },
+  '64': { us: '10.75', minMm: 20.4, maxMm: 20.44 },
+};
+
+/** Every whole Israeli size the chart lists (the client's notes of 23.11.2026: no jumps of two). */
+export const RING_SIZE_MIN_IL = 44;
+export const RING_SIZE_MAX_IL = 70;
+/** A size typed in by hand: any Israeli size in this range, to one decimal. */
+export const CUSTOM_RING_SIZE_MIN_IL = 38;
+export const CUSTOM_RING_SIZE_MAX_IL = 80;
+
+/**
+ * The ring chart: every Israeli size 44–70 (the inner circumference in mm) with its US size
+ * (11.63 + 0.8128 × size mm, to the nearest quarter) and inner diameter; the PRD's sizes exactly as
+ * the PRD gives them.
+ */
+export const RING_SIZE_CHART: ReadonlyArray<{ il: string; us: string; minMm: number; maxMm: number }> = (() => {
+  const rows: Array<{ il: string; us: string; minMm: number; maxMm: number }> = [];
+  for (let il = RING_SIZE_MIN_IL; il <= RING_SIZE_MAX_IL; il++) {
+    const prd = PRD_RING_SIZES[String(il)];
+    if (prd) {
+      rows.push({ il: String(il), ...prd });
+      continue;
+    }
+    const d = il / Math.PI;
+    const mm = Math.round(d * 100) / 100;
+    rows.push({ il: String(il), us: (Math.round(((d - 11.63) / 0.8128) * 4) / 4).toFixed(2), minMm: mm, maxMm: mm });
+  }
+  return rows;
+})();

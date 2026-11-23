@@ -6,7 +6,8 @@ import { JEWELRY_GEOMETRY_JS } from '@/src/lib/jewelryGeometry.generated'
  * what gets made.
  *
  * Messages (window.__studioSet): { type: 'setDesign', itemType, parameters, ringChartDiameterMm }
- * rebuilds the piece; { type: 'zoom', factor } and { type: 'resize', width, height } move the view;
+ * rebuilds the piece; { type: 'zoom', factor }, { type: 'view', view: 'front' | 'side' | 'top' }
+ * and { type: 'resize', width, height } move the view;
  * { type: 'edit', target: { kind: 'stone' | 'element', index } | null } makes a one-finger drag move
  * that item instead of turning the view. Where the finger lets go is posted back as
  * 'placement:' + JSON { kind, index, angleDeg, offsetMm } (the angle on the piece and the place
@@ -92,7 +93,7 @@ const spherical = new THREE.Spherical(40, 1.2, 0.4);
 let frameRadius = 20;
 function applyCamera() {
   spherical.makeSafe();
-  spherical.phi = Math.min(Math.PI - 0.12, Math.max(0.12, spherical.phi));
+  spherical.phi = Math.min(Math.PI - 0.02, Math.max(0.02, spherical.phi));
   spherical.radius = Math.min(frameRadius * 12, Math.max(frameRadius * 0.6, spherical.radius));
   camera.position.setFromSpherical(spherical).add(target);
   camera.near = Math.max(0.05, frameRadius * 0.02);
@@ -124,10 +125,20 @@ function pieceHit(p) {
   const hits = raycaster.intersectObjects(pieceGroup.children, false);
   return hits.length ? hits[0].point : null;
 }
+/** Where the item being dragged was when the drag began (degrees), for keeping it off the head. */
+let dragFrom = null;
+function itemAngleDeg(target) {
+  if (!currentSpec || !target || currentSpec.itemType !== 'RING' || target.kind !== 'element' || !GEO.ringLayout) return null;
+  const seat = GEO.ringLayout(currentSpec).elements[target.index];
+  return seat ? (seat.angle * 180) / Math.PI : null;
+}
 function placeAt(p) {
   const hit = pieceHit(p);
   if (!hit || !currentSpec) return;
-  placing = GEO.placementFromPoint(currentSpec, [hit.x, hit.y, hit.z]);
+  const point = [hit.x, hit.y, hit.z];
+  // An element dragged over the head stays against it, on the side it came from.
+  const from = placing ? placing.angleDeg : dragFrom;
+  placing = GEO.dragPlacement ? GEO.dragPlacement(currentSpec, editTarget, point, from) : GEO.placementFromPoint(currentSpec, point);
   marker.position.copy(hit);
   marker.scale.setScalar(Math.max(0.6, frameRadius * 0.035));
   marker.visible = true;
@@ -153,7 +164,11 @@ function onDown(e) {
   if (e.type.indexOf('pointer') === 0 && e.pointerType !== 'mouse') return;
   if (e.touches && e.touches.length === 2) { drag = null; placing = null; marker.visible = false; pinch0 = pinchDist(e); return; }
   drag = pos(e);
-  if (editTarget) placeAt(drag);
+  if (editTarget) {
+    placing = null;
+    dragFrom = itemAngleDeg(editTarget);
+    placeAt(drag);
+  }
 }
 function onMove(e) {
   if (e.type.indexOf('pointer') === 0 && e.pointerType !== 'mouse') return;
@@ -171,7 +186,9 @@ function onMove(e) {
   var p = pos(e);
   if (editTarget) { drag = p; placeAt(p); return; }
   spherical.theta -= (p.x - drag.x) * 0.008;
-  spherical.phi -= (p.y - drag.y) * 0.008;
+  // A finger keeps off the pole (where the view would spin); only the "top" button goes nearer.
+  var minPhi = Math.min(0.12, spherical.phi);
+  spherical.phi = Math.min(Math.PI - 0.12, Math.max(minPhi, spherical.phi - (p.y - drag.y) * 0.008));
   drag = p;
   applyCamera();
 }
@@ -324,6 +341,24 @@ function zoomBy(factor) {
   applyCamera();
 }
 
+/**
+ * Square views of the piece (Y up, a ring's finger hole facing +Z): front (from +Z), side (from
+ * +X, the band's width and the head's height) and top (from above, onto the stone).
+ */
+const SQUARE_VIEWS = {
+  front: { theta: 0, phi: Math.PI / 2 },
+  side: { theta: Math.PI / 2, phi: Math.PI / 2 },
+  top: { theta: 0, phi: 0.02 },
+};
+function setView(name) {
+  const view = SQUARE_VIEWS[name];
+  if (!view) return;
+  frame(true);
+  spherical.theta = view.theta;
+  spherical.phi = view.phi;
+  applyCamera();
+}
+
 function ready() {
   if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage('ready');
 }
@@ -340,6 +375,7 @@ window.__studioSet = function (msg) {
   if (!msg || typeof msg !== 'object') return;
   try {
     if (msg.type === 'zoom') zoomBy(msg.factor);
+    else if (msg.type === 'view') setView(msg.view);
     else if (msg.type === 'resize') { resize(msg.width, msg.height); if (framed) frame(true); }
     else if (msg.type === 'setDesign') setDesign(msg);
     else if (msg.type === 'edit') {

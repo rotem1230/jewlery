@@ -4,7 +4,7 @@ import WebView from 'react-native-webview'
 import type { WebView as WebViewRef, WebViewMessageEvent } from 'react-native-webview'
 import { studioViewerHtml } from '@/src/lib/studioViewerHtml'
 import { API_BASE_URL } from '@/src/lib/api'
-import { useTranslation } from '@/src/i18n'
+import { useTranslation, type TranslationKey } from '@/src/i18n'
 import { colors } from '@/src/theme/tokens'
 
 type StudioItemType = 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS'
@@ -66,6 +66,13 @@ type StudioWebViewProps = {
 
 const StudioWebView = WebView as unknown as ComponentType<StudioWebViewProps>
 
+/** The view buttons: the camera square to the piece's front, its side, or from above. */
+const VIEW_BUTTONS: Array<{ view: 'front' | 'side' | 'top'; labelKey: TranslationKey }> = [
+  { view: 'front', labelKey: 'studioViewFront' },
+  { view: 'side', labelKey: 'studioViewSide' },
+  { view: 'top', labelKey: 'studioViewTop' },
+]
+
 function send(view: WebViewRef | null, payload: Record<string, unknown>) {
   view?.injectJavaScript(`window.__studioSet && window.__studioSet(${JSON.stringify(payload)}); true;`)
 }
@@ -101,7 +108,7 @@ export function StudioViewer({
   onPlacementRef.current = onPlacement
 
   const html = useMemo(() => studioViewerHtml({ itemType }), [itemType])
-  const htmlRev = `studio-${itemType}-parametric-v23`
+  const htmlRev = `studio-${itemType}-parametric-v24`
   const baseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '')
   const layout = useRef({ width: 0, height: 0 })
 
@@ -187,6 +194,21 @@ export function StudioViewer({
           <Text style={styles.zoomMark}>−</Text>
         </Pressable>
       </View>
+      {/* Front / side / top: one tap turns the model square to that view (the client's notes of 23.11). */}
+      <View style={styles.viewStack} pointerEvents="box-none">
+        {VIEW_BUTTONS.map(({ view, labelKey }) => (
+          <Pressable
+            key={view}
+            onPress={() => send(ref.current, { type: 'view', view })}
+            hitSlop={8}
+            style={styles.viewBtn}
+            accessibilityRole="button"
+            accessibilityLabel={t(labelKey)}
+          >
+            <Text style={styles.viewLabel}>{t(labelKey)}</Text>
+          </Pressable>
+        ))}
+      </View>
     </View>
   )
 }
@@ -225,5 +247,29 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.brand,
     marginTop: -1,
+  },
+  viewStack: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    zIndex: 4,
+    gap: 8,
+    alignItems: 'stretch',
+  },
+  viewBtn: {
+    minWidth: 64,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: colors.brand,
+    alignItems: 'center',
+  },
+  viewLabel: {
+    fontFamily: 'Heebo',
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.brand,
   },
 })

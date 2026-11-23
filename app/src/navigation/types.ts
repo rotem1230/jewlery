@@ -27,7 +27,8 @@ export type HomeStackParamList = {
   SizeSelect: { category: JewelryCategory }
   StyleSelect: { category: JewelryCategory }
   MeasurementGuide: { category: JewelryCategory }
-  DesignStudio: { designId: string }
+  /** `start`: a design just made in the wizard (the studio opens on its first step). */
+  DesignStudio: { designId: string; start?: boolean }
 }
 
 export type ChatsStackParamList = {
@@ -43,7 +44,8 @@ export type ChatsStackParamList = {
 }
 
 export type AtelierStackParamList = {
-  AtelierList: undefined
+  /** `tab`: open on the designs or the jewelers; `refreshAt`: load the lists again (after publishing). */
+  AtelierList: { tab?: 'designs' | 'jewelers'; refreshAt?: number } | undefined
   JewelerProfile: { jewelerId: string }
   AddRecommendation: { jewelerId: string; jewelerName: string }
   SubmitQuote: { designId: string; conversationId?: string; requestId?: string; quoteId?: string }
@@ -100,4 +102,6 @@ export type RootStackParamList = {
   Auth: NavigatorScreenParams<AuthStackParamList>
   DesignerMain: NavigatorScreenParams<DesignerTabParamList>
   JewelerMain: NavigatorScreenParams<JewelerTabParamList>
+  /** The accessibility page (the accessibility icon on every header). */
+  Accessibility: undefined
 }

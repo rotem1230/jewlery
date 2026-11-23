@@ -1,4 +1,7 @@
-import { CUTS, elementDef, paletteColor, settingDef, stoneDef } from '@/src/lib/jewelryCatalog.generated'
+import { CUTS, SHANK_STYLES, elementDef, paletteColor, settingDef, stoneDef } from '@/src/lib/jewelryCatalog.generated'
+
+/** A ring shank's name ("שינה מפוצלת"). */
+export const shankName = (code: string) => SHANK_STYLES.find((style) => style.code === code)?.labelHe ?? code
 
 /**
  * Hebrew names of the catalog codes stored in design parameters: the client catalogue

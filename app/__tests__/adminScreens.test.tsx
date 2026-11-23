@@ -17,6 +17,7 @@ import { t } from '../src/i18n'
 import { AdminJewelryScreen } from '../src/screens/admin/AdminJewelryScreen'
 import { AdminPaymentsScreen } from '../src/screens/admin/AdminPaymentsScreen'
 import { AdminPlanEditScreen } from '../src/screens/admin/AdminPlanEditScreen'
+import { AdminPlansScreen } from '../src/screens/admin/AdminPlansScreen'
 
 jest.mock('nativewind/jsx-runtime', () => require('react/jsx-runtime'))
 jest.mock('react-native-css-interop/jsx-runtime', () => require('react/jsx-runtime'))
@@ -85,6 +86,42 @@ beforeEach(() => {
   alerts = []
   jest.spyOn(Alert, 'alert').mockImplementation((_title, message) => {
     alerts.push(String(message))
+  })
+})
+
+describe('the plans list (notes of 23.11: old jeweler plans looked like current ones)', () => {
+  const jeweler = (code: string, nameHe: string, price: number, leadQuota: number, isActive: boolean, liveSubscribers = 0): AdminPlan => ({
+    ...PLAN,
+    id: code,
+    code,
+    role: 'JEWELER',
+    nameHe,
+    price,
+    leadQuota,
+    isActive,
+    liveSubscribers,
+    aiRenders: null,
+  })
+
+  it('shows the plans on offer apart from the withdrawn ones, which say they are not sold', async () => {
+    ;(listAdminPlans as jest.Mock).mockResolvedValue([
+      jeweler('JEWELER_BASIC_QUARTERLY', 'צורף/ת - בסיסית', 390, 10, true),
+      jeweler('JEWELER_PROFESSIONAL', 'צורף/ת - מקצועית', 525, 15, true),
+      jeweler('JEWELER_ACTIVE', 'צורף/ת - אקטיבי', 199, 15, false, 1),
+      jeweler('JEWELER_BASIC', 'צורף/ת - בסיסי', 0, 3, false),
+    ])
+    const tree = await open(<AdminPlansScreen />)
+    // Only the plans on offer at first.
+    expect(texts(tree)).toContain('צורף/ת - מקצועית')
+    expect(texts(tree)).not.toContain('צורף/ת - אקטיבי')
+    expect(texts(tree)).not.toContain('צורף/ת - בסיסי')
+    // The withdrawn ones on request, under their own title (they stay editable, e.g. to offer again).
+    await act(async () => buttonByText(tree, t('admShowWithdrawn').replace('{{count}}', '2')).props.onPress())
+    const lines = texts(tree)
+    const withdrawnTitle = lines.indexOf(t('admWithdrawnPlans'))
+    expect(withdrawnTitle).toBeGreaterThan(lines.indexOf('צורף/ת - מקצועית'))
+    expect(lines.indexOf('צורף/ת - אקטיבי')).toBeGreaterThan(withdrawnTitle)
+    expect(lines.indexOf('צורף/ת - בסיסי')).toBeGreaterThan(withdrawnTitle)
   })
 })
 

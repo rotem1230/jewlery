@@ -22,6 +22,7 @@ import {
 import { listMetals, listRegions, metalChoices, parseMetalChoice } from '@/src/api/masterData'
 import { parseApiError } from '@/src/lib/api'
 import { designPicture } from '@/src/lib/designPicture'
+import { viewInAtelierTarget } from '@/src/lib/atelierView'
 import { specsFromDesign } from '@/src/lib/designSpecs'
 import {
   completedByLabel,
@@ -439,7 +440,9 @@ export function DesignDetailsScreen() {
         onRequestClose={closePublishSuccess}
         onPrimary={() => {
           closePublishSuccess()
-          tabNavigation?.navigate('Atelier')
+          // The atelier's designs, loaded again: the item just published is at the top.
+          const [atelier, params] = viewInAtelierTarget()
+          tabNavigation?.navigate(atelier, params)
         }}
         onSecondary={() => {
           closePublishSuccess()

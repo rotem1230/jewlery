@@ -12,23 +12,21 @@ import {
 } from 'react-native'
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
-import { ChevronDown } from 'lucide-react-native'
 import { HomeHeader } from '@/src/components/home/HomeHeader'
 import { CheckerBackdrop } from '@/src/components/home/CheckerBackdrop'
 import { Button } from '@/src/components/ui/Button'
-import { FilterOptionsSheet } from '@/src/components/chats/FilterOptionsSheet'
 import { colors } from '@/src/theme/tokens'
 import { useTranslation, type TranslationKey } from '@/src/i18n'
 import { useAsyncData } from '@/src/hooks/useAsyncData'
-import {
-  CATEGORY_CODE,
-  listMetals,
-  listWizardSizeCharts,
-  metalChoices,
-  parseMetalChoice,
-} from '@/src/api/masterData'
+import { CATEGORY_CODE, listWizardSizeCharts } from '@/src/api/masterData'
 import { createWizardDesign, wizardFailAlert } from '@/src/lib/wizard'
-import { RING_SIZE_FALLBACK, ringSizeOptions, type RingSizeOption } from '@/src/lib/ringSizes'
+import {
+  RING_SIZE_FALLBACK,
+  STANDARD_RING_SIZE,
+  customRingSize,
+  ringSizeOptions,
+  type RingSizeOption,
+} from '@/src/lib/ringSizes'
 import { NECKLACE_STYLES, necklaceStyleForLength, necklaceStyleLabel } from '@/src/lib/necklaceLengths'
 import type { HomeStackParamList } from '@/src/navigation/types'
 import necklineShallow from '../../../assets/images/categories/neckline-shallow.png'
@@ -55,10 +53,14 @@ const CATEGORY_TITLE_KEY: Record<'ring' | 'necklace' | 'bracelet', TranslationKe
   bracelet: 'categoryBracelet',
 }
 
+type RingChoice = { kind: 'standard' } | { kind: 'chart'; id: string } | { kind: 'custom' }
+
 /**
  * Figma "בחירת מידה" — step 2 of the design wizard, branches by category:
- * ring gets the IL/US size chart from the server (one row per size, IL paired with US; the PRD
- * chart only offline), necklace gets the PRD lengths, bracelet a wrist measurement.
+ * ring gets the IL/US size chart from the server (one row per size, IL paired with US; the full
+ * chart offline), a "standard size" (a real size, IL 52) and a size of one's own typed in;
+ * necklace gets the PRD lengths, bracelet a wrist measurement. The metal is chosen in the studio,
+ * right after the band width (the client's notes of 23.11).
  */
 export function SizeSelectScreen() {
   const { t, locale } = useTranslation()
@@ -72,10 +74,8 @@ export function SizeSelectScreen() {
     (signal) => listWizardSizeCharts(CATEGORY_CODE[category], signal),
     { deps: [category] },
   )
-  const metalsQuery = useAsyncData((signal) => listMetals(signal), { deps: [] })
-  const choices = metalChoices(metalsQuery.data ?? [], locale)
 
-  // The server chart; the PRD chart only when it cannot be loaded (offline) or is empty.
+  // The server chart; the full chart only when it cannot be loaded (offline) or is empty.
   const chartsFailed = Boolean(chartsQuery.error) && !chartsQuery.loading
   const ringOptions = useMemo<RingSizeOption[]>(() => {
     if (!isRing) return []
@@ -95,20 +95,28 @@ export function SizeSelectScreen() {
     return fromCharts.length ? fromCharts : NECKLACE_LENGTHS
   }, [category, chartsQuery.data])
 
-  const [standardSelected, setStandardSelected] = useState(true)
-  const [ringSizeId, setRingSizeId] = useState<string | null>(null)
+  const [ringChoice, setRingChoice] = useState<RingChoice>({ kind: 'standard' })
+  const [customText, setCustomText] = useState('')
   const [lengthValue, setLengthValue] = useState(DEFAULT_NECKLACE_LENGTH)
   const [wristCm, setWristCm] = useState('16.5')
   const [busy, setBusy] = useState(false)
-  const [metalId, setMetalId] = useState('YELLOW_GOLD:14K')
-  const [metalOpen, setMetalOpen] = useState(false)
 
-  const selectedMetal = choices.find((choice) => choice.id === metalId) ?? choices[0]
-  const metalLabel = selectedMetal?.label ?? t('designMetalLabel')
+  const custom = customRingSize(customText)
+  const customInvalid = ringChoice.kind === 'custom' && customText.trim() !== '' && !custom
+  /** The size the design is made in: the standard one, a chart row, or the one typed in. */
+  const ringSize: { standard: string; sizeCode: string } | null =
+    ringChoice.kind === 'standard'
+      ? STANDARD_RING_SIZE
+      : ringChoice.kind === 'custom'
+        ? custom
+        : (() => {
+            const option = ringOptions.find((row) => row.id === ringChoice.id)
+            return option ? { standard: option.standard, sizeCode: option.sizeCode } : null
+          })()
 
   const onContinue = async () => {
-    if (isRing && !ringSizeId) {
-      Alert.alert(t('authErrorTitle'), t('sizeNeedRingSize'))
+    if (isRing && !ringSize) {
+      Alert.alert(t('authErrorTitle'), customInvalid ? t('sizeCustomInvalid') : t('sizeNeedRingSize'))
       return
     }
     if (isBracelet) {
@@ -121,28 +129,16 @@ export function SizeSelectScreen() {
     setBusy(true)
     try {
       const title = t(CATEGORY_TITLE_KEY[category])
-      const metal = parseMetalChoice(selectedMetal?.id ?? metalId)
-      const selectedRing = ringOptions.find((option) => option.id === ringSizeId)
+      // The metal starts as the wizard's default; the studio asks for it right after the band.
       const parameters =
-        category === 'ring'
-          ? {
-              size: {
-                standard: selectedRing?.standard ?? 'US',
-                sizeCode: selectedRing?.sizeCode ?? (ringSizeId as string),
-              },
-              metal,
-            }
+        category === 'ring' && ringSize
+          ? { size: { standard: ringSize.standard, sizeCode: ringSize.sizeCode } }
           : category === 'bracelet'
-            ? {
-                size: { wristCircumferenceCm: parseFloat(wristCm.replace(',', '.')) },
-                metal,
-              }
-            : {
-                size: { necklaceLengthCm: parseFloat(lengthValue) || Number(DEFAULT_NECKLACE_LENGTH) },
-                metal,
-              }
+            ? { size: { wristCircumferenceCm: parseFloat(wristCm.replace(',', '.')) } }
+            : { size: { necklaceLengthCm: parseFloat(lengthValue) || Number(DEFAULT_NECKLACE_LENGTH) } }
       const id = await createWizardDesign(category, title, parameters)
-      navigation.navigate('DesignStudio', { designId: id })
+      // `start`: the studio opens on the first design step.
+      navigation.navigate('DesignStudio', { designId: id, start: true })
     } catch (err) {
       wizardFailAlert(t('designCreateFailed'), err)
     } finally {
@@ -153,11 +149,12 @@ export function SizeSelectScreen() {
   return (
     <View style={styles.root}>
       <CheckerBackdrop />
-      <HomeHeader onBack={() => navigation.goBack()} />
+      <HomeHeader onBack={() => navigation.goBack()} help={{ title: t('helpSizeTitle'), body: t(isRing ? 'helpSizeBody' : 'helpSizeBodyOther') }} />
       <ScrollView
         style={styles.flex}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.column}>
           <View style={styles.headingBlock}>
@@ -187,27 +184,48 @@ export function SizeSelectScreen() {
           ) : isRing ? (
             <View style={styles.list}>
               <TouchableOpacity
-                onPress={() => {
-                  setStandardSelected(true)
-                  setRingSizeId(null)
-                }}
-                style={[styles.row, styles.standardRow, standardSelected && styles.rowSelected]}
+                onPress={() => setRingChoice({ kind: 'standard' })}
+                style={[styles.row, styles.standardRow, ringChoice.kind === 'standard' && styles.rowSelected]}
               >
-                <RadioDot selected={standardSelected} />
-                <Text style={styles.standardLabel}>{t('sizeStandard')}</Text>
+                <RadioDot selected={ringChoice.kind === 'standard'} />
+                <Text style={styles.standardLabel}>
+                  {t('sizeStandardWith').replace('{{size}}', STANDARD_RING_SIZE.sizeCode)}
+                </Text>
               </TouchableOpacity>
+
+              <View style={[styles.row, styles.customRow, ringChoice.kind === 'custom' && styles.rowSelected]}>
+                <RadioDot selected={ringChoice.kind === 'custom'} />
+                <View style={styles.customInfo}>
+                  <Text style={styles.customLabel}>{t('sizeCustomLabel')}</Text>
+                  <TextInput
+                    testID="custom-ring-size"
+                    value={customText}
+                    onFocus={() => setRingChoice({ kind: 'custom' })}
+                    onChangeText={(text) => {
+                      setCustomText(text)
+                      setRingChoice({ kind: 'custom' })
+                    }}
+                    placeholder={t('sizeCustomPlaceholder')}
+                    accessibilityLabel={t('sizeCustomPlaceholder')}
+                    placeholderTextColor={colors.textSecondary}
+                    keyboardType="decimal-pad"
+                    maxLength={5}
+                    style={styles.customInput}
+                  />
+                  <Text style={[styles.customHint, customInvalid && styles.customError]}>
+                    {customInvalid ? t('sizeCustomInvalid') : t('sizeCustomHint')}
+                  </Text>
+                </View>
+              </View>
 
               {ringOptions.length === 0 ? <ActivityIndicator color={colors.brand} /> : null}
               {ringOptions.map((option) => {
-                const selected = !standardSelected && ringSizeId === option.id
+                const selected = ringChoice.kind === 'chart' && ringChoice.id === option.id
                 return (
                   <TouchableOpacity
                     key={option.id}
                     accessibilityLabel={option.label}
-                    onPress={() => {
-                      setStandardSelected(false)
-                      setRingSizeId(option.id)
-                    }}
+                    onPress={() => setRingChoice({ kind: 'chart', id: option.id })}
                     style={[styles.row, selected && styles.rowSelected]}
                   >
                     <RadioDot selected={selected} />
@@ -257,18 +275,6 @@ export function SizeSelectScreen() {
           <TouchableOpacity onPress={() => navigation.navigate('MeasurementGuide', { category })}>
             <Text style={styles.guideLink}>{t('sizeGuideHint')}</Text>
           </TouchableOpacity>
-
-          {choices.length > 0 ? (
-            <TouchableOpacity
-              style={styles.metalRow}
-              onPress={() => setMetalOpen(true)}
-              activeOpacity={0.8}
-            >
-              <ChevronDown size={16} color={colors.textSecondary} strokeWidth={2} />
-              <Text style={styles.metalValue}>{metalLabel}</Text>
-              <Text style={styles.metalLabel}>{t('designMetalLabel')}</Text>
-            </TouchableOpacity>
-          ) : null}
         </View>
       </ScrollView>
 
@@ -276,21 +282,12 @@ export function SizeSelectScreen() {
         <Button
           variant="primary"
           fullWidth
-          disabled={busy || (isRing && !ringSizeId)}
+          disabled={busy || (isRing && !ringSize)}
           onPress={() => void onContinue()}
         >
           {t('sizeContinueCta')}
         </Button>
       </View>
-      <FilterOptionsSheet
-        visible={metalOpen}
-        options={choices.map((choice) => ({ id: choice.id, label: choice.label }))}
-        onSelect={(option) => {
-          setMetalId(option.id)
-          setMetalOpen(false)
-        }}
-        onRequestClose={() => setMetalOpen(false)}
-      />
     </View>
   )
 }
@@ -384,6 +381,42 @@ const styles = StyleSheet.create({
   },
   standardRow: {
     justifyContent: 'center',
+  },
+  customRow: {
+    alignItems: 'flex-start',
+  },
+  customInfo: {
+    flex: 1,
+    gap: 6,
+  },
+  customLabel: {
+    fontFamily: 'Heebo',
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  customInput: {
+    borderWidth: 1,
+    borderColor: colors.formBorder,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontFamily: 'Heebo',
+    fontSize: 16,
+    color: colors.ink,
+    textAlign: 'right',
+  },
+  customHint: {
+    fontFamily: 'Heebo',
+    fontSize: 12,
+    color: colors.textSecondary,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  customError: {
+    color: '#B42318',
   },
   rowSelected: {
     borderColor: colors.brand,
@@ -525,35 +558,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Heebo',
     fontSize: 14,
     fontWeight: '400',
-    color: colors.ink,
-    textAlign: 'right',
-    writingDirection: 'rtl',
-  },
-  metalRow: {
-    width: '100%',
-    minHeight: 44,
-    flexDirection: 'row-reverse',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: colors.formBorder,
-    borderRadius: 8,
-    backgroundColor: colors.surface,
-    paddingHorizontal: 14,
-  },
-  metalLabel: {
-    fontFamily: 'Heebo',
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.textSecondary,
-    textAlign: 'right',
-  },
-  metalValue: {
-    flex: 1,
-    fontFamily: 'Heebo',
-    fontSize: 14,
-    fontWeight: '500',
     color: colors.ink,
     textAlign: 'right',
     writingDirection: 'rtl',

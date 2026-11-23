@@ -7,6 +7,7 @@ import {
   LockDesignDto,
   QueryDesignsDto,
   TransitionDesignDto,
+  UnlockDesignDto,
   UpdateDesignDto,
 } from './dto/design.dto';
 import { DesignsService } from './designs.service';
@@ -52,6 +53,11 @@ export class DesignsController {
   @Post(':id/lock')
   lock(@Param('id') id: string, @Body() dto: LockDesignDto, @Req() req: AuthedRequest) {
     return this.designs.lock(id, req.user, dto);
+  }
+
+  @Post(':id/unlock')
+  unlock(@Param('id') id: string, @Body() dto: UnlockDesignDto, @Req() req: AuthedRequest) {
+    return this.designs.unlock(id, req.user, dto);
   }
 
   @Get(':id/versions')

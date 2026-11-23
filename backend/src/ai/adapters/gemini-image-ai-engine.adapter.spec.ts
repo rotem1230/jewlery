@@ -91,10 +91,17 @@ describe('GeminiImageAiEngineAdapter', () => {
     await adapter().generate({
       prompt: 'a black sapphire',
       itemCode: 'RING',
-      choices: { metal: '14K yellow gold', stones: ['sapphire', 'diamond'], setting: '6-prong setting', finish: 'matte finish', elements: ['star'] },
+      choices: {
+        metal: '14K yellow gold',
+        stones: ['sapphire', 'diamond'],
+        setting: '6-prong setting',
+        finish: 'matte finish',
+        elements: ['star'],
+        shank: 'split shank',
+      },
     });
     const text = (body().input as Array<{ content: Array<{ text?: string }> }>)[0].content[0].text ?? '';
-    for (const words of ['14K yellow gold', 'sapphire, diamond', '6-prong setting', 'matte finish', 'star']) {
+    for (const words of ['14K yellow gold', 'sapphire, diamond', '6-prong setting', 'matte finish', 'star', 'on a split shank']) {
       expect(text).toContain(words);
     }
     expect(text).toContain('a black sapphire');

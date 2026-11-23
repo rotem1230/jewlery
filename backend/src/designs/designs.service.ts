@@ -17,7 +17,7 @@ import { DesignPreviewService } from './design-preview.service';
 import { UploadAccessService } from '../uploads/upload-access.service';
 import { UploadsService } from '../uploads/uploads.service';
 import { WizardEngineService } from '../wizard/wizard-engine.service';
-import { AdminUnlockDesignDto, CreateDesignDto, LockDesignDto, QueryDesignsDto, UpdateDesignDto } from './dto/design.dto';
+import { AdminUnlockDesignDto, CreateDesignDto, LockDesignDto, QueryDesignsDto, UnlockDesignDto, UpdateDesignDto } from './dto/design.dto';
 
 const COMPLETED_BY_SELECT = {
   id: true,
@@ -333,7 +333,7 @@ export class DesignsService {
     }
 
     if (dto.parameters !== undefined) {
-      await this.assertValidParameters(design.itemTypeId, dto.parameters);
+      await this.assertValidParameters(design.itemTypeId, dto.parameters, design.parameters);
     }
 
     // Conditional on the version the client edited, so two concurrent saves cannot both win.
@@ -377,8 +377,12 @@ export class DesignsService {
     return updated;
   }
 
-  private async assertValidParameters(itemTypeId: string, parameters: unknown): Promise<void> {
-    const validation = await this.wizard.validateParameters(itemTypeId, parameters);
+  /**
+   * `previous`: the design's saved parameters — a rule that came after a choice was saved (a stone's
+   * own colours, a metal no longer offered) holds only for what is chosen now.
+   */
+  private async assertValidParameters(itemTypeId: string, parameters: unknown, previous?: unknown): Promise<void> {
+    const validation = await this.wizard.validateParameters(itemTypeId, parameters, previous);
     if (!validation.valid) {
       throw new BadRequestException({
         success: false,
@@ -440,8 +444,11 @@ export class DesignsService {
     const data: Prisma.DesignUpdateInput = { status: toStatus, version: { increment: 1 } };
 
     if (toStatus === DesignStatus.PUBLISHED) {
-      // Jewelers quote what is published: it must be a complete, valid specification.
-      await this.assertValidParameters(design.itemTypeId, design.parameters);
+      // Jewelers quote what is published: it must be a complete, valid specification. Its metal
+      // must be one still made (no 12K, no platinum: the client's notes of 23.11); a stone colour
+      // or a size saved before the newer rules is kept.
+      const { metal: _metal, ...savedBeforeRules } = (design.parameters ?? {}) as Record<string, unknown>;
+      await this.assertValidParameters(design.itemTypeId, design.parameters, savedBeforeRules);
       const requireFeasibility = await this.appConfig.get('require_feasibility_before_publish');
       const feasibilityOk =
         design.feasibilityStatus === FeasibilityStatus.APPROVED ||
@@ -511,6 +518,48 @@ export class DesignsService {
       entityId: id,
       before: { lockedFields: previousFields },
       after: { lockedFields: updated.lockedFields },
+    });
+
+    return updated;
+  }
+
+  /**
+   * The designer opens fields of their own design that were locked — the size an older studio
+   * offered to lock, so a draft can be reused in another size or band width (the client's notes of
+   * 23.11.2026 replace PRD 5.3's "final for the designer"). A design with an accepted quote stays
+   * as agreed (409). Recorded in the audit log like support's unlock.
+   */
+  async unlock(id: string, user: User, dto: UnlockDesignDto): Promise<Design> {
+    this.assertNotCompleted(await this.getOwned(id, user));
+
+    const { previousFields, updated } = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "designs" WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.design.findUniqueOrThrow({ where: { id } });
+      // Under the row lock: a quote accepted meanwhile freezes the design.
+      this.assertNotCompleted(current);
+      const remaining = current.lockedFields.filter((field) => !dto.fields.includes(field));
+      if (remaining.length === current.lockedFields.length) {
+        return { previousFields: current.lockedFields, updated: current };
+      }
+      const saved = await tx.design.update({
+        where: { id },
+        data: { lockedFields: remaining, lockedAt: remaining.length > 0 ? current.lockedAt : null, version: { increment: 1 } },
+      });
+      return { previousFields: current.lockedFields, updated: saved };
+    });
+    if (updated.lockedFields.length === previousFields.length) {
+      return updated;
+    }
+
+    await this.snapshotVersion(updated, user.id, 'unlock');
+    await this.audit.log({
+      actorUserId: user.id,
+      action: 'design.unlock',
+      entityType: 'Design',
+      entityId: id,
+      before: { lockedFields: previousFields },
+      // Who opened it: the owner, or an admin through the owner's route (with no reason given).
+      after: { lockedFields: updated.lockedFields, reason: updated.ownerUserId === user.id ? 'owner' : 'admin' },
     });
 
     return updated;

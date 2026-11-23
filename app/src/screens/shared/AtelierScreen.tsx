@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
-import { useNavigation } from '@react-navigation/native'
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
 import { Search } from 'lucide-react-native'
@@ -30,10 +30,13 @@ const NEARBY_SEARCH = { lat: TEL_AVIV.lat, lng: TEL_AVIV.lng, radiusKm: 25, page
 export function AtelierScreen() {
   const { t, locale } = useTranslation()
   const navigation = useNavigation<NativeStackNavigationProp<AtelierStackParamList>>()
+  const route = useRoute<RouteProp<AtelierStackParamList, 'AtelierList'>>()
+  const askedTab = route.params?.tab
+  const refreshAt = route.params?.refreshAt
   const myUserId = useAppSelector((s) => s.auth.user?.id)
   const isJeweler = useAppSelector((s) => s.auth.user?.activeRole === 'JEWELER')
   const accessToken = useAppSelector((s) => s.auth.accessToken)
-  const [tab, setTab] = useState<AtelierTab>(isJeweler ? 'designs' : 'jewelers')
+  const [tab, setTab] = useState<AtelierTab>(askedTab ?? (isJeweler ? 'designs' : 'jewelers'))
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [regionId, setRegionId] = useState<string | undefined>(undefined)
@@ -83,8 +86,22 @@ export function AtelierScreen() {
   )
 
   const jewelersQuery = useAsyncData(jewelersLoad, { deps: [accessToken, debouncedQuery, regionId, nearby] })
-  const designsQuery = useAsyncData(designsLoad, { deps: [accessToken, debouncedQuery, regionId] })
+  // `refreshAt`: sent here again (just published) — the tab stays mounted, so the list loads again.
+  const designsQuery = useAsyncData(designsLoad, { deps: [accessToken, debouncedQuery, regionId, refreshAt] })
   const bannersQuery = useAsyncData((signal) => listAtelierBanners(signal), { deps: [] })
+
+  // Sent to a tab ("view the item in the atelier"): that tab, with no filter hiding the item.
+  useEffect(() => {
+    if (!askedTab) return
+    setTab(askedTab)
+    if (refreshAt != null) {
+      setQuery('')
+      // At once, not after the search's wait: the fresh list is loaded without the old search.
+      setDebouncedQuery('')
+      setRegionId(undefined)
+      setNearby(false)
+    }
+  }, [askedTab, refreshAt])
 
   const isDesigns = tab === 'designs'
   const activeQuery = isDesigns ? designsQuery : jewelersQuery

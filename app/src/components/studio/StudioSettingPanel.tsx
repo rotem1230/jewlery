@@ -1,9 +1,8 @@
 import { StyleSheet, Text, View } from 'react-native'
 import type { SettingItem } from '@/src/types/api'
 import { StudioChips } from '@/src/components/studio/StudioChips'
-import { StudioColorGrid } from '@/src/components/studio/StudioColorGrid'
 import { StudioSlider } from '@/src/components/studio/StudioSlider'
-import { BAND_STONE_SIZES_MM, SETTINGS, STONES, settingDef, stoneDef } from '@/src/lib/jewelryCatalog.generated'
+import { SETTINGS, settingDef } from '@/src/lib/jewelryCatalog.generated'
 import { newBand, type StudioBand, type StudioItemType, type StudioSetting } from '@/src/lib/studioParams'
 import { useTranslation } from '@/src/i18n'
 import { colors } from '@/src/theme/tokens'
@@ -19,6 +18,8 @@ type StudioSettingPanelProps = {
   onChange: (setting: StudioSetting) => void
   /** The band stones the server offers (codes); empty = every stone. */
   offeredStones: string[]
+  /** The ring's shank: a split shank carries no band of stones. */
+  shankStyle?: string
 }
 
 /** Whether the server offers a setting for this kind of piece (no links = every piece). */
@@ -29,10 +30,11 @@ function offeredFor(setting: SettingItem, itemTypeCode: string): boolean {
 }
 
 /**
- * The setting tab: the centre stone's head (the head pictures), and on a ring the stones set in
- * the band (the band pictures) with their stone, colour, size from the pavé table, rows and place.
+ * The setting tab: the centre stone's head (the head pictures, shown on the model at once), and on
+ * a ring the style of stones set on the sides of the band, its rows and place. The band's stones
+ * themselves are chosen in the stone tab (the client's notes of 23.11).
  */
-export function StudioSettingPanel({ settings, itemTypeCode, value, onChange, offeredStones }: StudioSettingPanelProps) {
+export function StudioSettingPanel({ settings, itemTypeCode, value, onChange, shankStyle }: StudioSettingPanelProps) {
   const { t, locale } = useTranslation()
   const en = locale === 'en'
   const offered = settings.filter((setting) => offeredFor(setting, itemTypeCode)).map((setting) => setting.code)
@@ -42,7 +44,9 @@ export function StudioSettingPanel({ settings, itemTypeCode, value, onChange, of
     return def ? (en ? def.labelEn : def.labelHe) : code
   }
   const heads = SETTINGS.filter((s) => s.kind === 'HEAD' && allowed(s.code))
-  const bands = itemTypeCode === 'RING' ? SETTINGS.filter((s) => s.kind === 'BAND' && allowed(s.code)) : []
+  const ring = itemTypeCode === 'RING'
+  const split = ring && shankStyle === 'SPLIT'
+  const bands = ring && !split ? SETTINGS.filter((s) => s.kind === 'BAND' && allowed(s.code)) : []
   const band = value.band
 
   return (
@@ -56,7 +60,17 @@ export function StudioSettingPanel({ settings, itemTypeCode, value, onChange, of
         ]}
         onSelect={(headCode) => onChange({ ...value, headCode })}
       />
+      {ring && !split ? <Text style={styles.hint}>{t('studioSettingSideStonesHint')}</Text> : null}
 
+      {split ? <Text style={styles.hint}>{t('studioSplitShankNoBand')}</Text> : null}
+      {split && band ? (
+        // Side stones chosen before the shank was split: removed here, so the ring can be saved.
+        <StudioChips
+          wrap
+          items={[{ id: 'REMOVE_BAND', label: t('studioRemoveBand'), selected: false }]}
+          onSelect={() => onChange({ ...value, band: null })}
+        />
+      ) : null}
       {bands.length ? (
         <>
           <Text style={styles.section}>{t('studioBandSettingTitle')}</Text>
@@ -77,36 +91,20 @@ export function StudioSettingPanel({ settings, itemTypeCode, value, onChange, of
               }
             }}
           />
-          {band ? <BandEditor band={band} offeredStones={offeredStones} onChange={(next) => onChange({ ...value, band: next })} /> : null}
+          {band ? <BandLayout band={band} onChange={(next) => onChange({ ...value, band: next })} /> : null}
         </>
       ) : null}
     </View>
   )
 }
 
-function BandEditor({ band, offeredStones, onChange }: { band: StudioBand; offeredStones: string[]; onChange: (band: StudioBand) => void }) {
-  const { t, locale } = useTranslation()
-  const en = locale === 'en'
+/** The band's layout: rows across the band, stones per row, where the row sits. */
+function BandLayout({ band, onChange }: { band: StudioBand; onChange: (band: StudioBand) => void }) {
+  const { t } = useTranslation()
   const def = settingDef(band.settingCode)
-  const mm = t('studioMm')
-  const stones = STONES.filter((stone) => offeredStones.length === 0 || offeredStones.includes(stone.code))
 
   return (
     <View style={styles.root}>
-      <Text style={styles.section}>{t('studioBandStone')}</Text>
-      <StudioChips
-        items={stones.map((stone) => ({ id: stone.code, label: en ? stone.nameEn : stone.nameHe, selected: stone.code === band.stoneCode }))}
-        onSelect={(stoneCode) => onChange({ ...band, stoneCode, colorCode: stoneDef(stoneCode)?.defaultColor ?? band.colorCode })}
-      />
-      <StudioColorGrid value={band.colorCode} onChange={(colorCode) => onChange({ ...band, colorCode })} />
-
-      <Text style={styles.section}>{t('studioBandStoneSize')}</Text>
-      <StudioChips
-        wrap
-        items={BAND_STONE_SIZES_MM.map((size) => ({ id: String(size), label: `${size} ${mm}`, selected: size === band.stoneSizeMm }))}
-        onSelect={(size) => onChange({ ...band, stoneSizeMm: Number(size) })}
-      />
-
       {def && def.maxRows > def.minRows ? (
         <>
           <Text style={styles.section}>{t('studioBandRows')}</Text>
@@ -151,6 +149,14 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  hint: {
+    fontFamily: 'Heebo',
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textSecondary,
     textAlign: 'right',
     writingDirection: 'rtl',
   },

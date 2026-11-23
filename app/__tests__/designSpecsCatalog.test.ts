@@ -17,6 +17,18 @@ describe('design specification with the client catalogue', () => {
     expect(value).toContain('אופל קבושון עגול White Opal 3 מ״מ')
   })
 
+  it('the shank and a fancy-cut stone reach the jeweler (notes of 23.11)', () => {
+    const value = rows({
+      size: { standard: 'IL', sizeCode: '53.5', bandWidthMm: 3, shankStyle: 'SPLIT' },
+      stones: [{ stoneCode: 'DIAMOND', cutCode: 'PEAR', colorCode: 'CRYSTAL', sizeMm: 6 }],
+    })
+    expect(value['שינה']).toBe('שינה מפוצלת')
+    expect(value['מידה']).toBe('53.5 (IL)')
+    expect(value['אבנים']).toContain('יהלום טיפה (Pear) Crystal 6 מ״מ')
+    // A single shank (or none saved) is the plain ring: no row.
+    expect(rows({ size: { bandWidthMm: 3, shankStyle: 'SINGLE' } })['שינה']).toBeUndefined()
+  })
+
   it('the head and the band setting', () => {
     const value = rows({
       setting: {

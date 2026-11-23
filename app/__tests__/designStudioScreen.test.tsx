@@ -1,10 +1,12 @@
 import { Alert, Text, type AlertButton } from 'react-native'
 import renderer, { act, type ReactTestRenderer } from 'react-test-renderer'
-import { getDesign, updateDesign } from '../src/api/designs'
+import { getDesign, lockDesign, unlockDesign, updateDesign } from '../src/api/designs'
 import { DesignStudioScreen } from '../src/screens/designer/DesignStudioScreen'
 import { StudioTabBar, type StudioTabId } from '../src/components/studio/StudioTabBar'
 import { StudioSettingPanel } from '../src/components/studio/StudioSettingPanel'
 import { StudioStonePanel } from '../src/components/studio/StudioStonePanel'
+import { StudioSizePanel } from '../src/components/studio/StudioSizePanel'
+import { StudioMetalPanel } from '../src/components/studio/StudioMetalPanel'
 import { BrandButton } from '../src/components/ui/BrandButton'
 import { addStone, newBand, type StudioSetting } from '../src/lib/studioParams'
 import { t } from '../src/i18n'
@@ -42,17 +44,18 @@ const mockNavigation = {
   dispatch: jest.fn(),
   getParent: () => ({ navigate: jest.fn() }),
 }
+const mockRouteParams: { designId: string; start?: boolean } = { designId: 'design-1' }
 jest.mock('@react-navigation/native', () => {
   return {
     useNavigation: () => mockNavigation,
-    useRoute: () => ({ key: 'DesignStudio', name: 'DesignStudio', params: { designId: 'design-1' } }),
+    useRoute: () => ({ key: 'DesignStudio', name: 'DesignStudio', params: mockRouteParams }),
     usePreventRemove: (prevent: boolean, callback: (event: { data: { action: unknown } }) => void) => {
       mockLeave.prevent = prevent
       mockLeave.onPrevent = callback
     },
   }
 })
-jest.mock('../src/api/designs', () => ({ getDesign: jest.fn(), lockDesign: jest.fn(), updateDesign: jest.fn() }))
+jest.mock('../src/api/designs', () => ({ getDesign: jest.fn(), lockDesign: jest.fn(), unlockDesign: jest.fn(), updateDesign: jest.fn() }))
 jest.mock('../src/api/ai', () => ({ createInspiration: jest.fn(), waitForAiJob: jest.fn() }))
 jest.mock('../src/api/renderJobs', () => ({ createRenderJob: jest.fn(), waitForRenderJob: jest.fn() }))
 jest.mock('../src/api/visualization', () => ({ createVisualizationJob: jest.fn(), getFeatureFlags: jest.fn(), getTryOnOverlay: jest.fn() }))
@@ -119,6 +122,7 @@ beforeEach(() => {
   alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined)
   mockLeave.prevent = false
   mockLeave.onPrevent = null
+  delete mockRouteParams.start
 })
 
 afterEach(() => {
@@ -189,14 +193,56 @@ describe('the studio saves what the model shows', () => {
     expect(mockLeave.prevent).toBe(false)
   })
 
-  it('the stone tab says where the band\'s small stones are chosen, and opens it', async () => {
+  it('the band\'s small stones are chosen in the stone tab, in a section of their own (notes of 23.11)', async () => {
     const tree = await renderStudio()
     await pavéThenSapphire(tree)
-    expect(texts(tree)).toContain('שיבוץ בטבעת: פאווה – 2 שורות ומעלה (Pavé).')
-    expect(texts(tree)).toContain('את האבנים הקטנות שלו בוחרים בלשונית "בית אבן".')
-    await press(tree, 'מעבר לבית אבן')
-    expect(tree.root.findAllByType(StudioSettingPanel)).toHaveLength(1)
-    expect(tree.root.findAllByType(StudioStonePanel)).toHaveLength(0)
+    const panel = tree.root.findByType(StudioStonePanel)
+    expect(panel.props.band).toMatchObject({ settingCode: 'PAVE', stoneCode: 'DIAMOND' })
+    await act(async () => panel.props.onBandChange({ ...panel.props.band, stoneCode: 'RUBY', colorCode: 'RUBY' }))
+    await press(tree, 'סיימתי')
+    expect(savedParameters()).toMatchObject({
+      setting: { band: { settingCode: 'PAVE', stoneCode: 'RUBY', colorCode: 'RUBY' } },
+      stones: [{ stoneCode: 'SAPPHIRE' }],
+    })
+  })
+
+  it('"ביטול" in the stone tab also undoes the band\'s stones changed there, and only those', async () => {
+    const tree = await renderStudio()
+    await pavéThenSapphire(tree)
+    const panel = tree.root.findByType(StudioStonePanel)
+    await act(async () => panel.props.onBandChange({ ...panel.props.band, stoneCode: 'RUBY', colorCode: 'RUBY' }))
+    await press(tree, 'ביטול')
+    // The band picked before in the setting tab is still there, with its own stones.
+    await openTab(tree, 'stone')
+    expect(tree.root.findByType(StudioStonePanel).props.band).toMatchObject({ settingCode: 'PAVE', stoneCode: 'DIAMOND' })
+  })
+
+  it('"ביטול" in the stone tab of a saved band leaves nothing to save', async () => {
+    saved = { ...ring(), parameters: { ...ring().parameters, setting: { headCode: '', band: newBand('PAVE') } } }
+    const tree = await renderStudio()
+    await openTab(tree, 'stone')
+    const panel = tree.root.findByType(StudioStonePanel)
+    await act(async () => panel.props.onBandChange({ ...panel.props.band, stoneCode: 'RUBY', colorCode: 'RUBY' }))
+    await press(tree, 'ביטול')
+    expect(mockLeave.prevent).toBe(false)
+    await openTab(tree, 'stone')
+    expect(tree.root.findByType(StudioStonePanel).props.band).toMatchObject({ stoneCode: 'DIAMOND' })
+  })
+
+  it('every panel has its own "?" that says what to do there and what comes next', async () => {
+    const tree = await renderStudio()
+    for (const tab of ['size', 'metal', 'setting', 'stone', 'elements', 'inspiration'] as StudioTabId[]) {
+      await openTab(tree, tab)
+      const help = tree.root.find((node) => node.props.testID === 'panel-help' && typeof node.props.onPress === 'function')
+      await act(async () => help.props.onPress())
+      const [title, body] = alert.mock.calls[alert.mock.calls.length - 1]
+      expect({ tab, title }).toEqual({ tab, title: expect.stringContaining('?') })
+      expect({ tab, long: String(body).length > 40 }).toEqual({ tab, long: true })
+    }
+    expect(new Set(alert.mock.calls.map((call) => call[1])).size).toBe(6)
+    // The size tab's help names the next step: the metal.
+    expect(alert.mock.calls[0]).toEqual([t('studioHelpSizeTitle'), t('studioHelpSizeBody')])
+    expect(t('studioHelpSizeBody')).toContain('מתכת')
   })
 })
 
@@ -216,13 +262,75 @@ describe('drafts only opened are left alone', () => {
     expect(savedParameters().stones).toMatchObject([{ stoneCode: 'RUBY' }])
   })
 
-  it('"סיימתי" in the size tab with nothing changed saves nothing and still offers to lock the size', async () => {
+  it('"סיימתי" in the size tab with nothing changed saves nothing, locks nothing and moves on to the metal', async () => {
     const tree = await renderStudio()
     await openTab(tree, 'size')
     await press(tree, 'סיימתי')
     expect(updateDesign).not.toHaveBeenCalled()
-    expect(alert).toHaveBeenCalledTimes(1)
-    expect(alert.mock.calls[0][0]).toBe(t('studioLockTitle'))
+    expect(alert).not.toHaveBeenCalled()
+    expect(lockDesign).not.toHaveBeenCalled()
+    expect(tree.root.findAllByType(StudioMetalPanel)).toHaveLength(1)
+  })
+})
+
+describe('the design steps in order (notes of 23.11)', () => {
+  it('a design just made in the wizard opens on its first step, the ring band', async () => {
+    mockRouteParams.start = true
+    const tree = await renderStudio()
+    expect(tree.root.findAllByType(StudioSizePanel)).toHaveLength(1)
+  })
+
+  it('after the band width comes the metal, already open', async () => {
+    mockRouteParams.start = true
+    const tree = await renderStudio()
+    await act(async () => tree.root.findByType(StudioSizePanel).props.onChange({ ...tree.root.findByType(StudioSizePanel).props.value, bandWidthMm: 3 }))
+    await press(tree, 'סיימתי')
+    expect(updateDesign).toHaveBeenCalledTimes(1)
+    expect(savedParameters().size).toMatchObject({ bandWidthMm: 3, sizeCode: '56' })
+    expect(lockDesign).not.toHaveBeenCalled()
+    expect(tree.root.findAllByType(StudioMetalPanel)).toHaveLength(1)
+    expect(tree.root.findAllByType(StudioSizePanel)).toHaveLength(0)
+  })
+
+  it('the ring size itself can be changed in the size tab', async () => {
+    const tree = await renderStudio()
+    await openTab(tree, 'size')
+    const panel = tree.root.findByType(StudioSizePanel)
+    await act(async () => panel.props.onChange({ ...panel.props.value, standard: 'IL', sizeCode: '57' }))
+    await press(tree, 'סיימתי')
+    expect(savedParameters().size).toMatchObject({ standard: 'IL', sizeCode: '57', bandWidthMm: 6 })
+  })
+
+  it('a size typed in that is not one holds "סיימתי" back, instead of saving the size before', async () => {
+    const tree = await renderStudio()
+    await openTab(tree, 'size')
+    const input = tree.root.find((node) => node.props.testID === 'custom-ring-size' && typeof node.props.onChangeText === 'function')
+    await act(async () => input.props.onChangeText('85'))
+    const done = () => tree.root.findAllByType(BrandButton).find((node) => node.props.label === 'סיימתי')!
+    expect(done().props.disabled).toBe(true)
+    await act(async () => input.props.onChangeText('57'))
+    expect(done().props.disabled).toBe(false)
+    await press(tree, 'סיימתי')
+    expect(savedParameters().size).toMatchObject({ standard: 'IL', sizeCode: '57' })
+  })
+
+  it('a draft whose size was locked before can be opened again from the size tab', async () => {
+    saved = { ...ring(), lockedFields: ['size'] }
+    ;(unlockDesign as jest.Mock).mockImplementation(async () => {
+      saved = { ...saved, lockedFields: [], version: saved.version + 1 }
+      return saved
+    })
+    const tree = await renderStudio()
+    await openTab(tree, 'size')
+    expect(tree.root.findByType(StudioSizePanel).props.locked).toBe(true)
+    expect(texts(tree)).toContain(t('studioSizeLocked'))
+    await act(async () => {
+      tree.root.findByType(StudioSizePanel).props.onUnlock()
+      await settle()
+    })
+    expect(unlockDesign).toHaveBeenCalledWith('design-1', { fields: ['size'] })
+    expect(tree.root.findByType(StudioSizePanel).props.locked).toBe(false)
+    expect(texts(tree)).not.toContain(t('studioSizeLocked'))
   })
 })
 

@@ -9,7 +9,7 @@
 import { BillingCycle, ContentPageStatus, DesignStatus, Prisma, PrismaClient, ProfilePublishStatus, PromotionEntityType, PromotionSource, SubscriptionStatus, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { DEFAULT_APP_CONFIGS } from '../src/cms/app-config.constants';
-import { CUTS, ELEMENTS, LEGACY_ELEMENTS, LEGACY_SETTINGS, SETTINGS, STONES, allowedCuts } from '../src/jewelry/catalog';
+import { CUTS, ELEMENTS, LEGACY_ELEMENTS, LEGACY_SETTINGS, RING_SIZE_CHART, SETTINGS, STONES, allowedCuts } from '../src/jewelry/catalog';
 
 const prisma = new PrismaClient();
 const SEED_DEMO_DATA = process.env.SEED_DEMO_DATA === 'true';
@@ -323,13 +323,17 @@ async function seedItemTypes(): Promise<Record<string, string>> {
   return ids;
 }
 
+/**
+ * What the client's jewelers make (notes of 23.11.2026): gold in 14K and 18K, and 925 silver. 12K
+ * gold and platinum are not seeded; where they were, the migration of 23.11 turned them off once
+ * (rows kept for designs saved in them), so an admin who turns one back on keeps that choice.
+ */
 async function seedMetalsAndPurities() {
   const metals: { code: string; labelHe: string; labelEn: string; sortOrder: number; purities: string[] }[] = [
     { code: 'SILVER', labelHe: 'כסף', labelEn: 'Silver', sortOrder: 1, purities: ['925'] },
-    { code: 'YELLOW_GOLD', labelHe: 'זהב צהוב', labelEn: 'Yellow Gold', sortOrder: 2, purities: ['12K', '14K', '18K'] },
-    { code: 'ROSE_GOLD', labelHe: 'זהב ורוד', labelEn: 'Rose Gold', sortOrder: 3, purities: ['12K', '14K', '18K'] },
-    { code: 'WHITE_GOLD', labelHe: 'זהב לבן', labelEn: 'White Gold', sortOrder: 4, purities: ['12K', '14K', '18K'] },
-    { code: 'PLATINUM', labelHe: 'פלטינה', labelEn: 'Platinum', sortOrder: 5, purities: ['950'] },
+    { code: 'YELLOW_GOLD', labelHe: 'זהב צהוב', labelEn: 'Yellow Gold', sortOrder: 2, purities: ['14K', '18K'] },
+    { code: 'ROSE_GOLD', labelHe: 'זהב ורוד', labelEn: 'Rose Gold', sortOrder: 3, purities: ['14K', '18K'] },
+    { code: 'WHITE_GOLD', labelHe: 'זהב לבן', labelEn: 'White Gold', sortOrder: 4, purities: ['14K', '18K'] },
   ];
 
   for (const metal of metals) {
@@ -352,7 +356,6 @@ async function seedMetalsAndPurities() {
       });
     }
   }
-
   console.log(`Seed complete: ${metals.length} metals with purities`);
 }
 
@@ -421,27 +424,25 @@ async function seedStonesAndElements() {
 }
 
 /**
- * The ring chart of the PRD (5.4): Israeli/European sizes 52–64 with their US sizes and inner
- * diameters. The PRD gives the diameter ranges of the two ends (US 6.00: 16.55–16.95 mm, US 10.75:
- * 20.40–20.44 mm); the sizes between them carry the diameter shown in the design (Figma).
+ * The ring chart (src/jewelry/catalog.ts): every Israeli size 44–70 with its US size and inner
+ * diameter, the PRD's sizes (5.4, 52–64) exactly as the PRD gives them (the client's notes of
+ * 23.11: no jumps of two).
  */
-const RING_SIZES: { il: string; us: string; minMm: number; maxMm: number }[] = [
-  { il: '52', us: '6.00', minMm: 16.55, maxMm: 16.95 },
-  { il: '54', us: '7.00', minMm: 17.19, maxMm: 17.19 },
-  { il: '56', us: '7.75', minMm: 17.83, maxMm: 17.83 },
-  { il: '58', us: '8.50', minMm: 18.47, maxMm: 18.47 },
-  { il: '60', us: '9.25', minMm: 19.1, maxMm: 19.1 },
-  { il: '62', us: '10.00', minMm: 19.76, maxMm: 19.76 },
-  { il: '64', us: '10.75', minMm: 20.4, maxMm: 20.44 },
-];
+const RING_SIZES = RING_SIZE_CHART;
 
-/** The measuring guide's table as first seeded; a re-seed replaces only this, never an edited guide. */
-const LEGACY_RING_GUIDE_TABLE = [
-  { standard: 'US', sizeCode: '5.00', diameterMm: 15.7 },
-  { standard: 'US', sizeCode: '6.00', diameterMm: 16.5 },
-  { standard: 'US', sizeCode: '7.00', diameterMm: 17.3 },
-  { standard: 'US', sizeCode: '8.00', diameterMm: 18.1 },
-  { standard: 'US', sizeCode: '9.00', diameterMm: 18.9 },
+/** The ring measuring guide's tips as first seeded: a re-seed replaces them, never a guide an admin edited. */
+const LEGACY_RING_GUIDE_TIPS = ['מדדו את האצבע בסוף היום כשהיא בגודלה המקסימלי.', 'השתמשו בטבעת קיימת שמתאימה כדי להשוות קוטר.'];
+
+/**
+ * How to measure a ring size (the client's notes of 23.11: the earlier text did not say how). The
+ * same text is written by migration 20261123120000_client_notes.
+ */
+const RING_MEASURING_TIPS_HE = [
+  'דרך א׳ – לפי טבעת שמתאימה לכם: מודדים בסרגל את הקוטר הפנימי של הטבעת (מהדופן הפנימית לדופן הפנימית שמולה, במ״מ), ומחפשים בטבלה את הקוטר הקרוב ביותר.',
+  'דרך ב׳ – בחוט או ברצועת נייר: כורכים סביב בסיס האצבע, צמוד אך לא לוחץ, מסמנים את נקודת המפגש ומודדים את האורך בסרגל במ״מ. האורך הוא המידה הישראלית: 54 מ״מ = מידה 54.',
+  'הטבעת צריכה לעבור גם את פרק האצבע: אם הפרק רחב, מודדים גם סביבו ובוחרים במידה הגדולה מבין השתיים.',
+  'מודדים בסוף היום, כשהידיים חמות (בקור האצבעות מתכווצות), 3–4 פעמים, ובאצבע שעליה תענדו את הטבעת.',
+  'בין שתי מידות – בוחרים בגדולה. לטבעת רחבה (6 מ״מ ומעלה) מוסיפים חצי מידה.',
 ];
 
 async function seedSizeCharts(itemTypeIds: Record<string, string>) {
@@ -483,10 +484,7 @@ async function seedMeasurementGuides(itemTypeIds: Record<string, string>) {
     return;
   }
 
-  const tips = [
-    'מדדו את האצבע בסוף היום כשהיא בגודלה המקסימלי.',
-    'השתמשו בטבעת קיימת שמתאימה כדי להשוות קוטר.',
-  ];
+  const tips = RING_MEASURING_TIPS_HE;
   // Same row shape as before (the app reads standard / sizeCode / diameterMm), plus the US size.
   const table = RING_SIZES.map((size) => ({
     standard: 'IL',
@@ -497,14 +495,16 @@ async function seedMeasurementGuides(itemTypeIds: Record<string, string>) {
   const existing = await prisma.measurementGuide.findUnique({
     where: { itemTypeId_locale: { itemTypeId: ringId, locale: 'he' } },
   });
+  const body = existing?.body as { tips?: unknown; table?: unknown } | null | undefined;
   if (!existing) {
     await prisma.measurementGuide.create({
       data: { itemTypeId: ringId, locale: 'he', title: 'איך למדוד מידת טבעת', body: { tips, table } },
     });
-  } else if (JSON.stringify((existing.body as { table?: unknown } | null)?.table) === JSON.stringify(LEGACY_RING_GUIDE_TABLE)) {
+  } else if (JSON.stringify(body?.tips) === JSON.stringify(LEGACY_RING_GUIDE_TIPS)) {
+    // The guide as first seeded (not edited by an admin): the measuring method and the full chart.
     await prisma.measurementGuide.update({
       where: { id: existing.id },
-      data: { body: { ...(existing.body as Record<string, unknown>), table } },
+      data: { body: { ...(existing.body as Record<string, unknown>), tips, table } },
     });
   }
 

@@ -42,7 +42,11 @@ type StudioElementPanelProps = {
 /** Custom pictures and the older round initial: no sheet range of their own. */
 const FREE_SIZE = { min: 3, max: 20 }
 
-/** The elements tab: the element sheet by category, a name or a date, style, size and place. */
+/**
+ * The elements tab, in clear sections (the client's notes of 23.11): the elements on the piece,
+ * each with its own ✕ to remove it; the one chosen, to edit (text, style, size, place); then
+ * adding one — a category, then an element of the sheet (or a picture of one's own).
+ */
 export function StudioElementPanel({
   itemType,
   elements,
@@ -59,7 +63,6 @@ export function StudioElementPanel({
 }: StudioElementPanelProps) {
   const { t, locale } = useTranslation()
   const en = locale === 'en'
-  const [adding, setAdding] = useState(elements.length === 0)
   const [category, setCategory] = useState<ElementCategory>(ELEMENT_CATEGORIES[0].code)
   const nameOf = (element: StudioElement) => {
     if (element.customUploadId) return t('studioCustomElement')
@@ -67,54 +70,57 @@ export function StudioElementPanel({
     if (!def) return element.elementCode === 'INITIAL' ? (en ? 'Initial' : 'אות') : element.elementCode ?? ''
     return en ? def.labelEn : def.labelHe
   }
-  const current = adding ? null : elements[selected] ?? null
+  const current = elements[selected] ?? null
   const update = (next: StudioElement) => onChange(elements.map((element, i) => (i === selected ? next : element)))
+  const remove = (index: number) => {
+    onChange(elements.filter((_, i) => i !== index))
+    // The chosen one stays chosen (one before it removed: it moves back by one); the chosen one
+    // removed: the next one is chosen, or the one before when it was the last.
+    const next = index < selected ? selected - 1 : index === selected ? Math.min(selected, elements.length - 2) : selected
+    onSelect(Math.max(0, next))
+  }
   const atMax = elements.length >= STUDIO_MAX_ELEMENTS
   const inCategory = ELEMENTS.filter((def) => def.category === category && (offered.length === 0 || offered.includes(def.code)))
 
   return (
     <View style={styles.root}>
-      <StudioChips
-        items={[
-          ...elements.map((element, index) => ({
-            id: `e${index}`,
-            label: `${nameOf(element)}${element.text ? ` "${element.text}"` : ''}`,
-            selected: !adding && index === selected,
-          })),
-          ...(atMax ? [] : [{ id: 'add', label: `+ ${t('studioElementAdd')}`, selected: adding }]),
-        ]}
-        onSelect={(id) => {
-          if (id === 'add') {
-            setAdding(true)
-            return
-          }
-          setAdding(false)
-          onSelect(Number(id.slice(1)))
-        }}
-      />
-
-      {adding ? (
-        <View style={styles.editor}>
-          <StudioChips
-            items={ELEMENT_CATEGORIES.map((c) => ({ id: c.code, label: en ? c.labelEn : c.labelHe, selected: c.code === category }))}
-            onSelect={(id) => setCategory(id as ElementCategory)}
-          />
-          <StudioChips
-            wrap
-            disabled={atMax}
-            items={inCategory.map((def) => ({ id: def.code, label: en ? def.labelEn : def.labelHe }))}
-            onSelect={(code) => {
-              onAdd(code)
-              onSelect(elements.length)
-              setAdding(false)
-            }}
-          />
-          <Pressable onPress={onUpload} disabled={atMax} accessibilityRole="button">
-            <Text style={[styles.upload, atMax && styles.off]}>{t('studioUploadElement')}</Text>
-          </Pressable>
-          <Text style={styles.hint}>{t('studioCatalogLimit').replace('{{count}}', String(STUDIO_MAX_ELEMENTS))}</Text>
-        </View>
-      ) : null}
+      <Text style={styles.title}>{t('studioElementsInPiece')}</Text>
+      {elements.length === 0 ? (
+        <Text style={styles.hint}>{t('studioElementsEmpty')}</Text>
+      ) : (
+        <>
+          <View style={styles.list}>
+            {elements.map((element, index) => {
+              const name = nameOf(element)
+              const on = index === selected
+              return (
+                <View key={`e${index}`} style={[styles.item, on && styles.itemOn]}>
+                  <Pressable
+                    onPress={() => onSelect(index)}
+                    style={styles.itemName}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: on }}
+                  >
+                    <Text style={[styles.itemLabel, on && styles.itemLabelOn]} numberOfLines={1}>
+                      {`${name}${element.text ? ` "${element.text}"` : ''}`}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => remove(index)}
+                    hitSlop={8}
+                    style={styles.itemRemove}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('studioRemoveItem').replace('{{name}}', name)}
+                  >
+                    <Text style={styles.itemRemoveMark}>✕</Text>
+                  </Pressable>
+                </View>
+              )
+            })}
+          </View>
+          <Text style={styles.hint}>{t('studioElementRemoveHint')}</Text>
+        </>
+      )}
 
       {current ? (
         <ElementEditor
@@ -127,13 +133,31 @@ export function StudioElementPanel({
           moving={moving}
           onToggleMove={onToggleMove}
           onChange={update}
-          onRemove={() => {
-            onChange(elements.filter((_, i) => i !== selected))
-            onSelect(Math.max(0, selected - 1))
-            if (elements.length <= 1) setAdding(true)
-          }}
+          onRemove={() => remove(selected)}
         />
       ) : null}
+
+      <View style={styles.addSection}>
+        <Text style={styles.title}>{t('studioElementAddTitle')}</Text>
+        <Text style={styles.hint}>{t('studioElementAddSteps')}</Text>
+        <StudioChips
+          items={ELEMENT_CATEGORIES.map((c) => ({ id: c.code, label: en ? c.labelEn : c.labelHe, selected: c.code === category }))}
+          onSelect={(id) => setCategory(id as ElementCategory)}
+        />
+        <StudioChips
+          wrap
+          disabled={atMax}
+          items={inCategory.map((def) => ({ id: def.code, label: `+ ${en ? def.labelEn : def.labelHe}` }))}
+          onSelect={(code) => {
+            onAdd(code)
+            onSelect(elements.length)
+          }}
+        />
+        <Pressable onPress={onUpload} disabled={atMax} accessibilityRole="button">
+          <Text style={[styles.upload, atMax && styles.off]}>{t('studioUploadElement')}</Text>
+        </Pressable>
+        <Text style={styles.hint}>{t('studioCatalogLimit').replace('{{count}}', String(STUDIO_MAX_ELEMENTS))}</Text>
+      </View>
     </View>
   )
 }
@@ -164,7 +188,7 @@ function ElementEditor({ element, index, name, itemType, parameters, bandWidthMm
         <Pressable onPress={onRemove} accessibilityRole="button">
           <Text style={styles.remove}>{t('studioRemove')}</Text>
         </Pressable>
-        <Text style={styles.section}>{name}</Text>
+        <Text style={styles.section}>{t('studioElementEditTitle').replace('{{name}}', name)}</Text>
       </View>
 
       {def?.text ? (
@@ -210,6 +234,7 @@ function ElementEditor({ element, index, name, itemType, parameters, bandWidthMm
       />
 
       <StudioPlacementControls
+        ring={itemType === 'RING'}
         controls={itemControls(itemType, 'ELEMENT', index, parameters)}
         placement={element.placement}
         shownAngleDeg={shownAngleDeg(itemType, 'ELEMENT', index, element.placement, parameters)}
@@ -224,6 +249,51 @@ function ElementEditor({ element, index, name, itemType, parameters, bandWidthMm
 
 const styles = StyleSheet.create({
   root: { gap: 10 },
+  title: {
+    fontFamily: 'Heebo',
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.ink,
+    textAlign: 'right',
+    writingDirection: 'rtl',
+  },
+  list: {
+    flexDirection: 'row-reverse',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  item: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.formBorder,
+    borderRadius: 18,
+    paddingRight: 12,
+    paddingLeft: 6,
+    paddingVertical: 4,
+    gap: 6,
+    maxWidth: '100%',
+  },
+  itemOn: { borderColor: colors.brand, backgroundColor: '#EFECF8' },
+  itemName: { flexShrink: 1 },
+  itemLabel: { fontFamily: 'Heebo', fontSize: 13, color: colors.ink },
+  itemLabelOn: { color: colors.brand, fontWeight: '600' },
+  itemRemove: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#F1EEFA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  itemRemoveMark: { fontSize: 11, color: colors.brand, fontWeight: '700' },
+  addSection: {
+    gap: 8,
+    marginTop: 4,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSubtle,
+  },
   editor: { gap: 8 },
   row: {
     flexDirection: 'row',

@@ -17,7 +17,7 @@ import { TryOnPlacement } from '@/src/components/studio/TryOnPlacement'
 import { BrandButton } from '@/src/components/ui/BrandButton'
 import { ErrorState } from '@/src/components/ui/ErrorState'
 import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
-import { getDesign, lockDesign, updateDesign } from '@/src/api/designs'
+import { getDesign, unlockDesign, updateDesign } from '@/src/api/designs'
 import { createInspiration, waitForAiJob } from '@/src/api/ai'
 import { createRenderJob, waitForRenderJob, type RenderExportFormat } from '@/src/api/renderJobs'
 import { createVisualizationJob, getFeatureFlags, getTryOnOverlay } from '@/src/api/visualization'
@@ -55,6 +55,7 @@ import {
   noteFromParameters,
   ringChartDiameterMm,
   settingFromParameters,
+  settingSetsBand,
   settingPayload,
   sizeFromParameters,
   sizePayload,
@@ -63,6 +64,7 @@ import {
   viewerParameters,
   withDraggedPlacement,
   withGeneratedInspiration,
+  type StudioBand,
   type StudioElement,
   type StudioMetal,
   type StudioSetting,
@@ -88,6 +90,21 @@ const TAB_TITLE: Record<StudioTabId, TranslationKey> = {
   stone: 'studioTabStone',
   elements: 'studioTabElements',
   inspiration: 'studioTabInspiration',
+}
+
+/** Each panel's "?": what to do there and what comes next (the client's notes of 23.11). */
+const TAB_HELP: Record<StudioTabId, { title: TranslationKey; body: TranslationKey }> = {
+  size: { title: 'studioHelpSizeTitle', body: 'studioHelpSizeBody' },
+  metal: { title: 'studioHelpMetalTitle', body: 'studioHelpMetalBody' },
+  setting: { title: 'studioHelpSettingTitle', body: 'studioHelpSettingBody' },
+  stone: { title: 'studioHelpStoneTitle', body: 'studioHelpStoneBody' },
+  elements: { title: 'studioHelpElementsTitle', body: 'studioHelpElementsBody' },
+  inspiration: { title: 'studioHelpInspirationTitle', body: 'studioHelpInspirationBody' },
+}
+
+/** The first design step: the band (its width and size); earrings have none, so the metal. */
+function firstTab(itemType: string): StudioTabId {
+  return itemType === 'EARRINGS' ? 'metal' : 'size'
 }
 
 function itemTypeCode(code: string | undefined): 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS' {
@@ -118,6 +135,11 @@ export function DesignStudioScreen() {
   const [sizeDraft, setSizeDraft] = useState<StudioSize | null>(null)
   const [metalDraft, setMetalDraft] = useState<StudioMetal | null>(null)
   const [settingDraft, setSettingDraft] = useState<StudioSetting | null>(null)
+  // The setting as it was when the stone tab opened: the band's stones are changed there, so
+  // "ביטול" in that tab puts the setting back too.
+  const settingAtStoneTab = useRef<StudioSetting | null>(null)
+  // A ring size typed in the size tab that is not one: "סיימתי" waits for a size that is.
+  const [customSizeInvalid, setCustomSizeInvalid] = useState(false)
   const [stonesDraft, setStonesDraft] = useState<StudioStone[] | null>(null)
   const [elementsDraft, setElementsDraft] = useState<StudioElement[] | null>(null)
   /** The stone / element open in its tab, and whether a drag on the model moves it. */
@@ -163,15 +185,16 @@ export function DesignStudioScreen() {
   // The link that serves the picture in use: the design's own (signed again at each load) once it is
   // saved, else the one kept from the upload / generation.
   const inspirationUri = mediaUrl(linkForUpload(previewInspiration, design?.inspirationUrl, inspirationLink))
-  // Live check of the server rule: a ring band no narrower than the chosen setting's minimum.
-  const bandConflict = bandWidthConflict(
-    itemType,
-    previewSize.bandWidthMm,
-    previewSetting,
-    settingsQuery.data ?? [],
-    locale === 'en' ? 'en' : 'he',
-  )
-  const panelConflict = tab === 'size' || tab === 'setting' ? bandConflict : null
+  // Live check of the server rules: a ring band no narrower than the chosen setting's minimum, and
+  // no side stones on a split shank.
+  const bandConflict =
+    bandWidthConflict(itemType, previewSize.bandWidthMm, previewSetting, settingsQuery.data ?? [], locale === 'en' ? 'en' : 'he') ??
+    (itemType === 'RING' && previewSize.shankStyle === 'SPLIT' && settingSetsBand(previewSetting, parameters, itemType)
+      ? { message: t('studioSplitShankNoBand') }
+      : null)
+  // A size typed in that is not one: the size panel says so under the field itself.
+  const sizeTypedConflict = tab === 'size' && customSizeInvalid ? { message: t('sizeCustomInvalid') } : null
+  const panelConflict = sizeTypedConflict ?? (tab === 'size' || tab === 'setting' ? bandConflict : null)
   // What the 3D viewer builds: the saved design with the open tab's choices applied.
   const previewParameters = useMemo(
     () =>
@@ -184,9 +207,12 @@ export function DesignStudioScreen() {
       }),
     [itemType, design?.parameters, sizeDraft, metalDraft, settingDraft, stonesDraft, elementsDraft],
   )
-  // The ring's band of small stones, if any: its stones are chosen in the setting tab.
+  // The ring's band of small stones, if any: its style is chosen in the setting tab, its stones in
+  // the stone tab (a section of their own).
   const bandDef = itemType === 'RING' && previewSetting.band ? settingDef(previewSetting.band.settingCode) : undefined
   const bandName = bandDef ? (locale === 'en' ? bandDef.labelEn : bandDef.labelHe) : null
+  const onBandChange = (band: StudioBand) =>
+    setSettingDraft((current) => ({ ...(current ?? settingFromParameters(itemType, parameters)), band }))
   const chartDiameter = ringChartDiameterMm(chartsQuery.data ?? [], previewSize)
   const stonesCount = Array.isArray(previewParameters.stones) ? previewParameters.stones.length : 0
 
@@ -415,6 +441,12 @@ export function DesignStudioScreen() {
     setTab(null)
   }
 
+  /** "ביטול": the open tab's changes are dropped; in the stone tab, the band's stones changed there too. */
+  const cancelPanel = () => {
+    if (tab === 'stone') setSettingDraft(settingAtStoneTab.current)
+    closePanel()
+  }
+
   const selectTab = (id: StudioTabId) => {
     if (tab === id) {
       setTab(null)
@@ -424,6 +456,7 @@ export function DesignStudioScreen() {
     if (id === 'metal' && metalDraft == null) setMetalDraft(metalFromParameters(parameters))
     setMoving(false)
     if (id === 'setting' && settingDraft == null) setSettingDraft(settingFromParameters(itemType, parameters))
+    if (id === 'stone') settingAtStoneTab.current = settingDraft
     if (id === 'stone' && stonesDraft == null) {
       setStonesDraft(stonesFromParameters(parameters))
       setStoneIndex(0)
@@ -440,46 +473,60 @@ export function DesignStudioScreen() {
     setTab(id)
   }
 
-  const offerSizeLock = (updated: DesignDetail) => {
-    if (itemType !== 'RING' || updated.lockedFields?.includes('size')) {
-      closePanel()
-      return
+  /**
+   * A size locked by an older studio (it offered to lock the size): the designer opens it again
+   * here, so a draft can be reused in another size or band width (the client's notes of 23.11).
+   */
+  const onUnlockSize = async () => {
+    if (!design) return
+    setBusy(true)
+    try {
+      await unlockDesign(design.id, { fields: ['size'] })
+      await refresh()
+    } catch (err) {
+      Alert.alert(t('authErrorTitle'), parseApiError(err) || t('designSaveFailed'))
+    } finally {
+      setBusy(false)
     }
-    Alert.alert(t('studioLockTitle'), t('studioLockBody'), [
-      { text: t('cancel'), style: 'cancel', onPress: closePanel },
-      {
-        text: t('studioLockConfirm'),
-        onPress: () => {
-          void (async () => {
-            try {
-              await lockDesign(updated.id, { fields: ['size'], confirm: true })
-              await refresh()
-            } catch (err) {
-              Alert.alert(t('authErrorTitle'), parseApiError(err) || t('designSaveFailed'))
-            } finally {
-              closePanel()
-            }
-          })()
-        },
-      },
-    ])
   }
 
   /**
    * "סיימתי": saves the open tab together with every other tab's changes the model shows (a band
-   * picked in the setting tab before the stones were added is saved with them, not dropped).
+   * picked in the setting tab before the stones were added is saved with them, not dropped). After
+   * the band width comes the metal: it opens next (the client's notes of 23.11).
    */
   const onFinish = async () => {
     if (panelConflict) {
       Alert.alert(t('authErrorTitle'), panelConflict.message)
       return
     }
-    const sizeTab = tab === 'size' && sizeDraft != null && !sizeLocked
+    const fromSize = tab === 'size'
     const updated = await saveDrafts()
     if (updated === null) return
     const current = updated === 'unchanged' ? design : updated
-    if (sizeTab && current) offerSizeLock(current)
-    else closePanel()
+    closePanel()
+    if (fromSize && current) {
+      setMetalDraft(metalFromParameters(current.parameters ?? {}))
+      setTab('metal')
+    }
+  }
+
+  // A design just made in the wizard opens on its first step (the band), once.
+  const startedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!route.params.start || !design || readOnly || startedRef.current === design.id) return
+    startedRef.current = design.id
+    const first = firstTab(design.itemType?.code ?? 'RING')
+    if (first === 'size') setSizeDraft(sizeFromParameters(design.parameters ?? {}))
+    else setMetalDraft(metalFromParameters(design.parameters ?? {}))
+    setTab(first)
+  }, [design, readOnly, route.params.start])
+
+  const onPanelHelp = () => {
+    if (!tab) return
+    // The size tab of a necklace or a bracelet has no ring size or shank.
+    const body = tab === 'size' && itemType !== 'RING' ? 'studioHelpSizeBodyOther' : TAB_HELP[tab].body
+    Alert.alert(t(TAB_HELP[tab].title), t(body))
   }
 
   const onGenerateInspiration = async () => {
@@ -772,15 +819,24 @@ export function DesignStudioScreen() {
             ) : null}
             </View>
           {tab ? (
-            <View style={[styles.panel, tab === 'size' ? styles.panelCompact : null]} pointerEvents="auto">
-              {tab !== 'size' && tab !== 'metal' ? (
+            <View style={styles.panel} pointerEvents="auto">
+              <View style={styles.panelHead}>
                 <Text style={styles.panelTitle}>{t(TAB_TITLE[tab])}</Text>
-              ) : null}
+                <Pressable
+                  testID="panel-help"
+                  onPress={onPanelHelp}
+                  hitSlop={10}
+                  style={styles.panelHelp}
+                  accessibilityRole="button"
+                  accessibilityLabel={t(TAB_HELP[tab].title)}
+                >
+                  <Text style={styles.panelHelpMark}>?</Text>
+                </Pressable>
+              </View>
               <ScrollView
-                style={tab === 'size' ? undefined : styles.panelBody}
+                style={styles.panelBody}
                 contentContainerStyle={styles.panelBodyContent}
                 keyboardShouldPersistTaps="handled"
-                scrollEnabled={tab !== 'size'}
               >
               {tab === 'size' && sizeDraft ? (
                 <StudioSizePanel
@@ -788,6 +844,9 @@ export function DesignStudioScreen() {
                   charts={chartsQuery.data ?? []}
                   value={sizeDraft}
                   locked={sizeLocked}
+                  onUnlock={() => void onUnlockSize()}
+                  busy={busy}
+                  onCustomInvalid={setCustomSizeInvalid}
                   onChange={setSizeDraft}
                   onMeasureGuide={() =>
                     navigation.navigate('MeasurementGuide', { category: jewelryCategory(design?.itemType?.code) })
@@ -808,6 +867,7 @@ export function DesignStudioScreen() {
                   value={settingDraft}
                   onChange={setSettingDraft}
                   offeredStones={offeredStones}
+                  shankStyle={previewSize.shankStyle}
                 />
               ) : null}
               {tab === 'stone' && stonesDraft ? (
@@ -825,8 +885,9 @@ export function DesignStudioScreen() {
                   }}
                   moving={moving}
                   onToggleMove={() => setMoving((on) => !on)}
+                  band={itemType === 'RING' ? previewSetting.band : null}
                   bandName={bandName}
-                  onOpenBand={() => selectTab('setting')}
+                  onBandChange={onBandChange}
                 />
               ) : null}
               {tab === 'elements' && elementsDraft ? (
@@ -866,7 +927,7 @@ export function DesignStudioScreen() {
                 />
               ) : null}
               </ScrollView>
-              {panelConflict ? <Text style={styles.warning}>{panelConflict.message}</Text> : null}
+              {panelConflict && !sizeTypedConflict ? <Text style={styles.warning}>{panelConflict.message}</Text> : null}
               <View style={styles.panelActions}>
                 <BrandButton
                   label={t('studioFinishCta')}
@@ -880,7 +941,7 @@ export function DesignStudioScreen() {
                   variant="outline"
                   hug
                   flex={false}
-                  onPress={closePanel}
+                  onPress={cancelPanel}
                   disabled={busy}
                 />
               </View>
@@ -974,10 +1035,6 @@ const styles = StyleSheet.create({
     gap: 16,
     maxHeight: '42%',
   },
-  panelCompact: {
-    height: 188,
-    maxHeight: 188,
-  },
   panelBody: {
     flexGrow: 0,
     maxHeight: 280,
@@ -986,6 +1043,11 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingBottom: 4,
   },
+  panelHead: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   panelTitle: {
     fontFamily: 'Heebo',
     fontSize: 16,
@@ -993,6 +1055,22 @@ const styles = StyleSheet.create({
     color: colors.ink,
     textAlign: 'right',
     writingDirection: 'rtl',
+  },
+  panelHelp: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: colors.brand,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  panelHelpMark: {
+    fontFamily: 'Heebo',
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.brand,
+    marginTop: -1,
   },
   warning: {
     fontFamily: 'Heebo',

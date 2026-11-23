@@ -1,6 +1,13 @@
 import { measurementGuideTable } from '../src/api/masterData'
 import { necklaceGuideLines, NECKLACE_STYLES, necklaceStyleForLength } from '../src/lib/necklaceLengths'
-import { formatDiameterMm, RING_SIZE_FALLBACK, ringSizeOptions } from '../src/lib/ringSizes'
+import {
+  customRingSize,
+  formatDiameterMm,
+  RING_SIZE_FALLBACK,
+  ringSizeLabel,
+  ringSizeOptions,
+  STANDARD_RING_SIZE,
+} from '../src/lib/ringSizes'
 import { bandWidthConflict, isNecklaceLength, NECKLACE_LENGTHS_CM } from '../src/lib/studioParams'
 import type { SettingItem, SizeChartRow } from '../src/types/api'
 
@@ -40,9 +47,12 @@ describe('ring sizes (PRD 5.4: IL 52–64 paired with US 6.00–10.75)', () => {
     ])
   })
 
-  it('the offline fallback is the PRD chart', () => {
+  it('the offline fallback is the full chart: every size 44–70, the PRD sizes as the PRD gives them', () => {
     const labels = ringSizeOptions(RING_SIZE_FALLBACK).map((option) => option.label)
-    expect(labels).toEqual([
+    expect(labels).toHaveLength(27)
+    expect(labels[0]).toBe('44 · US 3.00 · 14.01 מ״מ')
+    expect(labels[labels.length - 1]).toBe('70 · US 13.00 · 22.28 מ״מ')
+    for (const prd of [
       '52 · US 6.00 · 16.55–16.95 מ״מ',
       '54 · US 7.00 · 17.19 מ״מ',
       '56 · US 7.75 · 17.83 מ״מ',
@@ -50,7 +60,31 @@ describe('ring sizes (PRD 5.4: IL 52–64 paired with US 6.00–10.75)', () => {
       '60 · US 9.25 · 19.10 מ״מ',
       '62 · US 10.00 · 19.76 מ״מ',
       '64 · US 10.75 · 20.40–20.44 מ״מ',
-    ])
+    ]) {
+      expect(labels).toContain(prd)
+    }
+    // No more jumps of two: 53, 55, 57 are there (notes of 23.11).
+    expect(labels).toContain('53 · US 6.50 · 16.87 מ״מ')
+    const sizes = ringSizeOptions(RING_SIZE_FALLBACK).map((option) => Number(option.sizeCode))
+    sizes.slice(1).forEach((size, i) => expect(size - sizes[i]).toBe(1))
+    // Every US size once.
+    const us = ringSizeOptions(RING_SIZE_FALLBACK).map((option) => option.us)
+    expect(new Set(us).size).toBe(us.length)
+  })
+
+  it('a size typed by hand: any Israeli size 38–80, half sizes too', () => {
+    expect(customRingSize('53.5')).toEqual({ standard: 'IL', sizeCode: '53.5' })
+    expect(customRingSize(' 53,5 ')).toEqual({ standard: 'IL', sizeCode: '53.5' })
+    expect(customRingSize('57')).toEqual({ standard: 'IL', sizeCode: '57' })
+    expect(customRingSize('38')).toEqual({ standard: 'IL', sizeCode: '38' })
+    expect(customRingSize('80')).toEqual({ standard: 'IL', sizeCode: '80' })
+    for (const bad of ['', '200', '20', 'abc', '5x', '-52']) expect(customRingSize(bad)).toBeNull()
+    expect(ringSizeLabel({ standard: 'IL', sizeCode: '53.5' })).toBe('53.5 · 17.03 מ״מ')
+    expect(ringSizeLabel({ standard: 'US', sizeCode: '7.00' })).toBe('US 7.00')
+  })
+
+  it('"standard size" is a real size the design can be made in', () => {
+    expect(STANDARD_RING_SIZE).toEqual({ standard: 'IL', sizeCode: '52' })
   })
 
   it('formats diameters with two decimals and a range only when there is one', () => {

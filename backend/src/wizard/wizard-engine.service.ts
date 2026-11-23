@@ -136,7 +136,35 @@ export class WizardEngineService {
     return [];
   }
 
-  async validateParameters(itemTypeId: string, parameters: unknown): Promise<ValidationResult> {
+  /**
+   * A metal or purity chosen now must be one on offer (12K gold and platinum no longer are: the
+   * client's notes of 23.11.2026); one the catalogue does not know is refused too. A design saved
+   * in a metal and purity before keeps them.
+   */
+  private async checkMetalOffered(parameters: Record<string, unknown>, previous: unknown): Promise<string[]> {
+    const metalCode = this.getByPath(parameters, 'metal.metalCode');
+    const purityCode = this.getByPath(parameters, 'metal.purityCode');
+    if (typeof metalCode !== 'string') {
+      return [];
+    }
+    if (this.getByPath(previous, 'metal.metalCode') === metalCode && this.getByPath(previous, 'metal.purityCode') === purityCode) {
+      return [];
+    }
+    const metal = await this.prisma.metal.findUnique({ where: { code: metalCode }, include: { purities: true } });
+    if (!metal || !metal.isActive) {
+      return [`/metal/metalCode ${metalCode} is not offered`];
+    }
+    if (typeof purityCode === 'string' && !metal.purities.some((p) => p.code === purityCode && p.isActive)) {
+      return [`/metal/purityCode ${purityCode} is not offered for ${metalCode}`];
+    }
+    return [];
+  }
+
+  /**
+   * `previous`: the design's saved parameters. A rule that came after a choice was saved (a stone's
+   * own colours, a ring size range, a metal no longer offered) holds only for what is chosen now.
+   */
+  async validateParameters(itemTypeId: string, parameters: unknown, previous?: unknown): Promise<ValidationResult> {
     const itemType = await this.loadConfig(itemTypeId);
     const errors: string[] = [];
 
@@ -149,8 +177,9 @@ export class WizardEngineService {
       return { valid: false, errors: [`/elements must have at most ${MAX_ELEMENTS} items`] };
     }
 
-    // The client catalogue (cuts, colours, sizes, heads, band styles), whatever the item type's schema.
-    const catalog = catalogErrors(itemType.code, raw);
+    // The client catalogue (cuts, colours, sizes, heads, band styles), whatever the item type's
+    // schema; and the metals on offer.
+    const catalog = [...catalogErrors(itemType.code, raw, previous), ...(await this.checkMetalOffered(raw, previous))];
     if (!itemType.config) {
       // No schema configured yet for this item type: only the catalogue applies.
       return { valid: catalog.length === 0, errors: catalog };

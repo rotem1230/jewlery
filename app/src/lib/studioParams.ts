@@ -51,6 +51,8 @@ export type StudioSize = {
   standard?: string
   sizeCode?: string
   bandWidthMm: number
+  /** A ring's shank: SINGLE (none saved = single), SPLIT, DOUBLE or TRIPLE. */
+  shankStyle?: string
   necklaceLengthCm?: number
   wristCircumferenceCm?: number
   earringStyleCode?: string
@@ -85,6 +87,7 @@ export function sizeFromParameters(parameters: Record<string, unknown> | undefin
     standard: typeof size?.standard === 'string' ? size.standard : undefined,
     sizeCode: typeof size?.sizeCode === 'string' ? size.sizeCode : undefined,
     bandWidthMm: band != null ? clampBandWidthMm(band) : DEFAULT_BAND_WIDTH_MM,
+    shankStyle: typeof size?.shankStyle === 'string' ? size.shankStyle : undefined,
     necklaceLengthCm: necklace,
     wristCircumferenceCm: wrist,
     earringStyleCode: typeof size?.earringStyleCode === 'string' ? size.earringStyleCode : undefined,
@@ -99,6 +102,7 @@ export function sizePayload(
     const payload: Record<string, unknown> = { bandWidthMm: clampBandWidthMm(size.bandWidthMm) }
     if (size.standard) payload.standard = size.standard
     if (size.sizeCode) payload.sizeCode = size.sizeCode
+    if (size.shankStyle) payload.shankStyle = size.shankStyle
     return payload
   }
   if (itemType === 'NECKLACE') {
@@ -525,6 +529,24 @@ export function settingPayload(
     payload.band = stored
   }
   return payload
+}
+
+/**
+ * Whether the ring sets stones along its band once saved: a band chosen in the studio, or an older
+ * design's setting that is itself the band ("PAVE"), kept as it was saved. A split shank takes
+ * neither (the server's rule).
+ */
+export function settingSetsBand(
+  setting: StudioSetting,
+  savedParameters: Record<string, unknown> | undefined,
+  itemType: StudioItemType,
+): boolean {
+  if (itemType !== 'RING') return false
+  if (setting.band) return true
+  const payload = settingPayload(setting, savedParameters, itemType)
+  if (recordOf(payload.band)) return true
+  const older = typeof payload.headCode === 'string' && payload.headCode.trim() ? payload.headCode : payload.settingCode
+  return typeof older === 'string' && settingDef(older.trim().toUpperCase())?.kind === 'BAND'
 }
 
 /**

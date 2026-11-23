@@ -19,13 +19,16 @@ import {
   RING_TOP_DEG,
   STONES,
   STONE_PALETTE,
+  ShankStyle,
   allowedCuts,
   bandMetalThicknessMm,
   bandWallMm,
+  cutDef,
   elementDef,
   elementText,
   paletteColor,
   settingDef,
+  shankStyleOf,
   stoneDef,
 } from './catalog';
 import { MotifOutline, P2, densifyLoop, motifOutline, triangulate } from './motifs';
@@ -95,7 +98,8 @@ export interface JewelrySpec {
   metalCode: string;
   purityCode: string;
   finishCode: string;
-  ring: { innerDiameterMm: number; bandWidthMm: number; bandThicknessMm: number };
+  /** `shankStyle`: one band, a split shank, or two / three bands side by side (notes of 23.11). */
+  ring: { innerDiameterMm: number; bandWidthMm: number; bandThicknessMm: number; shankStyle: ShankStyle };
   necklace: { lengthMm: number };
   bracelet: { innerCircumferenceMm: number };
   earrings: { style: 'stud' | 'drop' };
@@ -297,6 +301,7 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
     itemType === 'NECKLACE' || itemType === 'BRACELET' || itemType === 'EARRINGS' ? itemType : 'RING';
 
   const bandWidth = clamp(finite(size.bandWidthMm) ?? DEFAULT_BAND_WIDTH_MM, 0.5, 15);
+  const shankStyle: ShankStyle = kind === 'RING' ? shankStyleOf(size.shankStyle) : 'SINGLE';
   let stones: StoneSpec[] = [];
   if (Array.isArray(params.stones)) {
     params.stones.slice(0, MAX_STONES).forEach((item, index) => {
@@ -348,7 +353,8 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
   const bandRecord = record(setting?.band);
   const bandAsked = bandRecord ? upper(bandRecord.settingCode) : settingDef(headAsked)?.kind === 'BAND' ? headAsked : '';
   const bandDef = settingDef(bandAsked);
-  if (kind === 'RING' && bandDef?.kind === 'BAND') {
+  // A split shank's arms carry no row of stones (the server refuses the two together).
+  if (kind === 'RING' && bandDef?.kind === 'BAND' && shankStyle !== 'SPLIT') {
     let stoneCode = 'DIAMOND';
     let color: unknown = null;
     let stoneMm: number;
@@ -401,7 +407,7 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
     metalCode: typeof metal.metalCode === 'string' ? metal.metalCode : 'YELLOW_GOLD',
     purityCode: typeof metal.purityCode === 'string' ? metal.purityCode : '14K',
     finishCode: typeof params.finishCode === 'string' ? params.finishCode : 'POLISHED',
-    ring: { innerDiameterMm: ri * 2, bandWidthMm: bandWidth, bandThicknessMm: thickness },
+    ring: { innerDiameterMm: ri * 2, bandWidthMm: bandWidth, bandThicknessMm: thickness, shankStyle },
     necklace: { lengthMm: clamp(finite(size.necklaceLengthCm) ?? DEFAULT_NECKLACE_LENGTH_CM, 20, 100) * 10 },
     bracelet: {
       innerCircumferenceMm: clamp(finite(size.wristCircumferenceCm) ?? DEFAULT_WRIST_CM, 10, 30) * 10 + BRACELET_EASE_MM,
@@ -431,10 +437,89 @@ export function placementFromPoint(spec: JewelrySpec, point: Vec3): { angleDeg: 
   let deg = Math.atan2(point[1], point[0]) / DEG;
   if (deg < 0) deg += 360;
   if (spec.itemType === 'RING') {
-    const half = spec.ring.bandWidthMm / 2;
+    const half = ringHalfWidthMm(spec);
     return { angleDeg: round(deg), offsetMm: round(clamp(point[2], -half, half)) };
   }
   return { angleDeg: round(deg), offsetMm: 0 };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The shank (the client's notes of 23.11: split, double and triple shanks)
+// ---------------------------------------------------------------------------------------------
+
+/** Where a ring's head stands: where the user put the centre stone, else the top. */
+function headAngleOf(spec: JewelrySpec): number {
+  const main = spec.stones[0];
+  return spec.setting && main?.placed ? main.angle : RING_TOP_DEG * DEG;
+}
+
+/** The gap between two bands of a double / triple shank. */
+function shankGapMm(bandWidthMm: number): number {
+  return clamp(bandWidthMm * 0.5, 0.8, 2.5);
+}
+
+/** The middle (z) of each band of the shank: one band, or two / three side by side. */
+export function shankCentresMm(spec: JewelrySpec): number[] {
+  const w = spec.ring.bandWidthMm;
+  const step = w + shankGapMm(w);
+  if (spec.ring.shankStyle === 'DOUBLE') return [-step / 2, step / 2];
+  if (spec.ring.shankStyle === 'TRIPLE') return [-step, 0, step];
+  return [0];
+}
+
+/**
+ * A split shank: each arm's width, where the arms lie while the band is whole (they overlap into
+ * one band of the chosen width), how far apart they move at the top, and over what arc they part.
+ */
+function splitShank(spec: JewelrySpec): { armWidth: number; base: number; spread: number; spanRad: number } {
+  const w = spec.ring.bandWidthMm;
+  const armWidth = Math.max(0.8, w * 0.6);
+  // The opening at the top: about half the centre stone, never less than 1.4 mm.
+  const centre = spec.stones[0] && spec.setting ? spec.stones[0].sizeMm ?? CENTER_STONE_MM : CENTER_STONE_MM;
+  const opening = Math.max(1.4, centre * 0.5);
+  const base = w / 2 - armWidth / 2;
+  return { armWidth, base, spread: opening / 2 - (w / 2 - armWidth), spanRad: 75 * DEG };
+}
+
+/** How far the arms of a split shank have parted at `angle` (0 at the bottom, 1 at the top). */
+function splitAmount(angle: number, top: number, spanRad: number): number {
+  const d = Math.abs(Math.atan2(Math.sin(angle - top), Math.cos(angle - top)));
+  const x = clamp(1 - d / spanRad, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+/** Half the ring's width across the finger at its widest (all its bands, a split shank's open arms). */
+export function ringHalfWidthMm(spec: JewelrySpec): number {
+  const w = spec.ring.bandWidthMm;
+  if (spec.ring.shankStyle === 'SPLIT') {
+    const s = splitShank(spec);
+    return s.base + s.spread + s.armWidth / 2;
+  }
+  const centres = shankCentresMm(spec);
+  return Math.max(...centres.map(Math.abs)) + w / 2;
+}
+
+/**
+ * Where across the band (z) an item `halfMm` wide sits at `angle`, as near `z` as the metal allows:
+ * on a band (or an arm), never in the gap between two.
+ */
+function onShank(spec: JewelrySpec, angle: number, z: number, halfMm: number): number {
+  const w = spec.ring.bandWidthMm;
+  let strips: Array<{ c: number; half: number }>;
+  if (spec.ring.shankStyle === 'SPLIT') {
+    const s = splitShank(spec);
+    const c = s.base + s.spread * splitAmount(angle, headAngleOf(spec), s.spanRad);
+    // While the arms overlap they are one band.
+    strips = c - s.armWidth / 2 <= 0 ? [{ c: 0, half: c + s.armWidth / 2 }] : [-c, c].map((x) => ({ c: x, half: s.armWidth / 2 }));
+  } else {
+    strips = shankCentresMm(spec).map((c) => ({ c, half: w / 2 }));
+  }
+  let best = strips[0];
+  strips.forEach((strip) => {
+    if (Math.abs(z - strip.c) < Math.abs(z - best.c)) best = strip;
+  });
+  const room = Math.max(0, best.half - halfMm);
+  return best.c + clamp(z - best.c, -room, room);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -792,15 +877,136 @@ function isCabochon(shape: CutCode): boolean {
   return shape === 'CABOCHON' || shape === 'CABOCHON_OVAL';
 }
 
-/** Heights of a cut above and below its girdle, as fractions of its size. */
+/** The first cuts, drawn as they always were (their depth follows the length). */
+const FIRST_CUTS: readonly CutCode[] = ['ROUND', 'OVAL', 'EMERALD', 'ROSE', 'CABOCHON', 'CABOCHON_OVAL'];
+
+/**
+ * Heights of a cut above and below its girdle. The first cuts as fractions of their size; the
+ * fancy shapes (23.11) of their width, so a baguette or a marquise is as deep as it is wide.
+ */
 function cutProfile(shape: CutCode, size: number): { crown: number; girdle: number; pavilion: number } {
   if (isCabochon(shape)) return { crown: size * 0.42, girdle: size * 0.03, pavilion: 0 };
   if (shape === 'ROSE') return { crown: size * 0.3, girdle: size * 0.03, pavilion: 0 };
-  return { crown: size * 0.16, girdle: size * 0.03, pavilion: size * 0.43 };
+  const depth = FIRST_CUTS.includes(shape) ? size : size * (cutDef(shape)?.widthRatio ?? 1);
+  return { crown: depth * 0.16, girdle: size * 0.03, pavilion: depth * 0.43 };
+}
+
+/** A rectangle hx × hz with its corners cut by `cut` (0: square corners). */
+function cutRect(hx: number, hz: number, cut: number): P2[] {
+  if (cut <= 0) {
+    return [
+      [hx, -hz],
+      [hx, hz],
+      [-hx, hz],
+      [-hx, -hz],
+    ];
+  }
+  return [
+    [hx, -hz + cut],
+    [hx, hz - cut],
+    [hx - cut, hz],
+    [-hx + cut, hz],
+    [-hx, hz - cut],
+    [-hx, -hz + cut],
+    [-hx + cut, -hz],
+    [hx - cut, -hz],
+  ];
+}
+
+/** Scales points about their bounding box's middle to `size` long (x) and `size × ratio` wide (z). */
+function fitOutline(points: P2[], size: number, ratio: number): P2[] {
+  const xs = points.map((p) => p[0]);
+  const zs = points.map((p) => p[1]);
+  const cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  const cz = (Math.max(...zs) + Math.min(...zs)) / 2;
+  const w = Math.max(...xs) - Math.min(...xs) || 1;
+  const h = Math.max(...zs) - Math.min(...zs) || 1;
+  return points.map(([x, z]) => [((x - cx) / w) * size, ((z - cz) / h) * size * ratio]);
+}
+
+/** The fancy shapes' girdles (the client's notes of 23.11), or null for the first cuts. */
+function fancyOutline(shape: StoneShape, size: number): P2[] | null {
+  const r = size / 2;
+  switch (shape) {
+    case 'PRINCESS':
+      return cutRect(r, r, r * 0.04);
+    case 'ASSCHER':
+      return cutRect(r, r, r * 0.3);
+    case 'RADIANT':
+      return cutRect(r, r * 0.8, r * 0.16);
+    case 'BAGUETTE':
+      return cutRect(r, r * 0.35, 0);
+    case 'CUSHION': {
+      // A square with softly rounded sides (a superellipse).
+      const pts: P2[] = [];
+      for (let i = 0; i < 32; i++) {
+        const t = (i / 32) * Math.PI * 2;
+        const c = Math.cos(t);
+        const s = Math.sin(t);
+        pts.push([Math.sign(c) * r * Math.pow(Math.abs(c), 2 / 3.2), Math.sign(s) * r * 0.95 * Math.pow(Math.abs(s), 2 / 3.2)]);
+      }
+      return pts;
+    }
+    case 'MARQUISE': {
+      // Pointed at both ends, half as wide as long.
+      const pts: P2[] = [];
+      const n = 14;
+      for (let i = 0; i <= n; i++) {
+        const x = r - (2 * r * i) / n;
+        pts.push([x, r * 0.5 * (1 - (x / r) ** 2)]);
+      }
+      for (let i = n - 1; i > 0; i--) {
+        const x = r - (2 * r * i) / n;
+        pts.push([x, -r * 0.5 * (1 - (x / r) ** 2)]);
+      }
+      return pts;
+    }
+    case 'PEAR': {
+      // A teardrop: the point at one end, round at the other.
+      const pts: P2[] = [];
+      for (let i = 0; i < 28; i++) {
+        const t = (i / 28) * Math.PI * 2;
+        pts.push([Math.cos(t), Math.sin(t) * Math.sin(t / 2)]);
+      }
+      return fitOutline(pts, size, 0.62);
+    }
+    case 'HEART': {
+      const pts: P2[] = [];
+      for (let i = 0; i < 32; i++) {
+        const t = (i / 32) * Math.PI * 2;
+        pts.push([13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t), 16 * Math.sin(t) ** 3]);
+      }
+      return fitOutline(pts, size, 1);
+    }
+    case 'TRILLION': {
+      // A triangle with gently rounded sides.
+      const corners: P2[] = [0, 1, 2].map((k) => {
+        const a = Math.PI / 2 + (k * 2 * Math.PI) / 3;
+        return [Math.cos(a), Math.sin(a)];
+      });
+      const pts: P2[] = [];
+      for (let k = 0; k < 3; k++) {
+        const a = corners[k];
+        const b = corners[(k + 1) % 3];
+        const mid: P2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const out = Math.hypot(mid[0], mid[1]) || 1;
+        for (let s = 0; s < 6; s++) {
+          const u = s / 6;
+          const bulge = Math.sin(Math.PI * u) * 0.12;
+          pts.push([a[0] + (b[0] - a[0]) * u + (mid[0] / out) * bulge, a[1] + (b[1] - a[1]) * u + (mid[1] / out) * bulge]);
+        }
+      }
+      return fitOutline(pts, size, 0.87);
+    }
+    default:
+      return null;
+  }
 }
 
 /** Girdle outline (x, z) of a cut, scaled so its longest side equals `size`. */
 function girdleOutline(shape: StoneShape, size: number): P2[] {
+  const fancy = fancyOutline(shape, size);
+  if (fancy) return fancy;
   const r = size / 2;
   if (shape === 'OVAL' || shape === 'CABOCHON_OVAL') {
     const pts: P2[] = [];
@@ -919,7 +1125,13 @@ function gem(mesh: MeshBuilder, frame: Frame, shape: StoneShape, size: number): 
   }
   const top = outline.map(([x, z]) => toWorld(frame, [x * 0.56, girdle / 2 + crown, z * 0.56]));
   const culet = toWorld(frame, [0, -girdle / 2 - pavilion, 0]);
-  mesh.flatPolygon(top, frame.y);
+  if (shape === 'HEART') {
+    // The heart's table has a cleft: fanned from its middle, not from a corner.
+    const middle = toWorld(frame, [0, girdle / 2 + crown, 0]);
+    for (let i = 0; i < count; i++) mesh.flatPolygon([middle, top[i], top[(i + 1) % count]], frame.y);
+  } else {
+    mesh.flatPolygon(top, frame.y);
+  }
   for (let i = 0; i < count; i++) {
     const j = (i + 1) % count;
     const crownMid = scale(add(add(top[i], top[j]), add(upper[i], upper[j])), 0.25);
@@ -957,6 +1169,12 @@ interface HeadInput {
   prongs: number;
   /** The small stone a bridge-accent head carries. */
   accent: MeshBuilder;
+  /**
+   * A ring's head sits on the band (the client's notes of 23.11: "at height 0, the prongs come
+   * straight out of the ring"): the prongs rise from the band's surface beside the stone, no more
+   * than this far across the band (its half width, less the wire).
+   */
+  onBand?: { halfWidth: number };
 }
 
 /** Prongs from the base to over the girdle; `cross` turns their bases (a trellis), `peg` joins them in one post. */
@@ -971,9 +1189,18 @@ function prongSet(h: HeadInput, opts: { cross?: boolean; peg?: boolean } = {}): 
     const dir: Vec3 = [Math.cos(a), 0, Math.sin(a)];
     const baseAngle = opts.cross ? a + Math.PI / prongs : a;
     const baseDir: Vec3 = [Math.cos(baseAngle), 0, Math.sin(baseAngle)];
+    let base: Vec3 = opts.peg ? [0, -baseDepth, 0] : add([0, -baseDepth, 0], scale(baseDir, baseSpread));
+    let middle: Vec3 = add([0, -below * 0.6, 0], scale(opts.cross ? norm(add(dir, baseDir)) : dir, reach * 0.55));
+    if (h.onBand && !opts.peg) {
+      // Straight up from the band beside the stone, within the band's width.
+      const limit = Math.max(0, h.onBand.halfWidth - wire);
+      const across = (p: Vec3): Vec3 => [p[0], p[1], clamp(p[2], -limit, limit)];
+      base = across(add([0, -baseDepth, 0], scale(baseDir, reach * 0.9)));
+      middle = across(add([0, -baseDepth * 0.45, 0], scale(dir, reach * 0.95)));
+    }
     const control: Vec3[] = [
-      opts.peg ? [0, -baseDepth, 0] : add([0, -baseDepth, 0], scale(baseDir, baseSpread)),
-      add([0, -below * 0.6, 0], scale(opts.cross ? norm(add(dir, baseDir)) : dir, reach * 0.55)),
+      base,
+      middle,
       add([0, 0, 0], scale(dir, reach + wire * 0.6)),
       add([0, crown * 0.45, 0], scale(dir, reach * 0.93)),
     ];
@@ -1161,19 +1388,47 @@ function buildHead(code: string, h: HeadInput): void {
 }
 
 /** Sets one stone in a head (`code`). */
-function setStone(set: PartSet, metal: MeshBuilder, frame: Frame, stone: StoneSpec, size: number, code: string, prongs: number, baseDepth: number, baseSpread: number): void {
+function setStone(
+  set: PartSet,
+  metal: MeshBuilder,
+  frame: Frame,
+  stone: StoneSpec,
+  size: number,
+  code: string,
+  prongs: number,
+  baseDepth: number,
+  baseSpread: number,
+  onBand?: HeadInput['onBand'],
+): void {
   const f = turnFrame(frame, stone.rotationDeg);
   gem(set.stone(stone.color, stone.opaque), f, stone.shape, size);
+  setHead(set, metal, f, stone.shape, size, code, prongs, baseDepth, baseSpread, onBand);
+}
+
+/** A head (`code`) for a stone of `shape` and `size`, drawn without the stone (it is drawn apart, or not chosen yet). */
+function setHead(
+  set: PartSet,
+  metal: MeshBuilder,
+  frame: Frame,
+  shape: CutCode,
+  size: number,
+  code: string,
+  prongs: number,
+  baseDepth: number,
+  baseSpread: number,
+  onBand?: HeadInput['onBand'],
+): void {
   buildHead(code, {
     metal,
-    frame: f,
-    shape: stone.shape,
-    outline: girdleOutline(stone.shape, size),
+    frame,
+    shape,
+    outline: girdleOutline(shape, size),
     size,
     baseDepth,
     baseSpread,
     prongs,
     accent: set.stone('CRYSTAL', false),
+    onBand,
   });
 }
 
@@ -1510,7 +1765,7 @@ function elementHalfAlongBand(element: ElementSpec, size: number): number {
 }
 
 /** A band setting: a row (or rows) of stones along the ring band, held in the style's metal. */
-function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, taken: BandArc[] = []): { from: number; to: number } {
+function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, taken: BandArc[] = [], zShift = 0): { from: number; to: number } {
   const w = spec.ring.bandWidthMm;
   const d = band.stoneMm;
   const wall = bandWallMm(d);
@@ -1528,7 +1783,8 @@ function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, 
   // Flush styles: the table level with the band; raised styles: the girdle over it.
   const girdleR = raised ? ro + d * 0.3 : ro - crown * 0.75;
   const bead = Math.max(0.16, Math.min(0.24, d * 0.15));
-  const at = (a: number, r: number, z: number): Vec3 => [Math.cos(a) * r, Math.sin(a) * r, z];
+  // `zShift`: the middle of the band this row runs on (one of a double / triple shank's).
+  const at = (a: number, r: number, z: number): Vec3 => [Math.cos(a) * r, Math.sin(a) * r, z + zShift];
   const prong = (a: number, z: number, toR: number, toZ: number) => {
     const path = smoothPath([at(a, ro - 0.1, z), at(a, (ro + toR) / 2, (z + toZ) / 2), at(a, toR + crown * 0.4, toZ)], 4);
     tube(metal, path, Math.max(0.18, d * 0.1), 8, false);
@@ -1550,7 +1806,7 @@ function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, 
       // Two walls along the band's edges, over the girdles.
       const z = rowsWidth / 2 + wall / 2;
       [-1, 1].forEach((side) =>
-        revolve(metal, roundedRect(ro - 0.2, ro + crown * 0.5, side * z - wall / 2, side * z + wall / 2, wall * 0.3, 2), 48, 'Z', [0, 0, 0], true, undefined, from - step / 2, to + step / 2),
+        revolve(metal, roundedRect(ro - 0.2, ro + crown * 0.5, side * z - wall / 2, side * z + wall / 2, wall * 0.3, 2), 48, 'Z', [0, 0, zShift], true, undefined, from - step / 2, to + step / 2),
       );
       break;
     }
@@ -1639,7 +1895,7 @@ function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, 
       angles.forEach((a) =>
         rowZ.forEach((z) => {
           const radial: Vec3 = [Math.cos(a), Math.sin(a), 0];
-          torus(metal, add(scale(radial, ro + 0.02), [0, 0, z]), [0, 0, 1], norm(cross(radial, [0, 0, 1])), d / 2 + 0.14, Math.max(0.14, d * 0.09), 20);
+          torus(metal, add(scale(radial, ro + 0.02), [0, 0, z + zShift]), [0, 0, 1], norm(cross(radial, [0, 0, 1])), d / 2 + 0.14, Math.max(0.14, d * 0.09), 20);
         }),
       );
       break;
@@ -1653,7 +1909,7 @@ function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, 
       if (band.code === 'BAND_BEAD_BRIGHT_CUT' || band.rows > 1) {
         const z = rowsWidth / 2 + wall * 0.5;
         [-1, 1].forEach((side) =>
-          revolve(metal, roundedRect(ro - 0.1, ro + 0.08, side * z - wall * 0.35, side * z + wall * 0.35, 0.05, 1), 48, 'Z', [0, 0, 0], true, undefined, from - step / 2, to + step / 2),
+          revolve(metal, roundedRect(ro - 0.1, ro + 0.08, side * z - wall * 0.35, side * z + wall * 0.35, 0.05, 1), 48, 'Z', [0, 0, zShift], true, undefined, from - step / 2, to + step / 2),
         );
       }
     }
@@ -1661,61 +1917,190 @@ function buildBand(spec: JewelrySpec, set: PartSet, band: BandSpec, ro: number, 
   return { from, to };
 }
 
+/** Where the items of a ring go (the head, the stones on the band, the elements), before drawing. */
+export interface RingLayout {
+  outerRadiusMm: number;
+  /** The head's place on the band (radians), or null: no head. */
+  headAngle: number | null;
+  /** Half the head's length along the band (its girdle), mm. */
+  headHalfMm: number;
+  accents: Array<{ stone: StoneSpec; size: number; angle: number }>;
+  elements: Array<{ element: ElementSpec; size: number; halfMm: number; angle: number }>;
+}
+
+/**
+ * The ring's layout. A stone on the band keeps 1 mm off the head; an element lies right against
+ * the head's girdle, on the side it was put (the client's notes of 23.11: an element moved to the
+ * head jumped to its other side).
+ */
+export function ringLayout(spec: JewelrySpec): RingLayout {
+  const ri = spec.ring.innerDiameterMm / 2;
+  const w = spec.ring.bandWidthMm;
+  const t = spec.ring.bandThicknessMm;
+  const ro = ri + t;
+  const head = spec.setting;
+  const [main, ...rest] = spec.stones;
+  const centre = head && main ? main : null;
+  const accents = centre ? rest : spec.stones;
+  // A head stands on the band whether or not its stone is chosen yet.
+  const headAngle = head ? headAngleOf(spec) : null;
+  const centreSize = stoneSize(centre ?? undefined, CENTER_STONE_MM);
+  const shape: CutCode = centre?.shape ?? 'ROUND';
+  // Along the band is the stone's own x turned by its rotation; the longer of its two ends (a pear's
+  // point and its round end differ).
+  const outline = girdleOutline(shape, centreSize);
+  const turn = -(centre?.rotationDeg ?? 0) * DEG;
+  const headHalfMm = headAngle == null ? 0 : Math.max(outlineReach(outline, turn), outlineReach(outline, turn + Math.PI));
+  const stoneClearance = headAngle == null ? 0 : (centreSize / 2 + 1) / ro;
+  return {
+    outerRadiusMm: ro,
+    headAngle,
+    headHalfMm,
+    accents: accents.map((stone) => {
+      const size = stoneSize(stone, clamp(Math.min(w * 0.7, t * 1.3), 1.0, 2.6));
+      return { stone, size, angle: awayFromHead(stone.angle, headAngle, stoneClearance + size / 2 / ro) };
+    }),
+    elements: spec.elements.map((element) => {
+      const size = elementSize(element, clamp(w * 1.4, 3.5, 8));
+      const halfMm = elementHalfAlongBand(element, size);
+      return { element, size, halfMm, angle: awayFromHead(element.angle, headAngle, (headHalfMm + halfMm) / ro) };
+    }),
+  };
+}
+
+/**
+ * Where an item dragged on the model goes. An element dragged over the head stays against the
+ * head on the side it came from (`fromAngleDeg`, where it was before), instead of jumping to the
+ * other side when the finger passes the head's middle.
+ */
+export function dragPlacement(
+  spec: JewelrySpec,
+  target: { kind: 'stone' | 'element'; index: number },
+  point: Vec3,
+  fromAngleDeg: number | null,
+): { angleDeg: number; offsetMm: number } {
+  const placed = placementFromPoint(spec, point);
+  if (spec.itemType !== 'RING' || target.kind !== 'element') return placed;
+  const layout = ringLayout(spec);
+  const seat = layout.elements[target.index];
+  if (layout.headAngle == null || !seat) return placed;
+  const zone = (layout.headHalfMm + seat.halfMm) / layout.outerRadiusMm;
+  const off = (deg: number) => Math.atan2(Math.sin(deg * DEG - layout.headAngle!), Math.cos(deg * DEG - layout.headAngle!));
+  const d = off(placed.angleDeg);
+  if (Math.abs(d) >= zone) return placed;
+  const side = (fromAngleDeg != null ? off(fromAngleDeg) : d) >= 0 ? 1 : -1;
+  let angleDeg = (layout.headAngle + side * zone) / DEG;
+  angleDeg = ((angleDeg % 360) + 360) % 360;
+  return { angleDeg: Math.round(angleDeg * 10) / 10, offsetMm: placed.offsetMm };
+}
+
+/** A ring band swept around the finger with a section that changes with the angle (a split shank's arm). */
+function sweepBand(mesh: MeshBuilder, segments: number, sectionAt: (angle: number) => P2[]): void {
+  const rows: number[][] = [];
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    const section = sectionAt(a);
+    const centre: P2 = [
+      section.reduce((sum, p) => sum + p[0], 0) / section.length,
+      section.reduce((sum, p) => sum + p[1], 0) / section.length,
+    ];
+    const normals = profileNormals(section, true, centre);
+    rows.push(section.map((p, j) => mesh.vertex([p[0] * c, p[0] * s, p[1]], [normals[j][0] * c, normals[j][0] * s, normals[j][1]])));
+  }
+  const count = rows[0].length;
+  for (let i = 0; i < segments; i++) {
+    const a = rows[i];
+    const b = rows[(i + 1) % segments];
+    for (let j = 0; j < count; j++) {
+      const j2 = (j + 1) % count;
+      mesh.quad(a[j], b[j], b[j2], a[j2]);
+    }
+  }
+}
+
+/** The ring's shank: one band, two / three side by side, or a band that splits into two arms. */
+function buildShank(spec: JewelrySpec, set: PartSet, ri: number, ro: number): void {
+  const w = spec.ring.bandWidthMm;
+  const t = spec.ring.bandThicknessMm;
+  if (spec.ring.shankStyle === 'SPLIT') {
+    const s = splitShank(spec);
+    const top = headAngleOf(spec);
+    const corner = Math.min(t, s.armWidth) * 0.4;
+    [-1, 1].forEach((side) =>
+      sweepBand(set.metal, 160, (a) => {
+        const c = side * (s.base + s.spread * splitAmount(a, top, s.spanRad));
+        return roundedRect(ri, ro, c - s.armWidth / 2, c + s.armWidth / 2, corner, 4);
+      }),
+    );
+    return;
+  }
+  shankCentresMm(spec).forEach((c) =>
+    revolve(set.metal, roundedRect(ri, ro, c - w / 2, c + w / 2, Math.min(t, w) * 0.4, 5), 160, 'Z', [0, 0, 0], true, [ri + t / 2, c]),
+  );
+}
+
+/**
+ * The bands of a double / triple shank, and a split shank's arms, are joined under the head by a
+ * plate across them (a double / triple shank is joined on its top even without a head).
+ */
+function buildShankBridge(spec: JewelrySpec, set: PartSet, ri: number, ro: number, angle: number, headHalfMm: number): void {
+  const w = spec.ring.bandWidthMm;
+  const t = spec.ring.bandThicknessMm;
+  const half = ringHalfWidthMm(spec);
+  const along = (Math.max(headHalfMm * 0.9, w / 2) + 0.4) / ro;
+  revolve(set.metal, roundedRect(ri + t * 0.15, ro, -half, half, Math.min(t, w) * 0.3, 3), 24, 'Z', [0, 0, 0], true, undefined, angle - along, angle + along);
+}
+
 function buildRing(spec: JewelrySpec, set: PartSet): void {
   const ri = spec.ring.innerDiameterMm / 2;
   const w = spec.ring.bandWidthMm;
   const t = spec.ring.bandThicknessMm;
   const ro = ri + t;
-  revolve(set.metal, roundedRect(ri, ro, -w / 2, w / 2, Math.min(t, w) * 0.4, 5), 160, 'Z', [0, 0, 0], true, [
-    ri + t / 2,
-    0,
-  ]);
+  const shank = spec.ring.shankStyle;
+  buildShank(spec, set, ri, ro);
 
   const head = spec.setting;
-  const [main, ...rest] = spec.stones;
-  const centre = head && main ? main : null;
-  const accents = centre ? rest : spec.stones;
-  let headAngle: number | null = null;
-  let headClearance = 0;
+  const centre = head && spec.stones[0] ? spec.stones[0] : null;
+  const layout = ringLayout(spec);
+  const { headAngle, headHalfMm } = layout;
   const centreSize = stoneSize(centre ?? undefined, CENTER_STONE_MM);
-  if (centre && head) {
-    headAngle = centre.placed ? centre.angle : RING_TOP_DEG * DEG;
-    headClearance = (centreSize / 2 + 1) / ro;
+  if (shank === 'DOUBLE' || shank === 'TRIPLE' || (shank === 'SPLIT' && headAngle != null)) {
+    buildShankBridge(spec, set, ri, ro, headAngle ?? RING_TOP_DEG * DEG, headAngle != null ? headHalfMm : 0);
   }
 
-  // Where every item goes, first: a band setting's stones keep clear of them.
-  const accentSeats = accents.map((stone) => {
-    const size = stoneSize(stone, clamp(Math.min(w * 0.7, t * 1.3), 1.0, 2.6));
-    return { stone, size, angle: awayFromHead(stone.angle, headAngle, headClearance + size / 2 / ro) };
-  });
-  const elementSeats = spec.elements.map((element) => {
-    const size = elementSize(element, clamp(w * 1.4, 3.5, 8));
-    return { element, size, angle: awayFromHead(element.angle, headAngle, headClearance + size / 2 / ro) };
-  });
+  // A band setting's stones keep clear of the head and of what the user put on the band; on a
+  // double / triple shank a row runs on every band.
   if (spec.band) {
     const taken: BandArc[] = [
       ...(headAngle != null ? [{ angle: headAngle, half: (centreSize / 2 + 0.6) / ro }] : []),
-      ...accentSeats.map((seat) => ({ angle: seat.angle, half: (seat.size / 2 + 0.4) / ro })),
-      ...elementSeats.map((seat) => ({ angle: seat.angle, half: (elementHalfAlongBand(seat.element, seat.size) + 0.3) / ro })),
+      ...layout.accents.map((seat) => ({ angle: seat.angle, half: (seat.size / 2 + 0.4) / ro })),
+      ...layout.elements.map((seat) => ({ angle: seat.angle, half: (seat.halfMm + 0.3) / ro })),
     ];
-    buildBand(spec, set, spec.band, ro, taken);
+    shankCentresMm(spec).forEach((c) => buildBand(spec, set, spec.band!, ro, taken, c));
   }
 
-  if (centre && head && headAngle != null) {
+  if (head && headAngle != null) {
+    // The head sits on the band (the client's notes of 23.11: "at height 0, the prongs straight out
+    // of the ring"): the pavilion in a seat in the band, never through to the finger.
+    const shape: CutCode = centre?.shape ?? 'ROUND';
     const size = centreSize;
-    const { pavilion } = cutProfile(centre.shape, size);
-    const angle = headAngle;
-    const radial: Vec3 = [Math.cos(angle), Math.sin(angle), 0];
-    const gallery = 0.6;
-    const girdleR = ro + Math.max(pavilion, size * 0.2) + size * 0.015 + gallery;
-    const frame = frameFromUp(scale(radial, girdleR), radial, [0, 0, 1]);
-    setStone(set, set.metal, frame, centre, size, head, spec.prongs, girdleR - ro + t * 0.4, Math.min(w * 0.38, size * 0.3));
+    const { girdle, pavilion } = cutProfile(shape, size);
+    const seat = pavilion > 0 ? Math.max(pavilion * 0.45, ri + 0.3 + pavilion + girdle / 2 - ro) : girdle / 2 + 0.05;
+    const radial: Vec3 = [Math.cos(headAngle), Math.sin(headAngle), 0];
+    const frame = frameFromUp(scale(radial, ro + seat), radial, [0, 0, 1]);
+    const onBand = { halfWidth: ringHalfWidthMm(spec) };
+    const baseDepth = seat + 0.25;
+    const baseSpread = Math.min(w * 0.38, size * 0.3);
+    if (centre) setStone(set, set.metal, frame, centre, size, head, spec.prongs, baseDepth, baseSpread, onBand);
+    // Chosen before its stone: the head alone, shown where the stone will sit.
+    else setHead(set, set.metal, frame, shape, size, head, spec.prongs, baseDepth, baseSpread, onBand);
   }
 
-  accentSeats.forEach(({ stone, size, angle: a }) => {
-    const half = Math.max(0, w / 2 - size / 2 - 0.2);
+  layout.accents.forEach(({ stone, size, angle: a }) => {
     const radial: Vec3 = [Math.cos(a), Math.sin(a), 0];
-    const z = clamp(stone.offsetMm, -half, half);
+    const z = shank === 'SINGLE' ? clamp(stone.offsetMm, -Math.max(0, w / 2 - size / 2 - 0.2), Math.max(0, w / 2 - size / 2 - 0.2)) : onShank(spec, a, stone.offsetMm, size / 2 + 0.2);
     const origin = add(scale(radial, ro - size * 0.1), [0, 0, z]);
     const frame = turnFrame(frameFromUp(origin, radial, [0, 0, 1]), stone.rotationDeg);
     gem(set.stone(stone.color, stone.opaque), frame, stone.shape, size);
@@ -1723,9 +2108,9 @@ function buildRing(spec: JewelrySpec, set: PartSet): void {
     torus(set.metal, add(scale(radial, ro + 0.02), [0, 0, z]), [0, 0, 1], norm(cross(radial, [0, 0, 1])), size / 2 + 0.16, 0.22, 24);
   });
 
-  elementSeats.forEach(({ element, size, angle: a }) => {
-    const half = Math.max(0, w / 2);
-    bandElement(set.metal, element, size, ro, a, clamp(element.offsetMm, -half, half));
+  layout.elements.forEach(({ element, size, angle: a }) => {
+    const z = shank === 'SINGLE' ? clamp(element.offsetMm, -w / 2, w / 2) : onShank(spec, a, element.offsetMm, 0);
+    bandElement(set.metal, element, size, ro, a, z);
   });
 }
 

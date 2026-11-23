@@ -38,7 +38,7 @@ export function CategorySelectScreen() {
   return (
     <View style={styles.root}>
       <CheckerBackdrop />
-      <HomeHeader onBack={() => navigation.goBack()} />
+      <HomeHeader onBack={() => navigation.goBack()} help={{ title: t('helpCategoryTitle'), body: t('helpCategoryBody') }} />
       <View style={styles.content}>
         <View style={styles.column}>
           <View style={styles.headingBlock}>

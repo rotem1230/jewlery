@@ -11,6 +11,7 @@ import {
   newBand,
   placementPayload,
   settingFromParameters,
+  settingSetsBand,
   settingPayload,
   shownAngleDeg,
   sizeFromParameters,
@@ -135,6 +136,16 @@ describe('studio setting: the head and the band', () => {
     expect(settingFromParameters('RING', { setting: { settingCode: '6_PRONG' } })).toEqual({ headCode: 'BASKET', band: null })
     expect(settingFromParameters('RING', { setting: { headCode: 'NONE' } })).toEqual({ headCode: 'NONE', band: null })
     expect(settingFromParameters('RING', {})).toEqual({ headCode: '', band: null })
+  })
+
+  it('whether the ring sets stones in its band: a band, or an older pavé setting kept as saved', () => {
+    const older = { setting: { settingCode: 'PAVE' } }
+    expect(settingSetsBand(settingFromParameters('RING', older), older, 'RING')).toBe(true)
+    // A head chosen instead: the older pavé is not saved any more.
+    expect(settingSetsBand({ headCode: 'BASKET', band: null }, older, 'RING')).toBe(false)
+    expect(settingSetsBand({ headCode: '', band: newBand('PAVE') }, {}, 'RING')).toBe(true)
+    expect(settingSetsBand({ headCode: 'BASKET', band: null }, {}, 'RING')).toBe(false)
+    expect(settingSetsBand({ headCode: '', band: newBand('PAVE') }, {}, 'NECKLACE')).toBe(false)
   })
 
   it('an unchanged older setting is saved as it was (a 6-prong head keeps its six prongs)', () => {
