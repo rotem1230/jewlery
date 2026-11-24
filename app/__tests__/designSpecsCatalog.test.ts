@@ -65,4 +65,12 @@ describe('design specification with the client catalogue', () => {
     })['אלמנטים']
     expect(value).toBe('אותיות "דנה" 5 מ״מ, מיקום 200° · מגן דוד (מלא) · אלמנט אישי')
   })
+
+  it('an element put behind a stud stone is named so for the jeweler (notes of 24.11)', () => {
+    const value = rows({
+      elements: [{ elementCode: 'FLOWER', sizeMm: 7, placement: { angleDeg: 12, offsetMm: 0, rotationDeg: -95, behindHead: true } }],
+    })['אלמנטים']
+    expect(value).toContain('במרכז, מאחורי האבן · סיבוב -95°')
+    expect(value).not.toContain('מיקום 12°')
+  })
 })

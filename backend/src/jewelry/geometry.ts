@@ -57,6 +57,12 @@ export interface ItemPlacement {
   rotationDeg: number;
   /** The user placed it (an angle was saved), rather than the old automatic seats. */
   placed: boolean;
+  /**
+   * A stud earring's element the user put at the centre, behind the stone's head (saved as
+   * `behindHead: true`; the client's notes of 24.11). An explicit choice: an angle with distance 0
+   * still means the automatic distance beside the head, as before.
+   */
+  behindHead?: boolean;
 }
 
 export interface StoneSpec extends ItemPlacement {
@@ -241,8 +247,9 @@ function readPlacement(placement: unknown, fallbackIndex: number): ItemPlacement
   const deg = finite(p?.angleDeg);
   const offsetMm = clamp(finite(p?.offsetMm) ?? 0, -50, 50);
   const rotationDeg = clamp(finite(p?.rotationDeg) ?? 0, -MAX_ROTATION_DEG, MAX_ROTATION_DEG);
-  if (deg != null) return { angle: deg * DEG, offsetMm, rotationDeg, placed: true };
-  return { angle: placementAngle(placement, fallbackIndex), offsetMm, rotationDeg, placed: false };
+  const behindHead = p?.behindHead === true;
+  if (deg != null) return { angle: deg * DEG, offsetMm, rotationDeg, placed: true, behindHead };
+  return { angle: placementAngle(placement, fallbackIndex), offsetMm, rotationDeg, placed: false, behindHead };
 }
 
 function upper(value: unknown): string {
@@ -451,6 +458,40 @@ export function placementFromPoint(spec: JewelrySpec, point: Vec3): { angleDeg: 
 function headAngleOf(spec: JewelrySpec): number {
   const main = spec.stones[0];
   return spec.setting && main?.placed ? main.angle : RING_TOP_DEG * DEG;
+}
+
+/**
+ * How far a piece is turned about the finger axis (radians) when it is shown: a ring stands with
+ * its head on top, wherever the centre stone was put. Turning the view only goes round the upright
+ * axis, so a head put on the side could not be brought up (the client's notes of 24.11). The
+ * model itself (STL, OBJ) is not turned.
+ */
+export function viewTurn(spec: JewelrySpec): number {
+  if (spec.itemType !== 'RING' || !spec.setting) return 0;
+  const d = RING_TOP_DEG * DEG - headAngleOf(spec);
+  return Math.atan2(Math.sin(d), Math.cos(d));
+}
+
+/** The model turned about the z axis by `angle` (positions and normals); the same model for 0. */
+export function turnedModel(model: JewelryModel, angle: number): JewelryModel {
+  if (!angle) return model;
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const turn = (v: number[]): number[] => {
+    const out = v.slice();
+    for (let i = 0; i < out.length; i += 3) {
+      out[i] = v[i] * c - v[i + 1] * s;
+      out[i + 1] = v[i] * s + v[i + 1] * c;
+    }
+    return out;
+  };
+  return {
+    spec: model.spec,
+    parts: model.parts.map((part) => ({
+      ...part,
+      mesh: { positions: turn(part.mesh.positions), normals: turn(part.mesh.normals), indices: part.mesh.indices },
+    })),
+  };
 }
 
 /** The gap between two bands of a double / triple shank. */
@@ -1971,15 +2012,26 @@ export function ringLayout(spec: JewelrySpec): RingLayout {
 /**
  * Where an item dragged on the model goes. An element dragged over the head stays against the
  * head on the side it came from (`fromAngleDeg`, where it was before), instead of jumping to the
- * other side when the finger passes the head's middle.
+ * other side when the finger passes the head's middle. `behindHead`: a stud's element let go over
+ * the stone's head goes to the centre, behind the head.
  */
 export function dragPlacement(
   spec: JewelrySpec,
   target: { kind: 'stone' | 'element'; index: number },
   point: Vec3,
   fromAngleDeg: number | null,
-): { angleDeg: number; offsetMm: number } {
+): { angleDeg: number; offsetMm: number; behindHead?: true } {
   const placed = placementFromPoint(spec, point);
+  if (spec.itemType === 'EARRINGS') {
+    // On a stud with a stone: over the head it goes to the centre, behind the head; just beside the
+    // head, right against it (the client's notes of 24.11: it could be neither centred nor joined).
+    const reach = studHeadReachMm(spec);
+    const element = spec.elements[target.index];
+    if (target.kind !== 'element' || reach == null || !element) return placed;
+    if (placed.offsetMm < reach) return { angleDeg: placed.angleDeg, offsetMm: 0, behindHead: true };
+    const against = Math.round((reach + elementSize(element, 5) / 2 - STUD_ELEMENT_OVERLAP_MM) * 10) / 10;
+    return placed.offsetMm < against ? { angleDeg: placed.angleDeg, offsetMm: against } : placed;
+  }
   if (spec.itemType !== 'RING' || target.kind !== 'element') return placed;
   const layout = ringLayout(spec);
   const seat = layout.elements[target.index];
@@ -2254,6 +2306,30 @@ function buildBracelet(spec: JewelrySpec, set: PartSet): void {
   chainPiece(spec, set, curve, C, [0, -r, 0], [0, r, 0], [0, 0, 0]);
 }
 
+/** How much an element set against a stud's head reaches into it (mm), so the two read as one piece. */
+const STUD_ELEMENT_OVERLAP_MM = 0.5;
+/** The z of an element lying behind a stud's head: its face just under the head's foot. */
+const STUD_BEHIND_HEAD_Z = -0.4;
+
+/**
+ * How far a stud earring's head reaches from the earring's centre (mm): its stone, and the halo
+ * of the second stone while that one is not moved elsewhere. Null without a centre stone (or on a
+ * drop earring). The same sizes as `buildEarring` draws.
+ */
+function studHeadReachMm(spec: JewelrySpec): number | null {
+  const [main, second] = spec.stones;
+  if (spec.itemType !== 'EARRINGS' || spec.earrings.style !== 'stud' || !main) return null;
+  const size = stoneSize(main, 5);
+  if (!second || second.placed) return size / 2;
+  const melee = clamp(second.sizeMm ?? size * 0.22, 0.9, 1.6);
+  return size / 2 + melee + 0.35;
+}
+
+/** An element the user put at the centre of a stud: it lies behind the head. */
+function behindStudHead(element: ElementSpec): boolean {
+  return element.behindHead === true;
+}
+
 function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
   const [main, second, ...extraStones] = spec.stones;
   const [element, ...extraElements] = spec.elements;
@@ -2263,14 +2339,16 @@ function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
     const r = offset > 0 ? offset : fallback;
     return add(base, [Math.cos(angle) * r, Math.sin(angle) * r, 0.4]);
   };
-  const decorate = (reach: number) => {
+  /** `head`: a stud's stone head stands at the centre; an element put at the centre goes behind it. */
+  const decorate = (reach: number, head = false) => {
     extraStones.forEach((stone) => {
       const size = stoneSize(stone, 2);
       stoneStation(set, stone, orbit(stone.angle, stone.offsetMm, reach + size / 2 + 0.6), size, 'BEZEL', 4);
     });
     extraElements.forEach((el) => {
       const size = elementSize(el, 5);
-      flatElement(set.metal, { origin: orbit(el.angle, el.offsetMm, reach + size / 2 + 0.6), x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, el, size);
+      const origin = head && behindStudHead(el) ? add(base, [0, 0, STUD_BEHIND_HEAD_Z]) : orbit(el.angle, el.offsetMm, reach + size / 2 + 0.6);
+      flatElement(set.metal, { origin, x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, el, size);
     });
   };
   if (spec.earrings.style === 'stud') {
@@ -2299,7 +2377,7 @@ function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
         reach += melee / 2;
       }
       if (element) extraElements.unshift(element);
-      decorate(reach);
+      decorate(reach, true);
     } else if (element) {
       const size = elementSize(element, 8);
       flatElement(set.metal, { origin: add(base, [0, 0, 0.5]), x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, element, size);

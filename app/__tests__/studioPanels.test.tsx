@@ -198,6 +198,54 @@ describe('the elements tab', () => {
     await press(remove)
     expect(elements.map((element) => element.elementCode)).toEqual(['HEART'])
   })
+
+  it('on a stud with a stone, an element is centred behind the stone in one tap (the notes of 24.11)', async () => {
+    let elements: StudioElement[] = addElement('EARRINGS', [], { elementCode: 'FLOWER' }, 3)
+    const onChange = jest.fn((next: StudioElement[]) => {
+      elements = next
+    })
+    const props = {
+      itemType: 'EARRINGS' as const,
+      onChange,
+      onAdd: jest.fn(),
+      onUpload: jest.fn(),
+      offered: [],
+      bandWidthMm: 3,
+      onSelect: jest.fn(),
+      moving: false,
+      onToggleMove: jest.fn(),
+    }
+    const stud = { size: { earringStyleCode: 'stud' }, stones: [{ stoneCode: 'SAPPHIRE' }] }
+    const texts = (tree: ReactTestRenderer) => tree.root.findAllByType(Text).map((node) => [node.props.children].flat().join(''))
+    const tree = await render(<StudioElementPanel {...props} parameters={stud} elements={elements} selected={0} />)
+    // Not placed yet: the distance is automatic (beside the stone).
+    expect(texts(tree)).toContain('אוטומטי')
+    // Turning it around the stone first (no distance yet) keeps it beside the stone, not behind it.
+    await act(async () => {
+      slider(tree, 'הזזה לאורך התכשיט').props.onAccessibilityAction({ nativeEvent: { actionName: 'increment' } })
+    })
+    expect(typeof elements[0].placement.angleDeg).toBe('number')
+    expect(elements[0].placement.behindHead).toBeUndefined()
+    await act(async () => {
+      tree.update(<StudioElementPanel {...props} parameters={stud} elements={elements} selected={0} />)
+    })
+    expect(texts(tree)).toContain('אוטומטי')
+    await press(pressableWithText(tree, 'למרכז, מאחורי האבן'))
+    expect(elements[0].placement).toMatchObject({ offsetMm: 0, behindHead: true })
+    await act(async () => {
+      tree.update(<StudioElementPanel {...props} parameters={stud} elements={elements} selected={0} />)
+    })
+    expect(texts(tree)).toContain('במרכז, מאחורי האבן')
+    // Moving it out again takes it from behind the stone.
+    await act(async () => {
+      slider(tree, 'מרחק מהמרכז').props.onAccessibilityAction({ nativeEvent: { actionName: 'increment' } })
+    })
+    expect(elements[0].placement.behindHead).toBeUndefined()
+    expect(elements[0].placement.offsetMm).toBeGreaterThan(0)
+    // An earring without a stone: the element is its face, nothing to centre behind.
+    const plain = await render(<StudioElementPanel {...props} parameters={{ size: { earringStyleCode: 'stud' } }} elements={elements} selected={0} />)
+    expect(texts(plain)).not.toContain('למרכז, מאחורי האבן')
+  })
 })
 
 describe('the setting tab', () => {
@@ -317,6 +365,15 @@ describe('placing on the 3D model', () => {
       angleDeg: 200.5,
       offsetMm: 0.4,
     })
+    // Let go over a stud's stone head: behind it (only a real true counts).
+    expect(placementFromMessage('placement:{"kind":"element","index":0,"angleDeg":10,"offsetMm":0,"behindHead":true}')).toEqual({
+      kind: 'element',
+      index: 0,
+      angleDeg: 10,
+      offsetMm: 0,
+      behindHead: true,
+    })
+    expect(placementFromMessage('placement:{"kind":"element","index":0,"angleDeg":10,"offsetMm":0,"behindHead":"yes"}')).not.toHaveProperty('behindHead')
     expect(placementFromMessage('placement:{"kind":"metal","index":1,"angleDeg":1,"offsetMm":0}')).toBeNull()
     expect(placementFromMessage('placement:{"kind":"stone","index":1.5,"angleDeg":1,"offsetMm":0}')).toBeNull()
     expect(placementFromMessage('placement:not json')).toBeNull()

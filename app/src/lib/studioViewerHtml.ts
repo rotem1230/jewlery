@@ -135,7 +135,9 @@ function itemAngleDeg(target) {
 function placeAt(p) {
   const hit = pieceHit(p);
   if (!hit || !currentSpec) return;
-  const point = [hit.x, hit.y, hit.z];
+  // The piece may be shown turned (a ring's head on top): placements are in the model's own frame.
+  const local = pieceGroup.worldToLocal(hit.clone());
+  const point = [local.x, local.y, local.z];
   // An element dragged over the head stays against it, on the side it came from.
   const from = placing ? placing.angleDeg : dragFrom;
   placing = GEO.dragPlacement ? GEO.dragPlacement(currentSpec, editTarget, point, from) : GEO.placementFromPoint(currentSpec, point);
@@ -148,6 +150,7 @@ function finishPlacing() {
   if (placing && editTarget && window.ReactNativeWebView) {
     window.ReactNativeWebView.postMessage('placement:' + JSON.stringify({
       kind: editTarget.kind, index: editTarget.index, angleDeg: placing.angleDeg, offsetMm: placing.offsetMm,
+      behindHead: placing.behindHead === true,
     }));
   }
   placing = null;
@@ -329,6 +332,10 @@ function setDesign(msg) {
     const material = part.material === 'metal' ? metalMaterial(part.code, spec.purityCode, spec.finishCode) : stoneMaterial(part.code, part.opaque);
     pieceGroup.add(new THREE.Mesh(geometryOf(part.mesh), material));
   });
+  // A ring stands with its head on top wherever its centre stone was put, so turning the view and
+  // the front / side / top buttons show it the right way up (the client's notes of 24.11).
+  pieceGroup.rotation.z = GEO.viewTurn ? GEO.viewTurn(spec) : 0;
+  pieceGroup.updateMatrixWorld(true);
   const force = framedItem !== ITEM;
   framedItem = ITEM;
   frame(force);

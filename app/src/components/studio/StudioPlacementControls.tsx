@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native'
 import { StudioSlider } from '@/src/components/studio/StudioSlider'
 import { EARRING_ORBIT_MAX_MM, MAX_ROTATION_DEG, type PlacementControls } from '@/src/lib/jewelryCatalog.generated'
-import type { StudioPlacement } from '@/src/lib/studioParams'
+import { movedPlacement, type StudioPlacement } from '@/src/lib/studioParams'
 import { useTranslation } from '@/src/i18n'
 import { colors } from '@/src/theme/tokens'
 
@@ -38,6 +38,9 @@ export function StudioPlacementControls({
   const mm = t('studioMm')
   const half = Math.max(0, Math.round((bandWidthMm / 2) * 10) / 10)
   const angle = placement.angleDeg ?? shownAngleDeg
+  // A stud's element put at the centre, behind the stone's head (the client's notes of 24.11).
+  // Moving it around or out (the sliders below) takes it out from behind the head.
+  const behindHead = Boolean(controls.behindHead) && placement.behindHead === true
 
   return (
     <View style={styles.root}>
@@ -65,7 +68,7 @@ export function StudioPlacementControls({
           min={0}
           max={359}
           step={1}
-          onChange={(angleDeg) => onChange({ ...placement, angleDeg })}
+          onChange={(angleDeg) => onChange(movedPlacement(placement, { angleDeg }))}
         />
       ) : (
         <Text style={styles.hint}>{t('studioPositionCentre')}</Text>
@@ -84,13 +87,31 @@ export function StudioPlacementControls({
       {controls.across === 'DISTANCE' ? (
         <StudioSlider
           label={t('studioPositionDistance')}
-          valueLabel={placement.offsetMm > 0 ? `${placement.offsetMm.toFixed(1)} ${mm}` : t('studioPositionAuto')}
+          valueLabel={
+            placement.offsetMm > 0
+              ? `${placement.offsetMm.toFixed(1)} ${mm}`
+              : behindHead
+                ? t('studioPositionBehindHead')
+                : t('studioPositionAuto')
+          }
           value={Math.max(0, placement.offsetMm)}
           min={0}
           max={EARRING_ORBIT_MAX_MM}
           step={0.5}
-          onChange={(offsetMm) => onChange({ ...placement, offsetMm })}
+          onChange={(offsetMm) => onChange(movedPlacement(placement, { offsetMm }))}
         />
+      ) : null}
+      {controls.behindHead ? (
+        <Pressable
+          onPress={() =>
+            onChange({ angleDeg: placement.angleDeg ?? shownAngleDeg, offsetMm: 0, rotationDeg: placement.rotationDeg, behindHead: true })
+          }
+          style={[styles.move, styles.centre, behindHead && styles.moveOn]}
+          accessibilityRole="button"
+          accessibilityState={{ selected: behindHead }}
+        >
+          <Text style={[styles.moveLabel, behindHead && styles.moveLabelOn]}>{t('studioPositionCentreBehindHead')}</Text>
+        </Pressable>
       ) : null}
       {controls.rotation ? (
         <StudioSlider
@@ -129,6 +150,7 @@ const styles = StyleSheet.create({
     borderColor: colors.brand,
   },
   moveOn: { backgroundColor: colors.brand },
+  centre: { alignSelf: 'flex-end', minHeight: 36, justifyContent: 'center' },
   moveLabel: { fontFamily: 'Heebo', fontSize: 12, color: colors.brand, fontWeight: '600' },
   moveLabelOn: { color: colors.textInverse },
   hint: {

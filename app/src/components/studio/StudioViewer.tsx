@@ -12,8 +12,11 @@ type StudioItemType = 'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS'
 /** The item a drag on the model places. */
 export type StudioEditTarget = { kind: 'stone' | 'element'; index: number }
 
-/** Where the user let go of an item on the model. */
-export type StudioPlacementEvent = StudioEditTarget & { angleDeg: number; offsetMm: number }
+/**
+ * Where the user let go of an item on the model. `behindHead`: a stud's element let go over the
+ * stone's head goes to the centre, behind it.
+ */
+export type StudioPlacementEvent = StudioEditTarget & { angleDeg: number; offsetMm: number; behindHead?: true }
 
 /** A placement posted by the viewer page, or null for any other message. */
 export function placementFromMessage(data: string): StudioPlacementEvent | null {
@@ -25,7 +28,8 @@ export function placementFromMessage(data: string): StudioPlacementEvent | null 
     if (typeof angleDeg !== 'number' || !Number.isFinite(angleDeg) || typeof offsetMm !== 'number' || !Number.isFinite(offsetMm)) {
       return null
     }
-    return { kind, index: index as number, angleDeg, offsetMm }
+    const event: StudioPlacementEvent = { kind, index: index as number, angleDeg, offsetMm }
+    return value.behindHead === true ? { ...event, behindHead: true } : event
   } catch {
     return null
   }
@@ -108,7 +112,7 @@ export function StudioViewer({
   onPlacementRef.current = onPlacement
 
   const html = useMemo(() => studioViewerHtml({ itemType }), [itemType])
-  const htmlRev = `studio-${itemType}-parametric-v24`
+  const htmlRev = `studio-${itemType}-parametric-v25`
   const baseUrl = API_BASE_URL.replace(/\/api\/v1\/?$/, '')
   const layout = useRef({ width: 0, height: 0 })
 

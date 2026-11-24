@@ -134,6 +134,9 @@ describe('catalogErrors', () => {
     expect(ring({ stones: [{ stoneCode: 'RUBY', placement: { angleDeg: 400 } }] })).toEqual(['/stones/0/placement/angleDeg must be 0–360']);
     expect(ring({ elements: [{ elementCode: 'HEART', placement: { rotationDeg: 270 } }] })).toEqual(['/elements/0/placement/rotationDeg must be -180–180']);
     expect(ring({ elements: [{ elementCode: 'HEART', placement: { offsetMm: 20 } }] })).toEqual(['/elements/0/placement/offsetMm must be -15–15']);
+    // Behind a stud's head: a yes / no.
+    expect(ring({ elements: [{ elementCode: 'HEART', placement: { angleDeg: 0, offsetMm: 0, behindHead: true } }] })).toEqual([]);
+    expect(ring({ elements: [{ elementCode: 'HEART', placement: { behindHead: 'yes' } }] })).toEqual(['/elements/0/placement/behindHead must be true or false']);
   });
 
   it('a head of the pictures, or none; a band style of the pictures, only on a ring', () => {

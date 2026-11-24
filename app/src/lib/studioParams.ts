@@ -167,9 +167,10 @@ export const STUDIO_MAX_ELEMENTS = 6
 /**
  * Where an item sits on the piece: the angle along it (degrees; null = the automatic place the
  * geometry gives it, as older designs have), across a ring band / from an earring's centre (mm),
- * and its own turn (degrees).
+ * and its own turn (degrees). `behindHead`: a stud earring's element at the centre, behind the
+ * stone's head (the client's notes of 24.11).
  */
-export type StudioPlacement = { angleDeg: number | null; offsetMm: number; rotationDeg: number }
+export type StudioPlacement = { angleDeg: number | null; offsetMm: number; rotationDeg: number; behindHead?: true }
 
 export const AUTO_PLACEMENT: StudioPlacement = { angleDeg: null, offsetMm: 0, rotationDeg: 0 }
 
@@ -226,18 +227,29 @@ function normalDeg(value: number): number {
 function readStudioPlacement(value: unknown): StudioPlacement {
   const p = recordOf(value)
   const angle = finiteNumber(p?.angleDeg)
-  return {
+  const placement: StudioPlacement = {
     // Older x / y / z placements were the automatic seats: they stay automatic.
     angleDeg: angle != null ? normalDeg(angle) : null,
     offsetMm: clampNumber(finiteNumber(p?.offsetMm) ?? 0, -EARRING_ORBIT_MAX_MM, EARRING_ORBIT_MAX_MM),
     rotationDeg: clampNumber(finiteNumber(p?.rotationDeg) ?? 0, -MAX_ROTATION_DEG, MAX_ROTATION_DEG),
   }
+  return p?.behindHead === true ? { ...placement, behindHead: true } : placement
 }
 
-/** The stored placement: the angle only once the user placed the item. */
-export function placementPayload(placement: StudioPlacement): Record<string, number> {
+/** The stored placement: the angle only once the user placed the item; behind the head only when chosen. */
+export function placementPayload(placement: StudioPlacement): Record<string, number | boolean> {
   const rest = { offsetMm: round1(placement.offsetMm), rotationDeg: round1(placement.rotationDeg) }
-  return placement.angleDeg != null ? { angleDeg: round1(placement.angleDeg), ...rest } : rest
+  const placed = placement.angleDeg != null ? { angleDeg: round1(placement.angleDeg), ...rest } : rest
+  return placement.behindHead ? { ...placed, behindHead: true } : placed
+}
+
+/** The placement moved along or out (sliders, a drag): no longer behind the head. */
+export function movedPlacement(placement: StudioPlacement, change: { angleDeg?: number; offsetMm?: number }): StudioPlacement {
+  return {
+    angleDeg: change.angleDeg ?? placement.angleDeg,
+    offsetMm: change.offsetMm ?? placement.offsetMm,
+    rotationDeg: placement.rotationDeg,
+  }
 }
 
 /** A stone's chart colour: the saved one, else the stone's own. */
@@ -426,26 +438,25 @@ export function elementPayload(element: StudioElement): Record<string, unknown> 
   return payload
 }
 
-/** The list with the `index`th item put where the user dragged it on the model (its turn kept). */
+/**
+ * The list with the `index`th item put where the user dragged it on the model (its turn kept); a
+ * stud's element let go over the stone's head goes behind it (`behindHead`).
+ */
 export function withDraggedPlacement<T extends { placement: StudioPlacement }>(
   list: T[],
   index: number,
-  point: { angleDeg: number; offsetMm: number },
+  point: { angleDeg: number; offsetMm: number; behindHead?: boolean },
 ): T[] {
   if (index < 0 || index >= list.length) return list
-  return list.map((item, i) =>
-    i === index
-      ? {
-          ...item,
-          placement: {
-            ...item.placement,
-            angleDeg: round1(normalDeg(point.angleDeg)),
-            // An earring item dragged far out stops at the farthest place the server accepts.
-            offsetMm: round1(clampNumber(point.offsetMm, -EARRING_ORBIT_MAX_MM, EARRING_ORBIT_MAX_MM)),
-          },
-        }
-      : item,
-  )
+  return list.map((item, i) => {
+    if (i !== index) return item
+    const placement = movedPlacement(item.placement, {
+      angleDeg: round1(normalDeg(point.angleDeg)),
+      // An earring item dragged far out stops at the farthest place the server accepts.
+      offsetMm: round1(clampNumber(point.offsetMm, -EARRING_ORBIT_MAX_MM, EARRING_ORBIT_MAX_MM)),
+    })
+    return { ...item, placement: point.behindHead ? { ...placement, behindHead: true as const } : placement }
+  })
 }
 
 // ---------------------------------------------------------------------------------------------

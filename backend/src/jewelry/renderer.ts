@@ -1,4 +1,4 @@
-import { JewelryModel, METAL_REFLECTANCE, STONE_COLORS, modelBounds } from './geometry';
+import { JewelryModel, METAL_REFLECTANCE, STONE_COLORS, modelBounds, turnedModel, viewTurn } from './geometry';
 import { RgbaImage } from './png';
 
 /**
@@ -203,7 +203,9 @@ export async function renderModelAsync(model: JewelryModel, options: RenderOptio
   }
 }
 
-function* renderSteps(model: JewelryModel, options: RenderOptions): Generator<void, RgbaImage, void> {
+function* renderSteps(source: JewelryModel, options: RenderOptions): Generator<void, RgbaImage, void> {
+  // Shown as the studio shows it: a ring with its head on top (the client's notes of 24.11).
+  const model = turnedModel(source, viewTurn(source.spec));
   const size = Math.max(16, Math.round(options.size));
   const ss = Math.max(1, Math.min(3, Math.round(options.supersample ?? 2)));
   const W = size * ss;

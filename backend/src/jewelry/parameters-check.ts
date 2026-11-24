@@ -87,6 +87,10 @@ function placementErrors(value: unknown, path: string, errors: string[]): void {
   numberErrors(p.angleDeg, `${path}/angleDeg`, 0, 360, '0–360', errors);
   numberErrors(p.offsetMm, `${path}/offsetMm`, -EARRING_ORBIT_MAX_MM, EARRING_ORBIT_MAX_MM, `-${EARRING_ORBIT_MAX_MM}–${EARRING_ORBIT_MAX_MM}`, errors);
   numberErrors(p.rotationDeg, `${path}/rotationDeg`, -MAX_ROTATION_DEG, MAX_ROTATION_DEG, `-${MAX_ROTATION_DEG}–${MAX_ROTATION_DEG}`, errors);
+  // A stud's element at the centre, behind the stone's head (the client's notes of 24.11).
+  if (p.behindHead !== undefined && p.behindHead !== null && typeof p.behindHead !== 'boolean') {
+    errors.push(`${path}/behindHead must be true or false`);
+  }
 }
 
 /**

@@ -90,9 +90,11 @@ export function metalLabel(parameters: Record<string, unknown> | null | undefine
 function placementText(value: unknown): string | null {
   const placement = asRecord(value)
   const angle = typeof placement?.angleDeg === 'number' ? placement.angleDeg : null
-  if (angle == null) return null
   const offset = typeof placement?.offsetMm === 'number' ? placement.offsetMm : 0
   const turn = typeof placement?.rotationDeg === 'number' ? placement.rotationDeg : 0
+  // A stud's element at the centre, under the stone's head (the client's notes of 24.11).
+  if (placement?.behindHead === true) return ['במרכז, מאחורי האבן', turn ? `סיבוב ${Math.round(turn)}°` : null].filter(Boolean).join(' · ')
+  if (angle == null) return null
   return [
     `מיקום ${Math.round(angle)}°`,
     offset ? `${offset} מ״מ לרוחב` : null,

@@ -836,6 +836,11 @@ export interface PlacementControls {
   /** Across the ring band (along the finger), or the distance from the earring's centre. */
   across: 'BAND' | 'DISTANCE' | null;
   rotation: boolean;
+  /**
+   * An element of a stud earring with a stone: it can be put at the centre, behind the stone's
+   * head (`placement.behindHead`; the client's notes of 24.11). Absent elsewhere.
+   */
+  behindHead?: true;
 }
 
 /**
@@ -856,7 +861,7 @@ export function placementControls(
     const drop = (piece.earringStyle ?? '').toLowerCase() === 'drop';
     if (kind === 'STONE') return index === 0 ? fixed : along('DISTANCE');
     if (index === 0 && (drop || piece.stones === 0)) return fixed;
-    return along('DISTANCE');
+    return !drop && piece.stones > 0 ? { ...along('DISTANCE'), behindHead: true } : along('DISTANCE');
   }
   if (kind === 'STONE' && index === 0 && piece.centreHead) return along(null);
   return along('BAND');

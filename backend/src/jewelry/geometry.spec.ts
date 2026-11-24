@@ -1,5 +1,16 @@
 import { ELEMENTS, SETTINGS, bandMetalThicknessMm, placementControls } from './catalog';
-import { buildJewelry, dragPlacement, modelBounds, placementFromPoint, ringInnerDiameterMm, ringLayout, specFromParameters, JewelryModel } from './geometry';
+import {
+  buildJewelry,
+  dragPlacement,
+  modelBounds,
+  placementFromPoint,
+  ringInnerDiameterMm,
+  ringLayout,
+  specFromParameters,
+  turnedModel,
+  viewTurn,
+  JewelryModel,
+} from './geometry';
 
 const triangles = (model: JewelryModel, material?: 'metal' | 'stone') =>
   model.parts.filter((p) => !material || p.material === material).reduce((s, p) => s + p.mesh.indices.length / 3, 0);
@@ -557,5 +568,119 @@ describe('the client notes of 23.11: the head on the band, shapes, elements by t
   it('dragging across a double shank reaches its outer band', () => {
     const spec = specFromParameters('RING', params({}, { bandWidthMm: 2, shankStyle: 'DOUBLE' }));
     expect(placementFromPoint(spec, [0, -10, 2.4]).offsetMm).toBeCloseTo(2.4, 5);
+  });
+});
+
+describe('the client notes of 24.11: a ring shown head up, an earring element behind or against the head', () => {
+  const deg = (rad: number) => (rad * 180) / Math.PI;
+  const ringParams = (stonePlacement?: Record<string, number>) => ({
+    size: { standard: 'IL', sizeCode: '54', bandWidthMm: 3 },
+    stones: [{ stoneCode: 'OPAL', cutCode: 'CABOCHON_OVAL', sizeMm: 4.4, ...(stonePlacement ? { placement: stonePlacement } : {}) }],
+    setting: { headCode: 'PEG_HEAD' },
+  });
+  /** The middle of the stone's vertices (x, y). */
+  const stoneCentre = (model: JewelryModel): [number, number] => {
+    const p = model.parts.find((x) => x.material === 'stone')!.mesh.positions;
+    let sx = 0;
+    let sy = 0;
+    for (let i = 0; i < p.length; i += 3) {
+      sx += p[i];
+      sy += p[i + 1];
+    }
+    return [sx / (p.length / 3), sy / (p.length / 3)];
+  };
+
+  it('turns a ring for viewing so its head is on top, wherever the centre stone was put', () => {
+    // The client's ring: the centre stone put at 172° (the head on the left side of the band).
+    const aside = specFromParameters('RING', ringParams({ angleDeg: 172 }));
+    expect(deg(viewTurn(aside))).toBeCloseTo(-82, 5);
+    const [x, y] = stoneCentre(turnedModel(buildJewelry(aside), viewTurn(aside)));
+    expect(Math.abs(x)).toBeLessThan(0.5);
+    expect(y).toBeGreaterThan(10);
+    // A head in its automatic place (the top) and a piece other than a ring are not turned.
+    expect(viewTurn(specFromParameters('RING', ringParams()))).toBeCloseTo(0, 9);
+    expect(viewTurn(specFromParameters('RING', { size: { standard: 'IL', sizeCode: '54' } }))).toBe(0);
+    expect(viewTurn(specFromParameters('EARRINGS', { stones: [{ stoneCode: 'DIAMOND' }] }))).toBe(0);
+  });
+
+  it('turning keeps the model itself: the parts, the triangles, and normals of unit length', () => {
+    const spec = specFromParameters('RING', ringParams({ angleDeg: 172 }));
+    const model = buildJewelry(spec);
+    const turned = turnedModel(model, viewTurn(spec));
+    expect(turned.parts.map((p) => [p.material, p.code, p.mesh.indices.length])).toEqual(model.parts.map((p) => [p.material, p.code, p.mesh.indices.length]));
+    const n = turned.parts[0].mesh.normals;
+    for (let i = 0; i < n.length; i += 3 * 97) expect(Math.hypot(n[i], n[i + 1], n[i + 2])).toBeCloseTo(1, 4);
+    // The source model is untouched (the STL / OBJ export uses it as it is).
+    expect(model.parts[0].mesh.positions).toEqual(buildJewelry(spec).parts[0].mesh.positions);
+    expect(turnedModel(model, 0)).toBe(model);
+  });
+
+  const studParams = (elements: unknown[]) => ({
+    size: { earringStyleCode: 'stud' },
+    stones: [{ stoneCode: 'SAPPHIRE', sizeMm: 5 }],
+    setting: { headCode: 'BASKET' },
+    elements,
+  });
+  const stud = (elementPlacement: Record<string, number | boolean>) =>
+    specFromParameters('EARRINGS', studParams([{ elementCode: 'FLOWER', sizeMm: 7, placement: elementPlacement }]));
+  const metalPoints = (model: JewelryModel) => {
+    const p = model.parts.filter((x) => x.material === 'metal').flatMap((x) => x.mesh.positions);
+    const out: Array<[number, number, number]> = [];
+    for (let i = 0; i < p.length; i += 3) out.push([p[i], p[i + 1], p[i + 2]]);
+    return out;
+  };
+  /** The right earring's element: the metal the earring has beyond the same earring without it (x from its centre). */
+  const outerMetal = (model: JewelryModel) => {
+    const key = (q: [number, number, number]) => q.map((v) => v.toFixed(4)).join(',');
+    const bare = new Set(metalPoints(buildJewelry(specFromParameters('EARRINGS', studParams([])))).map(key));
+    return metalPoints(model)
+      .filter((q) => q[0] > 0 && !bare.has(key(q)))
+      .map((q): [number, number, number] => [q[0] - 11, q[1], q[2]]);
+  };
+  const stoneBottom = (model: JewelryModel) =>
+    Math.min(...model.parts.filter((x) => x.material === 'stone').flatMap((x) => x.mesh.positions.filter((_, i) => i % 3 === 2)));
+
+  it('an earring element put at the centre (behindHead) lies behind the stone head, the stone on it', () => {
+    const centred = buildJewelry(stud({ angleDeg: 0, offsetMm: 0, behindHead: true }));
+    const petals = outerMetal(centred);
+    expect(petals.length).toBeGreaterThan(0);
+    // The petals go round the head on every side, behind the stone.
+    const mean = petals.reduce((s, q) => [s[0] + q[0], s[1] + q[1]], [0, 0]).map((v) => v / petals.length);
+    expect(Math.hypot(mean[0], mean[1])).toBeLessThan(0.8);
+    expect(Math.max(...petals.map((q) => q[2]))).toBeLessThan(stoneBottom(centred));
+    // Not placed (an older design, or never moved): beside the head, as before.
+    const auto = outerMetal(buildJewelry(stud({ offsetMm: 0 })));
+    const autoMean = auto.reduce((s, q) => [s[0] + q[0], s[1] + q[1]], [0, 0]).map((v) => v / auto.length);
+    expect(Math.hypot(autoMean[0], autoMean[1])).toBeGreaterThan(4);
+    // Turned to an angle but no distance (the "around" slider): still beside the head, at that angle.
+    const turned = outerMetal(buildJewelry(stud({ angleDeg: 180, offsetMm: 0 })));
+    expect(turned.reduce((s, q) => s + q[0], 0) / turned.length).toBeLessThan(-4);
+    // Placed at a distance: around the head at that distance, as before.
+    const far = outerMetal(buildJewelry(stud({ angleDeg: 0, offsetMm: 8 })));
+    expect(far.reduce((s, q) => s + q[0], 0) / far.length).toBeGreaterThan(6);
+  });
+
+  it('dragging an earring element onto the head centres it behind the head; beside the head, against it', () => {
+    const spec = stud({ offsetMm: 0 });
+    const el = { kind: 'element' as const, index: 0 };
+    const at = (dx: number, dy: number, cx = 11): [number, number, number] => [cx + dx, dy, 1];
+    // Over the stone (either earring): the centre, behind the head.
+    expect(dragPlacement(spec, el, at(1, 0.5), null)).toMatchObject({ offsetMm: 0, behindHead: true });
+    expect(dragPlacement(spec, el, at(-0.4, -1.2, -11), null)).toMatchObject({ offsetMm: 0, behindHead: true });
+    // Just off the head: right against it (head 2.5 mm + half the element 3.5 mm, a little into it).
+    const against = dragPlacement(spec, el, at(0, 3.4), null);
+    expect(against.angleDeg).toBeCloseTo(90, 5);
+    expect(against.offsetMm).toBeCloseTo(5.5, 5);
+    expect(against.behindHead).toBeUndefined();
+    // Farther away: where the finger is, as before.
+    expect(dragPlacement(spec, el, at(9, 0), null)).toEqual({ angleDeg: 0, offsetMm: 9 });
+    // The studio offers "centre it behind the stone" for exactly these elements.
+    expect(placementControls('EARRINGS', 'ELEMENT', 0, { stones: 1, centreHead: true, earringStyle: 'stud' }).behindHead).toBe(true);
+    expect(placementControls('EARRINGS', 'ELEMENT', 1, { stones: 1, centreHead: true, earringStyle: 'drop' }).behindHead).toBeUndefined();
+    expect(placementControls('EARRINGS', 'ELEMENT', 1, { stones: 0, centreHead: false }).behindHead).toBeUndefined();
+    expect(placementControls('EARRINGS', 'STONE', 1, { stones: 2, centreHead: true }).behindHead).toBeUndefined();
+    // Without a stone the element is the earring's face: placed where the finger is.
+    const plain = specFromParameters('EARRINGS', { size: { earringStyleCode: 'stud' }, elements: [{ elementCode: 'FLOWER', sizeMm: 7 }] });
+    expect(dragPlacement(plain, el, at(1, 0), null).offsetMm).toBe(1);
   });
 });

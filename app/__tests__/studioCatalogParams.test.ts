@@ -104,6 +104,18 @@ describe('studio stones (the client catalogue)', () => {
     // Dragged far out on an earring: as far as the server accepts; a negative angle goes round.
     expect(withDraggedPlacement(stones, 0, { angleDeg: -90, offsetMm: 40 })[0].placement).toEqual({ angleDeg: 270, offsetMm: 15, rotationDeg: 0 })
   })
+
+  it('a stud element behind the stone: saved only when chosen, read back, and cleared by the next drag (notes of 24.11)', () => {
+    const behind = { angleDeg: 30, offsetMm: 0, rotationDeg: -95, behindHead: true as const }
+    expect(placementPayload(behind)).toEqual({ angleDeg: 30, offsetMm: 0, rotationDeg: -95, behindHead: true })
+    expect(placementPayload({ angleDeg: 30, offsetMm: 0, rotationDeg: 0 })).not.toHaveProperty('behindHead')
+    const elements = elementsFromParameters({ elements: [{ elementCode: 'FLOWER', placement: placementPayload(behind) }] })
+    expect(elements[0].placement).toEqual(behind)
+    // Let go over the head: behind it; then dragged out: beside it again, its turn kept.
+    const dropped = withDraggedPlacement(elements, 0, { angleDeg: 10, offsetMm: 0, behindHead: true })
+    expect(dropped[0].placement).toEqual({ angleDeg: 10, offsetMm: 0, rotationDeg: -95, behindHead: true })
+    expect(withDraggedPlacement(dropped, 0, { angleDeg: 10, offsetMm: 6 })[0].placement).toEqual({ angleDeg: 10, offsetMm: 6, rotationDeg: -95 })
+  })
 })
 
 describe('studio elements (the element sheet)', () => {

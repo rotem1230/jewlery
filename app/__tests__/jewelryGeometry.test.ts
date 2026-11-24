@@ -14,6 +14,7 @@ type Geometry = {
   specFromParameters: (type: string, parameters: unknown, lookups?: { ringChartDiameterMm?: number | null }) => unknown
   buildJewelry: (spec: unknown) => { parts: Array<{ material: string; code: string; mesh: { positions: number[] } }> }
   modelBounds: (model: unknown) => { min: number[]; max: number[] }
+  viewTurn: (spec: unknown) => number
 }
 
 function loadGeometry(): Geometry {
@@ -61,5 +62,19 @@ describe('3D studio geometry', () => {
     const html = studioViewerHtml({ itemType: 'RING' })
     expect(html).toContain('window.JewelryGeometry = exports')
     expect(html).not.toMatch(/\.glb|GLTFLoader/)
+  })
+
+  it("the viewer shows a ring head up, and places what is dragged in the piece's own frame (the notes of 24.11)", () => {
+    const html = studioViewerHtml({ itemType: 'RING' })
+    expect(html).toContain('pieceGroup.rotation.z = GEO.viewTurn ? GEO.viewTurn(spec) : 0')
+    expect(html).toContain('pieceGroup.worldToLocal(hit.clone())')
+    // The bundled geometry turns the client's ring (its stone put at 172°) by -82° to bring the head up.
+    const geometry = loadGeometry()
+    const spec = geometry.specFromParameters('RING', {
+      size: { standard: 'IL', sizeCode: '54' },
+      stones: [{ stoneCode: 'OPAL', cutCode: 'CABOCHON_OVAL', placement: { angleDeg: 172 } }],
+      setting: { headCode: 'PEG_HEAD' },
+    })
+    expect((geometry.viewTurn(spec) * 180) / Math.PI).toBeCloseTo(-82, 5)
   })
 })
