@@ -428,3 +428,38 @@ describe('leaving the studio with changes not saved', () => {
     expect(alert).not.toHaveBeenCalled()
   })
 })
+
+describe('the try-on and the export say what they do (notes of 24.11)', () => {
+  it('the try-on explains which photo to take before asking for one; cancelling asks for nothing', async () => {
+    const { getFeatureFlags } = jest.requireMock('../src/api/visualization') as { getFeatureFlags: jest.Mock }
+    const { getMyEntitlements } = jest.requireMock('../src/api/subscriptions') as { getMyEntitlements: jest.Mock }
+    const { pickTryOnPhoto } = jest.requireMock('../src/lib/chatAttachments') as { pickTryOnPhoto: jest.Mock }
+    getFeatureFlags.mockResolvedValue({ phase2_visualization: true })
+    getMyEntitlements.mockResolvedValue(['personal_visualization'])
+    pickTryOnPhoto.mockResolvedValue(null)
+    const tree = await renderStudio()
+    await press(tree, 'הדמיה')
+    expect(alert.mock.calls[0][0]).toBe('הדמיה על הגוף שלך')
+    expect(alert.mock.calls[0][1]).toContain('צלמו את היד שלכם')
+    expect(pickTryOnPhoto).not.toHaveBeenCalled()
+    await act(async () => {
+      alertButtons(0).find((b) => b.style === 'cancel')!.onPress!()
+      await settle()
+    })
+    expect(pickTryOnPhoto).not.toHaveBeenCalled()
+    // Again, and on: now the photo is asked for.
+    await press(tree, 'הדמיה')
+    await act(async () => {
+      alertButtons(1).find((b) => b.text === 'לצילום / בחירת תמונה')!.onPress!()
+      await settle()
+    })
+    expect(pickTryOnPhoto).toHaveBeenCalledTimes(1)
+  })
+
+  it('the export says what an STL and an HD image are', async () => {
+    const tree = await renderStudio()
+    await press(tree, 'ייצוא')
+    expect(alert.mock.calls[0][1]).toContain('STL – קובץ תלת-ממד')
+    expect(alert.mock.calls[0][1]).toContain('תמונת HD – תמונה נקייה של העיצוב, בלי רקע')
+  })
+})

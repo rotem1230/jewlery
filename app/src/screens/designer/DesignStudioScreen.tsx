@@ -92,6 +92,14 @@ const TAB_TITLE: Record<StudioTabId, TranslationKey> = {
   inspiration: 'studioTabInspiration',
 }
 
+/** Before the try-on asks for a photo: whose hand / ear / neck to photograph (notes of 24.11). */
+const TRY_ON_INTRO: Record<'RING' | 'NECKLACE' | 'BRACELET' | 'EARRINGS', TranslationKey> = {
+  RING: 'studioTryOnIntroRing',
+  EARRINGS: 'studioTryOnIntroEarrings',
+  NECKLACE: 'studioTryOnIntroNecklace',
+  BRACELET: 'studioTryOnIntroBracelet',
+}
+
 /** Each panel's "?": what to do there and what comes next (the client's notes of 23.11). */
 const TAB_HELP: Record<StudioTabId, { title: TranslationKey; body: TranslationKey }> = {
   size: { title: 'studioHelpSizeTitle', body: 'studioHelpSizeBody' },
@@ -684,6 +692,20 @@ export function DesignStudioScreen() {
       showPaywall(t('studioTryOnPaywall'))
       return
     }
+    // First say what the photo is for: the piece is shown on the designer's own hand / ear / neck
+    // (the client's notes of 24.11: a request for a photo came with no explanation).
+    const proceed = await new Promise<boolean>((resolve) =>
+      Alert.alert(
+        t('studioTryOnIntroTitle'),
+        t(TRY_ON_INTRO[itemType]),
+        [
+          { text: t('cancel'), style: 'cancel', onPress: () => resolve(false) },
+          { text: t('studioTryOnIntroCta'), onPress: () => resolve(true) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) },
+      ),
+    )
+    if (!proceed) return
     try {
       const file = await pickTryOnPhoto()
       if (!file) return
@@ -766,7 +788,8 @@ export function DesignStudioScreen() {
   }
 
   const onExport = () => {
-    Alert.alert(t('studioExportTitle'), undefined, [
+    // What each file is, in plain words (the client's notes of 24.11).
+    Alert.alert(t('studioExportTitle'), t('studioExportExplain'), [
       { text: t('cancel'), style: 'cancel' },
       { text: t('studioExportStl'), onPress: () => void runExport('STL') },
       { text: t('studioExportPng'), onPress: () => void runExport('PNG_HD') },
