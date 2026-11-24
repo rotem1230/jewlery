@@ -168,9 +168,10 @@ export const STUDIO_MAX_ELEMENTS = 6
  * Where an item sits on the piece: the angle along it (degrees; null = the automatic place the
  * geometry gives it, as older designs have), across a ring band / from an earring's centre (mm),
  * and its own turn (degrees). `behindHead`: a stud earring's element at the centre, behind the
- * stone's head (the client's notes of 24.11).
+ * stone's head; `onElement`: an element put in the middle of another one (its index), such as a
+ * name in a Star of David (both the client's notes of 24.11).
  */
-export type StudioPlacement = { angleDeg: number | null; offsetMm: number; rotationDeg: number; behindHead?: true }
+export type StudioPlacement = { angleDeg: number | null; offsetMm: number; rotationDeg: number; behindHead?: true; onElement?: number }
 
 export const AUTO_PLACEMENT: StudioPlacement = { angleDeg: null, offsetMm: 0, rotationDeg: 0 }
 
@@ -233,14 +234,47 @@ function readStudioPlacement(value: unknown): StudioPlacement {
     offsetMm: clampNumber(finiteNumber(p?.offsetMm) ?? 0, -EARRING_ORBIT_MAX_MM, EARRING_ORBIT_MAX_MM),
     rotationDeg: clampNumber(finiteNumber(p?.rotationDeg) ?? 0, -MAX_ROTATION_DEG, MAX_ROTATION_DEG),
   }
-  return p?.behindHead === true ? { ...placement, behindHead: true } : placement
+  const on = p?.onElement
+  return {
+    ...placement,
+    ...(p?.behindHead === true ? { behindHead: true as const } : {}),
+    ...(typeof on === 'number' && Number.isInteger(on) && on >= 0 ? { onElement: on } : {}),
+  }
 }
 
-/** The stored placement: the angle only once the user placed the item; behind the head only when chosen. */
+/** The stored placement: the angle only once the user placed the item; behind the head / on another element only when chosen. */
 export function placementPayload(placement: StudioPlacement): Record<string, number | boolean> {
   const rest = { offsetMm: round1(placement.offsetMm), rotationDeg: round1(placement.rotationDeg) }
-  const placed = placement.angleDeg != null ? { angleDeg: round1(placement.angleDeg), ...rest } : rest
-  return placement.behindHead ? { ...placed, behindHead: true } : placed
+  const placed: Record<string, number | boolean> = placement.angleDeg != null ? { angleDeg: round1(placement.angleDeg), ...rest } : rest
+  if (placement.behindHead) placed.behindHead = true
+  if (placement.onElement != null) placed.onElement = placement.onElement
+  return placed
+}
+
+/** The placement put in the middle of the `host`th element (null: back to a place of its own). */
+export function placedOnElement(placement: StudioPlacement, host: number | null): StudioPlacement {
+  const rest: StudioPlacement = { angleDeg: placement.angleDeg, offsetMm: placement.offsetMm, rotationDeg: placement.rotationDeg }
+  return host == null ? rest : { ...rest, onElement: host }
+}
+
+/**
+ * The elements without the `index`th one. Those put on it get a place of their own again; those
+ * put on an element after it keep pointing at it (one place back).
+ */
+export function withoutElement(elements: StudioElement[], index: number): StudioElement[] {
+  return elements
+    .filter((_, i) => i !== index)
+    .map((element) => {
+      const on = element.placement.onElement
+      if (on == null || on < index) return element
+      return { ...element, placement: placedOnElement(element.placement, on === index ? null : on - 1) }
+    })
+}
+
+/** Elements another one can be put on: not `index` itself, not put on another, and only when nothing is put on `index`. */
+export function elementHosts(elements: StudioElement[], index: number): number[] {
+  if (elements.some((element) => element.placement.onElement === index)) return []
+  return elements.map((_, i) => i).filter((i) => i !== index && elements[i].placement.onElement == null)
 }
 
 /** The placement moved along or out (sliders, a drag): no longer behind the head. */

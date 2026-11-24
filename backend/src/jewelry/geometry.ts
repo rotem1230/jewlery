@@ -82,6 +82,12 @@ export interface ElementSpec extends ItemPlacement {
   variant: string;
   /** The longest side (mm); null = the default for its role. */
   sizeMm: number | null;
+  /**
+   * The element it is put on (its index in `elements`): drawn in that element's middle, on its
+   * face, instead of in a place of its own (a name in a Star of David; the client's notes of
+   * 24.11). Saved as `placement.onElement`, the index among the saved elements.
+   */
+  onElement?: number;
 }
 
 /** A band setting: a row of stones along the ring band. */
@@ -318,6 +324,9 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
     });
   }
   const elements: ElementSpec[] = [];
+  // Which element each saved entry became, and the saved entry each element asked to be put on.
+  const elementOfEntry = new Map<number, number>();
+  const hostEntry: Array<number | null> = [];
   if (Array.isArray(params.elements)) {
     params.elements.slice(0, MAX_ELEMENTS).forEach((item, index) => {
       const e = record(item);
@@ -331,6 +340,9 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
       if (def?.text && e.text === undefined) def = null;
       const code = def ? def.code : raw === 'INITIAL' || elementDef(raw)?.text ? 'INITIAL' : 'CUSTOM';
       const sizeMm = finite(e.sizeMm);
+      const on = record(e.placement)?.onElement;
+      elementOfEntry.set(index, elements.length);
+      hostEntry.push(typeof on === 'number' && Number.isInteger(on) && on >= 0 ? on : null);
       elements.push({
         code,
         text: elementText(def, e.text),
@@ -340,6 +352,15 @@ export function specFromParameters(itemType: string, parameters: unknown, lookup
       });
     });
   }
+  // An element put on another: only on an element there is, not itself, and not on one that is
+  // itself put on another (no chains).
+  const hosts = hostEntry.map((entry, i) => {
+    const host = entry == null ? undefined : elementOfEntry.get(entry);
+    return host != null && host !== i ? host : null;
+  });
+  hosts.forEach((host, i) => {
+    if (host != null && hosts[host] == null) elements[i].onElement = host;
+  });
 
   // The head: `headCode`, or the older `settingCode` (4 / 6 prongs = a basket head).
   const headAsked = upper(setting?.headCode) || upper(setting?.settingCode);
@@ -1729,6 +1750,61 @@ function bandElement(metal: MeshBuilder, element: ElementSpec, size: number, ro:
   extrudeMotif(metal, outline, map, 0.8);
 }
 
+/** The elements put on the `host`th element (a name in a Star of David). */
+function elementsOn(spec: JewelrySpec, host: number): ElementSpec[] {
+  return spec.elements.filter((element) => element.onElement === host);
+}
+
+/** An element that has a place of its own (not put on another). */
+function standsAlone(element: ElementSpec): boolean {
+  return element.onElement == null;
+}
+
+/** How thick an element is (mm): its catalogue thickness, or the round plaque's. */
+function elementThicknessMm(element: ElementSpec, size: number): number {
+  return elementOutline(element, size)?.thicknessMm ?? 0.9;
+}
+
+/** How much of the element it is put on an element may cover (its longest side). */
+const NESTED_FILL = 0.8;
+
+/**
+ * The size of an element put on another one: about half the other's size unless the user chose
+ * one, then made smaller until it fits inside (a name's letters are sized one by one, so a long
+ * name is wide), but not below the catalogue's smallest size (it must still cast).
+ */
+function nestedSize(element: ElementSpec, hostSize: number): number {
+  let size = elementSize(element, hostSize * 0.45);
+  const outline = elementOutline(element, size);
+  if (!outline) return size;
+  const { min, max } = outline.shape;
+  const extent = Math.max(max[0] - min[0], max[1] - min[1]);
+  const room = hostSize * NESTED_FILL;
+  if (extent > room) size *= room / extent;
+  const def = elementDef(element.code);
+  return def ? Math.max(def.minMm, size) : size;
+}
+
+/**
+ * Draws the elements put on a flat element drawn at `frame` (`host` = its index): in its middle,
+ * half sunk into its face, upright in the frame and turned only by their own rotation (a name
+ * stays level when the star is turned).
+ */
+function nestOnFlat(set: PartSet, spec: JewelrySpec, host: number, frame: Frame, hostSize: number): void {
+  const depth = elementThicknessMm(spec.elements[host], hostSize) / 2;
+  elementsOn(spec, host).forEach((element) => {
+    flatElement(set.metal, { ...frame, origin: add(frame.origin, scale(frame.z, depth)) }, element, nestedSize(element, hostSize));
+  });
+}
+
+/** Draws the elements put on a ring band's element (`host`), wrapped round the band on its face. */
+function nestOnBand(set: PartSet, spec: JewelrySpec, host: number, hostSize: number, ro: number, angle: number, offset: number): void {
+  const depth = elementThicknessMm(spec.elements[host], hostSize) / 2;
+  elementsOn(spec, host).forEach((element) => {
+    bandElement(set.metal, element, nestedSize(element, hostSize), ro + depth, angle, offset);
+  });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Pieces
 // ---------------------------------------------------------------------------------------------
@@ -2128,7 +2204,8 @@ function buildRing(spec: JewelrySpec, set: PartSet): void {
     const taken: BandArc[] = [
       ...(headAngle != null ? [{ angle: headAngle, half: (centreSize / 2 + 0.6) / ro }] : []),
       ...layout.accents.map((seat) => ({ angle: seat.angle, half: (seat.size / 2 + 0.4) / ro })),
-      ...layout.elements.map((seat) => ({ angle: seat.angle, half: (seat.halfMm + 0.3) / ro })),
+      // An element put on another has no place of its own on the band.
+      ...layout.elements.filter((seat) => standsAlone(seat.element)).map((seat) => ({ angle: seat.angle, half: (seat.halfMm + 0.3) / ro })),
     ];
     shankCentresMm(spec).forEach((c) => buildBand(spec, set, spec.band!, ro, taken, c));
   }
@@ -2160,9 +2237,12 @@ function buildRing(spec: JewelrySpec, set: PartSet): void {
     torus(set.metal, add(scale(radial, ro + 0.02), [0, 0, z]), [0, 0, 1], norm(cross(radial, [0, 0, 1])), size / 2 + 0.16, 0.22, 24);
   });
 
-  layout.elements.forEach(({ element, size, angle: a }) => {
+  layout.elements.forEach(({ element, size, angle: a }, index) => {
+    // An element put on another is drawn on it, below.
+    if (!standsAlone(element)) return;
     const z = shank === 'SINGLE' ? clamp(element.offsetMm, -w / 2, w / 2) : onShank(spec, a, element.offsetMm, 0);
     bandElement(set.metal, element, size, ro, a, z);
+    nestOnBand(set, spec, index, size, ro, a, z);
   });
 }
 
@@ -2220,8 +2300,11 @@ function stoneStation(set: PartSet, stone: StoneSpec, centre: Vec3, size: number
   setStone(set, set.metal, frame, stone, size, head ?? 'BEZEL', prongs, size * 0.3, size * 0.25);
 }
 
-/** A charm hanging from `anchor` in direction `down` (unit, in the XY plane), facing +Z. */
-function charm(set: PartSet, element: ElementSpec, anchor: Vec3, down: Vec3, size: number): void {
+/**
+ * A charm hanging from `anchor` in direction `down` (unit, in the XY plane), facing +Z. Returns the
+ * frame it was drawn in (for the elements put on it).
+ */
+function charm(set: PartSet, element: ElementSpec, anchor: Vec3, down: Vec3, size: number): Frame {
   const ring = 1.3;
   torus(set.metal, add(anchor, scale(down, ring)), down, [0, 0, 1], ring, 0.35, 20);
   const side = norm(cross([0, 0, 1], down));
@@ -2231,7 +2314,7 @@ function charm(set: PartSet, element: ElementSpec, anchor: Vec3, down: Vec3, siz
     const frame: Frame = { origin: add(anchor, scale(down, ring * 2 + size * 0.2)), x: side, y: up, z: [0, 0, 1] };
     const ends = flatElement(set.metal, frame, element, size);
     [ends.left, ends.right].forEach((p) => torus(set.metal, add(p, scale(down, -0.6)), down, [0, 0, 1], 0.9, 0.3, 16));
-    return;
+    return frame;
   }
   // Built first at the anchor, then moved so its bail (the top near the middle) meets the jump ring.
   const probe = new MeshBuilder();
@@ -2239,6 +2322,7 @@ function charm(set: PartSet, element: ElementSpec, anchor: Vec3, down: Vec3, siz
   const { top } = flatElement(probe, at, element, size);
   const origin = sub(add(anchor, scale(down, ring * 2 - 0.25)), top);
   flatElement(set.metal, { ...at, origin }, element, size);
+  return { ...at, origin };
 }
 
 function chainPiece(spec: JewelrySpec, set: PartSet, curve: (u: number) => Vec3, lengthMm: number, bottom: Vec3, top: Vec3, centre: Vec3): void {
@@ -2262,7 +2346,12 @@ function chainPiece(spec: JewelrySpec, set: PartSet, curve: (u: number) => Vec3,
     return best;
   };
   const [main, ...others] = spec.stones;
-  let elements = spec.elements;
+  // Elements put on another hang on it, not on the chain.
+  let elements = spec.elements.filter(standsAlone);
+  const hang = (element: ElementSpec, p: Vec3, size: number) => {
+    const frame = charm(set, element, p, norm(sub(p, centre)), size);
+    nestOnFlat(set, spec, spec.elements.indexOf(element), frame, size);
+  };
   if (main) {
     const size = stoneSize(main, spec.itemType === 'NECKLACE' ? 6 : 5);
     const p = main.placed ? pointAt(main.angle) : bottom;
@@ -2271,8 +2360,7 @@ function chainPiece(spec: JewelrySpec, set: PartSet, curve: (u: number) => Vec3,
     stoneStation(set, main, add(p, scale(down, 3.2 + size / 2 + 0.6)), size, spec.setting, spec.prongs);
   } else if (elements.length) {
     const first = elements[0];
-    const p = first.placed ? pointAt(first.angle) : bottom;
-    charm(set, first, p, norm(sub(p, centre)), elementSize(first, spec.itemType === 'NECKLACE' ? 11 : 8));
+    hang(first, first.placed ? pointAt(first.angle) : bottom, elementSize(first, spec.itemType === 'NECKLACE' ? 11 : 8));
     elements = elements.slice(1);
   }
   others.forEach((stone) => {
@@ -2280,8 +2368,7 @@ function chainPiece(spec: JewelrySpec, set: PartSet, curve: (u: number) => Vec3,
     stoneStation(set, { ...stone }, add(p, [0, 0, 1.2]), stoneSize(stone, 3), 'BEZEL', 4);
   });
   elements.forEach((element) => {
-    const p = pointAt(element.angle);
-    charm(set, element, p, norm(sub(p, centre)), elementSize(element, spec.itemType === 'NECKLACE' ? 8 : 6.5));
+    hang(element, pointAt(element.angle), elementSize(element, spec.itemType === 'NECKLACE' ? 8 : 6.5));
   });
 }
 
@@ -2332,8 +2419,15 @@ function behindStudHead(element: ElementSpec): boolean {
 
 function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
   const [main, second, ...extraStones] = spec.stones;
-  const [element, ...extraElements] = spec.elements;
+  // Elements put on another are drawn on it (`face`), not in a place of their own.
+  const [element, ...extraElements] = spec.elements.filter(standsAlone);
   const base: Vec3 = [offsetX, 0, 0];
+  const FACING = { x: [1, 0, 0] as Vec3, y: [0, 1, 0] as Vec3, z: [0, 0, 1] as Vec3 };
+  const face = (el: ElementSpec, origin: Vec3, size: number) => {
+    const frame: Frame = { origin, ...FACING };
+    flatElement(set.metal, frame, el, size);
+    nestOnFlat(set, spec, spec.elements.indexOf(el), frame, size);
+  };
   // Further stones and elements go around the centre where the user put them.
   const orbit = (angle: number, offset: number, fallback: number): Vec3 => {
     const r = offset > 0 ? offset : fallback;
@@ -2348,7 +2442,7 @@ function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
     extraElements.forEach((el) => {
       const size = elementSize(el, 5);
       const origin = head && behindStudHead(el) ? add(base, [0, 0, STUD_BEHIND_HEAD_Z]) : orbit(el.angle, el.offsetMm, reach + size / 2 + 0.6);
-      flatElement(set.metal, { origin, x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, el, size);
+      face(el, origin, size);
     });
   };
   if (spec.earrings.style === 'stud') {
@@ -2380,7 +2474,7 @@ function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
       decorate(reach, true);
     } else if (element) {
       const size = elementSize(element, 8);
-      flatElement(set.metal, { origin: add(base, [0, 0, 0.5]), x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }, element, size);
+      face(element, add(base, [0, 0, 0.5]), size);
       decorate(size / 2);
     } else {
       // A polished metal ball.
@@ -2406,7 +2500,9 @@ function buildEarring(spec: JewelrySpec, set: PartSet, offsetX: number): void {
   if (element) {
     if (main) torus(set.metal, add(base, [0, y - 1.1, 0]), [0, 1, 0], [0, 0, 1], 1.1, 0.35, 20);
     const anchor = main ? y - 2.2 : 0;
-    charm(set, element, add(base, [0, anchor, 0]), [0, -1, 0], elementSize(element, 9));
+    const size = elementSize(element, 9);
+    const frame = charm(set, element, add(base, [0, anchor, 0]), [0, -1, 0], size);
+    nestOnFlat(set, spec, spec.elements.indexOf(element), frame, size);
   } else if (!main) {
     // A polished metal teardrop.
     const tear: P2[] = [];

@@ -13,8 +13,11 @@ import {
 } from '@/src/lib/jewelryCatalog.generated'
 import {
   STUDIO_MAX_ELEMENTS,
+  elementHosts,
   itemControls,
+  placedOnElement,
   shownAngleDeg,
+  withoutElement,
   type StudioElement,
   type StudioItemType,
 } from '@/src/lib/studioParams'
@@ -73,7 +76,8 @@ export function StudioElementPanel({
   const current = elements[selected] ?? null
   const update = (next: StudioElement) => onChange(elements.map((element, i) => (i === selected ? next : element)))
   const remove = (index: number) => {
-    onChange(elements.filter((_, i) => i !== index))
+    // Elements put on the one removed get a place of their own again.
+    onChange(withoutElement(elements, index))
     // The chosen one stays chosen (one before it removed: it moves back by one); the chosen one
     // removed: the next one is chosen, or the one before when it was the last.
     const next = index < selected ? selected - 1 : index === selected ? Math.min(selected, elements.length - 2) : selected
@@ -102,7 +106,11 @@ export function StudioElementPanel({
                     accessibilityState={{ selected: on }}
                   >
                     <Text style={[styles.itemLabel, on && styles.itemLabelOn]} numberOfLines={1}>
-                      {`${name}${element.text ? ` "${element.text}"` : ''}`}
+                      {`${name}${element.text ? ` "${element.text}"` : ''}${
+                        element.placement.onElement != null && elements[element.placement.onElement]
+                          ? ` · ${t('studioElementOnShort').replace('{{name}}', nameOf(elements[element.placement.onElement]))}`
+                          : ''
+                      }`}
                     </Text>
                   </Pressable>
                   <Pressable
@@ -126,7 +134,14 @@ export function StudioElementPanel({
         <ElementEditor
           element={current}
           index={selected}
+          slot={elements.slice(0, selected).filter((element) => element.placement.onElement == null).length}
           name={nameOf(current)}
+          hosts={elementHosts(elements, selected).map((i) => ({
+            index: i,
+            label: `${nameOf(elements[i])}${elements[i].text ? ` "${elements[i].text}"` : ''}`,
+            sizeMm: elements[i].sizeMm,
+          }))}
+          hostName={current.placement.onElement != null && elements[current.placement.onElement] ? nameOf(elements[current.placement.onElement]) : null}
           itemType={itemType}
           parameters={parameters}
           bandWidthMm={bandWidthMm}
@@ -165,7 +180,16 @@ export function StudioElementPanel({
 type ElementEditorProps = {
   element: StudioElement
   index: number
+  /**
+   * Its place among the elements that stand on their own (not put on another): the piece's first
+   * such element is its pendant / face, as the geometry draws it.
+   */
+  slot: number
   name: string
+  /** The elements this one can be put in the middle of (a name in a Star of David). */
+  hosts: Array<{ index: number; label: string; sizeMm: number | null }>
+  /** The element this one is put on, or null. */
+  hostName: string | null
   itemType: StudioItemType
   parameters: Record<string, unknown>
   bandWidthMm: number
@@ -175,12 +199,35 @@ type ElementEditorProps = {
   onRemove: () => void
 }
 
-function ElementEditor({ element, index, name, itemType, parameters, bandWidthMm, moving, onToggleMove, onChange, onRemove }: ElementEditorProps) {
+function ElementEditor({
+  element,
+  index,
+  slot,
+  name,
+  hosts,
+  hostName,
+  itemType,
+  parameters,
+  bandWidthMm,
+  moving,
+  onToggleMove,
+  onChange,
+  onRemove,
+}: ElementEditorProps) {
   const { t } = useTranslation()
   const def = element.elementCode === 'INITIAL' ? null : elementDef(element.elementCode)
   const range = def ? { min: def.minMm, max: def.maxMm } : FREE_SIZE
   const size = element.sizeMm ?? Math.min(range.max, Math.max(range.min, 6))
   const mm = t('studioMm')
+  const on = element.placement.onElement ?? null
+  /** Puts it in the middle of `host` (null: back to a place of its own), sized to fit inside it. */
+  const putOn = (host: number | null) => {
+    const placement = placedOnElement(element.placement, host)
+    const hostSize = hosts.find((h) => h.index === host)?.sizeMm ?? null
+    const fits = hostSize == null || size <= hostSize * 0.6
+    const fitted = Math.min(range.max, Math.max(range.min, Math.round(((hostSize ?? 0) * 0.45) * 2) / 2))
+    onChange({ ...element, placement, ...(host != null && !fits ? { sizeMm: fitted } : {}) })
+  }
 
   return (
     <View style={styles.editor}>
@@ -232,12 +279,35 @@ function ElementEditor({ element, index, name, itemType, parameters, bandWidthMm
         step={0.5}
         onChange={(sizeMm) => onChange({ ...element, sizeMm })}
       />
+      {on != null ? <Text style={styles.hint}>{t('studioElementOnSizeHint')}</Text> : null}
+
+      {hosts.length ? (
+        <>
+          <Text style={styles.section}>{t('studioElementOnTitle')}</Text>
+          <Text style={styles.hint}>{t('studioElementOnHint')}</Text>
+          <StudioChips
+            wrap
+            items={[
+              { id: 'apart', label: t('studioElementApart'), selected: on == null },
+              ...hosts.map((host) => ({
+                id: String(host.index),
+                label: t('studioElementOnChip').replace('{{name}}', host.label),
+                selected: on === host.index,
+              })),
+            ]}
+            onSelect={(id) => putOn(id === 'apart' ? null : Number(id))}
+          />
+        </>
+      ) : null}
 
       <StudioPlacementControls
         ring={itemType === 'RING'}
-        controls={itemControls(itemType, 'ELEMENT', index, parameters)}
+        // Put on another element: it sits in that one's middle; only its own turn is left.
+        controls={on != null ? { angle: false, across: null, rotation: true } : itemControls(itemType, 'ELEMENT', slot, parameters)}
+        centreLabel={on != null && hostName ? t('studioElementOnShort').replace('{{name}}', hostName) : undefined}
         placement={element.placement}
-        shownAngleDeg={shownAngleDeg(itemType, 'ELEMENT', index, element.placement, parameters)}
+        // A chain's first element standing on its own hangs at the bottom; the others keep their own.
+        shownAngleDeg={shownAngleDeg(itemType, 'ELEMENT', (itemType === 'NECKLACE' || itemType === 'BRACELET') && slot === 0 ? 0 : index, element.placement, parameters)}
         bandWidthMm={bandWidthMm}
         onChange={(placement) => onChange({ ...element, placement })}
         moving={moving}

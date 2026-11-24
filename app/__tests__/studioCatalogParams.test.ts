@@ -5,10 +5,12 @@ import {
   bandWidthConflict,
   caratLabel,
   draftsChanged,
+  elementHosts,
   elementsFromParameters,
   itemControls,
   metalFromParameters,
   newBand,
+  placedOnElement,
   placementPayload,
   settingFromParameters,
   settingSetsBand,
@@ -19,6 +21,7 @@ import {
   stonesFromParameters,
   viewerParameters,
   withDraggedPlacement,
+  withoutElement,
   type StudioSetting,
 } from '../src/lib/studioParams'
 import { JEWELRY_GEOMETRY_JS } from '../src/lib/jewelryGeometry.generated'
@@ -272,5 +275,37 @@ describe('the viewer builds the open tab', () => {
     expect(next.setting).toEqual({ headCode: 'BEZEL', settingCode: 'BEZEL' })
     expect(next.stones).toEqual([{ stoneCode: 'RUBY', cutCode: 'OVAL', colorCode: 'SIAM', sizeMm: 4, placement: { angleDeg: 80, offsetMm: 0, rotationDeg: 15 } }])
     expect(next.elements).toEqual([{ elementCode: 'LETTERS', text: 'AB', sizeMm: 4, placement: { offsetMm: 0, rotationDeg: 0 } }])
+  })
+})
+
+describe('an element put on another (a name in the middle of a Star of David, notes of 24.11)', () => {
+  const star = addElement('NECKLACE', [], { elementCode: 'STAR_OF_DAVID' }, 3)[0]
+  const name = { ...addElement('NECKLACE', [], { elementCode: 'LETTERS' }, 3)[0], text: 'DANA' }
+  const heart = addElement('NECKLACE', [], { elementCode: 'HEART' }, 3)[0]
+  const on = (element: typeof star, host: number | null) => ({ ...element, placement: placedOnElement(element.placement, host) })
+
+  it('is saved with the index of the element it is on, and read back', () => {
+    const saved = elementsFromParameters({ elements: [star, on(name, 0)].map((e) => ({ elementCode: e.elementCode, text: e.text, placement: placementPayload(e.placement) })) })
+    expect(saved[1].placement.onElement).toBe(0)
+    expect(placementPayload(saved[1].placement)).toMatchObject({ onElement: 0 })
+    expect(placementPayload(star.placement)).not.toHaveProperty('onElement')
+    // Back to a place of its own: the reference goes.
+    expect(placedOnElement(saved[1].placement, null)).not.toHaveProperty('onElement')
+  })
+
+  it('removing an element keeps the references right', () => {
+    // [heart, star, name on star]: the heart removed, the name points at the star, now first.
+    expect(withoutElement([heart, star, on(name, 1)], 0)[1].placement.onElement).toBe(0)
+    // The star removed: the name gets a place of its own again.
+    expect(withoutElement([heart, star, on(name, 1)], 1)[1].placement.onElement).toBeUndefined()
+    // An element after the name removed: nothing changes.
+    expect(withoutElement([star, on(name, 0), heart], 2)[1].placement.onElement).toBe(0)
+  })
+
+  it('an element can go on any other that stands on its own, and on none while something is on it', () => {
+    const list = [star, on(name, 0), heart]
+    expect(elementHosts(list, 2)).toEqual([0])
+    expect(elementHosts(list, 1)).toEqual([0, 2])
+    expect(elementHosts(list, 0)).toEqual([])
   })
 })

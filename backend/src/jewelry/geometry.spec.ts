@@ -684,3 +684,101 @@ describe('the client notes of 24.11: a ring shown head up, an earring element be
     expect(dragPlacement(plain, el, at(1, 0), null).offsetMm).toBe(1);
   });
 });
+
+describe('the client notes of 24.11: an element put on another (a name in the middle of a Star of David)', () => {
+  type P = [number, number, number];
+  const metalPoints = (model: JewelryModel): P[] => {
+    const p = model.parts.filter((x) => x.material === 'metal').flatMap((x) => x.mesh.positions);
+    const out: P[] = [];
+    for (let i = 0; i < p.length; i += 3) out.push([p[i], p[i + 1], p[i + 2]]);
+    return out;
+  };
+  const key = (q: P) => q.map((v) => v.toFixed(4)).join(',');
+  /** The metal `model` has beyond `without` (the vertices an element added). */
+  const added = (model: JewelryModel, without: JewelryModel): P[] => {
+    const bare = new Set(metalPoints(without).map(key));
+    return metalPoints(model).filter((q) => !bare.has(key(q)));
+  };
+  const box = (pts: P[]) => ({
+    min: [0, 1, 2].map((k) => Math.min(...pts.map((q) => q[k]))),
+    max: [0, 1, 2].map((k) => Math.max(...pts.map((q) => q[k]))),
+  });
+  const mean = (pts: P[]) => [0, 1, 2].map((k) => pts.reduce((s, q) => s + q[k], 0) / pts.length);
+  const star = { elementCode: 'STAR_OF_DAVID', variant: 'OPENWORK', sizeMm: 16, placement: { rotationDeg: 30 } };
+  const name = (placement: Record<string, unknown>) => ({ elementCode: 'LETTERS', text: 'DANA', sizeMm: 6, placement });
+
+  it('on a necklace: the name lies in the middle of the star pendant, on its face, and has no charm of its own', () => {
+    const build = (elements: unknown[]) => buildJewelry(specFromParameters('NECKLACE', { size: { necklaceLengthCm: 45 }, elements }));
+    const chain = build([]);
+    const withStar = build([star]);
+    const starPts = added(withStar, chain);
+    const namePts = added(build([star, name({ onElement: 0 })]), withStar);
+    expect(namePts.length).toBeGreaterThan(0);
+    const s = box(starPts);
+    const n = box(namePts);
+    // Inside the star's outline (x, y), and centred on it.
+    for (const k of [0, 1]) {
+      expect(n.min[k]).toBeGreaterThan(s.min[k]);
+      expect(n.max[k]).toBeLessThan(s.max[k]);
+    }
+    expect(Math.abs(mean(namePts)[0] - (s.min[0] + s.max[0]) / 2)).toBeLessThan(0.6);
+    expect(Math.abs((n.min[1] + n.max[1]) / 2 - (s.min[1] + s.max[1]) / 2)).toBeLessThan(1);
+    // In front of the star's face (half sunk into it, so it casts as one piece); the jump ring at
+    // the star's top stands out of the face too, so it is left out.
+    const face = Math.max(...starPts.filter((q) => q[1] < s.max[1] - 4).map((q) => q[2]));
+    expect(n.max[2]).toBeGreaterThan(face);
+    expect(n.min[2]).toBeLessThan(face);
+    // A long name is made smaller to fit inside the star (its letters are sized one by one).
+    expect(n.max[0] - n.min[0]).toBeLessThan((s.max[0] - s.min[0]) * 0.9);
+    // A name not put on the star hangs as a charm of its own, somewhere else.
+    const apart = added(build([star, name({ angleDeg: 200 })]), withStar);
+    expect(Math.abs(mean(apart)[0] - mean(starPts)[0])).toBeGreaterThan(5);
+  });
+
+  it('on a ring band: the name lies on the star, farther out than the star, at the same place on the band', () => {
+    const build = (elements: unknown[]) =>
+      buildJewelry(specFromParameters('RING', { size: { standard: 'IL', sizeCode: '54', bandWidthMm: 6 }, elements }));
+    const band = build([]);
+    const ringStar = { ...star, sizeMm: 8, placement: { angleDeg: 270 } };
+    const withStar = build([ringStar]);
+    const starPts = added(withStar, band);
+    const initial = { elementCode: 'LETTERS', text: 'D', placement: { onElement: 0, angleDeg: 90 } };
+    const namePts = added(build([ringStar, initial]), withStar);
+    expect(namePts.length).toBeGreaterThan(0);
+    const radius = (q: P) => Math.hypot(q[0], q[1]);
+    /** The angle of the middle of the points' box (a letter's own shape does not move it). */
+    const angle = (pts: P[]) => {
+      const b = box(pts);
+      return (Math.atan2((b.min[1] + b.max[1]) / 2, (b.min[0] + b.max[0]) / 2) * 180) / Math.PI;
+    };
+    // Where the star is (270° = -90°), not where its own angle (90°) would put it.
+    expect(angle(namePts)).toBeCloseTo(angle(starPts), 0);
+    expect(Math.max(...namePts.map(radius))).toBeGreaterThan(Math.max(...starPts.map(radius)));
+  });
+
+  it('on a stud earring the name lies on the flower; a reference to nothing, to itself or to an element on another is ignored', () => {
+    const build = (elements: unknown[]) => buildJewelry(specFromParameters('EARRINGS', { size: { earringStyleCode: 'stud' }, elements }));
+    const flower = { elementCode: 'FLOWER', sizeMm: 12 };
+    const withFlower = build([flower]);
+    const onFlower = added(build([flower, name({ onElement: 0 })]), withFlower);
+    const right = onFlower.filter((q) => q[0] > 0);
+    expect(Math.abs(mean(right)[0] - 11)).toBeLessThan(0.8);
+    expect(Math.abs(mean(right)[1])).toBeLessThan(0.8);
+    const spec = (onElement: unknown) => specFromParameters('EARRINGS', { elements: [flower, name({ onElement })] });
+    expect(spec(0).elements[1].onElement).toBe(0);
+    expect(spec(1).elements[1].onElement).toBeUndefined();
+    expect(spec(4).elements[1].onElement).toBeUndefined();
+    expect(spec('0').elements[1].onElement).toBeUndefined();
+    // No chains: an element on an element that is itself on another stays where it is.
+    const chained = specFromParameters('EARRINGS', {
+      elements: [flower, name({ onElement: 0 }), { elementCode: 'HEART', placement: { onElement: 1 } }],
+    });
+    expect(chained.elements[2].onElement).toBeUndefined();
+  });
+
+  it('the reference follows the elements the parameters hold: a skipped empty entry does not shift it', () => {
+    const spec = specFromParameters('NECKLACE', { elements: [{}, star, name({ onElement: 1 })] });
+    expect(spec.elements.map((e) => e.code)).toEqual(['STAR_OF_DAVID', 'LETTERS']);
+    expect(spec.elements[1].onElement).toBe(0);
+  });
+});

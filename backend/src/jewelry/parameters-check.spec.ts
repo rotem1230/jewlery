@@ -137,6 +137,11 @@ describe('catalogErrors', () => {
     // Behind a stud's head: a yes / no.
     expect(ring({ elements: [{ elementCode: 'HEART', placement: { angleDeg: 0, offsetMm: 0, behindHead: true } }] })).toEqual([]);
     expect(ring({ elements: [{ elementCode: 'HEART', placement: { behindHead: 'yes' } }] })).toEqual(['/elements/0/placement/behindHead must be true or false']);
+    // Put on another element: its index.
+    const star = { elementCode: 'STAR_OF_DAVID' };
+    expect(ring({ elements: [star, { elementCode: 'LETTERS', text: 'DANA', placement: { onElement: 0 } }] })).toEqual([]);
+    expect(ring({ elements: [star, { elementCode: 'HEART', placement: { onElement: -1 } }] })).toEqual(['/elements/1/placement/onElement must be the index of another element']);
+    expect(ring({ elements: [star, { elementCode: 'HEART', placement: { onElement: 0.5 } }] })).toEqual(['/elements/1/placement/onElement must be the index of another element']);
   });
 
   it('a head of the pictures, or none; a band style of the pictures, only on a ring', () => {

@@ -246,7 +246,8 @@ export function DesignStudioScreen() {
   const editTarget =
     moving && tab === 'stone' && stonesDraft?.[stoneIndex]
       ? { kind: 'stone' as const, index: stoneIndex }
-      : moving && tab === 'elements' && elementsDraft?.[elementIndex]
+      : // An element put on another one moves with it: a drag does not take it out of it.
+        moving && tab === 'elements' && elementsDraft?.[elementIndex] && elementsDraft[elementIndex].placement.onElement == null
         ? { kind: 'element' as const, index: elementIndex }
         : null
 

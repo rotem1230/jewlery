@@ -91,6 +91,10 @@ function placementErrors(value: unknown, path: string, errors: string[]): void {
   if (p.behindHead !== undefined && p.behindHead !== null && typeof p.behindHead !== 'boolean') {
     errors.push(`${path}/behindHead must be true or false`);
   }
+  // Put on another element (a name in a Star of David): that element's index (the client's notes of 24.11).
+  if (p.onElement !== undefined && p.onElement !== null && !(typeof p.onElement === 'number' && Number.isInteger(p.onElement) && p.onElement >= 0 && p.onElement < 20)) {
+    errors.push(`${path}/onElement must be the index of another element`);
+  }
 }
 
 /**

@@ -18,6 +18,8 @@ type StudioPlacementControlsProps = {
   /** Dragging on the 3D model moves this item. */
   moving: boolean
   onToggleMove: () => void
+  /** What to say where the item cannot be moved along the piece (default: at the earring's centre). */
+  centreLabel?: string
 }
 
 /**
@@ -33,6 +35,7 @@ export function StudioPlacementControls({
   onChange,
   moving,
   onToggleMove,
+  centreLabel,
 }: StudioPlacementControlsProps) {
   const { t } = useTranslation()
   const mm = t('studioMm')
@@ -71,7 +74,7 @@ export function StudioPlacementControls({
           onChange={(angleDeg) => onChange(movedPlacement(placement, { angleDeg }))}
         />
       ) : (
-        <Text style={styles.hint}>{t('studioPositionCentre')}</Text>
+        <Text style={styles.hint}>{centreLabel ?? t('studioPositionCentre')}</Text>
       )}
       {controls.across === 'BAND' && half > 0 ? (
         <StudioSlider

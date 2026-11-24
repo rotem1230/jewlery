@@ -62,7 +62,14 @@ export function specsFromParameters(
   const elements = Array.isArray(params.elements) ? params.elements.map(asRecord).filter(Boolean) : []
   if (elements.length > 0) {
     const named = elements.filter((element) => str((element as Record<string, unknown>).elementCode))
-    const texts = named.map((element) => elementTextOf(element as Record<string, unknown>))
+    // An element put on another one is named with it ("in the middle of the Star of David").
+    const saved = params.elements as unknown[]
+    const hostName = (index: number): string | null => {
+      const host = asRecord(saved[index])
+      const code = host ? str(host.elementCode) : null
+      return code ? elementName(code) : host ? 'אלמנט אישי' : null
+    }
+    const texts = named.map((element) => elementTextOf(element as Record<string, unknown>, hostName))
     if (elements.length > named.length) texts.push('אלמנט אישי')
     // Short lists read as before ("לב, כוכב"); a list with details is split by dots.
     const plain = texts.every((text) => !/[ "]/.test(text))
@@ -140,8 +147,8 @@ function bandText(band: Record<string, unknown>): string {
   return [code ? settingName(code) : null, stone || null, rows, count, angle].filter(Boolean).join(' · ')
 }
 
-/** "אותיות "דנה" 5 מ״מ, מיקום 200°", "מגן דוד (מלא)", "לב". */
-function elementTextOf(element: Record<string, unknown>): string {
+/** "אותיות "דנה" 5 מ״מ, מיקום 200°", "מגן דוד (מלא)", "לב", "אותיות "דנה", במרכז מגן דוד". */
+function elementTextOf(element: Record<string, unknown>, hostName: (index: number) => string | null): string {
   const code = str(element.elementCode) ?? ''
   const text = str(element.text)
   const variant = str(element.variant)
@@ -149,6 +156,12 @@ function elementTextOf(element: Record<string, unknown>): string {
   const name = [elementName(code), text ? `"${text}"` : null, variant ? `(${variantName(variant)})` : null, size ? `${size} מ״מ` : null]
     .filter(Boolean)
     .join(' ')
+  const on = asRecord(element.placement)?.onElement
+  const host = typeof on === 'number' && Number.isInteger(on) ? hostName(on) : null
+  if (host) {
+    const turn = asRecord(element.placement)?.rotationDeg
+    return [`${name}, במרכז ${host} (יצוק איתו כחלק אחד)`, typeof turn === 'number' && turn ? `סיבוב ${Math.round(turn)}°` : null].filter(Boolean).join(' · ')
+  }
   const place = placementText(element.placement)
   return place ? `${name}, ${place}` : name
 }

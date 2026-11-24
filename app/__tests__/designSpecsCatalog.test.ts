@@ -73,4 +73,14 @@ describe('design specification with the client catalogue', () => {
     expect(value).toContain('במרכז, מאחורי האבן · סיבוב -95°')
     expect(value).not.toContain('מיקום 12°')
   })
+  it('an element put on another is named with it for the jeweler (notes of 24.11)', () => {
+    const value = rows({
+      elements: [
+        { elementCode: 'STAR_OF_DAVID', variant: 'OPENWORK', sizeMm: 16 },
+        { elementCode: 'LETTERS', text: 'דנה', sizeMm: 7, placement: { angleDeg: 90, onElement: 0, rotationDeg: 10 } },
+      ],
+    })['אלמנטים']
+    expect(value).toContain('אותיות "דנה" 7 מ״מ, במרכז מגן דוד (יצוק איתו כחלק אחד) · סיבוב 10°')
+    expect(value).not.toContain('מיקום 90°')
+  })
 })

@@ -380,3 +380,61 @@ describe('placing on the 3D model', () => {
     expect(placementFromMessage('ready')).toBeNull()
   })
 })
+
+describe('combining elements (notes of 24.11)', () => {
+  it('a name is put in the middle of a Star of David in one tap; then only its turn is left to set', async () => {
+    let elements: StudioElement[] = addElement('NECKLACE', addElement('NECKLACE', [], { elementCode: 'STAR_OF_DAVID' }, 3), { elementCode: 'LETTERS' }, 3)
+    elements = elements.map((element, i) => (i === 0 ? { ...element, sizeMm: 16 } : { ...element, text: 'DANA', sizeMm: 10 }))
+    const onChange = jest.fn((next: StudioElement[]) => {
+      elements = next
+    })
+    const props = {
+      itemType: 'NECKLACE' as const,
+      onChange,
+      onAdd: jest.fn(),
+      onUpload: jest.fn(),
+      offered: [],
+      parameters: {},
+      bandWidthMm: 3,
+      onSelect: jest.fn(),
+      moving: false,
+      onToggleMove: jest.fn(),
+    }
+    const tree = await render(<StudioElementPanel {...props} elements={elements} selected={1} />)
+    await press(pressableWithText(tree, 'בתוך מגן דוד'))
+    expect(elements[1].placement.onElement).toBe(0)
+    // Too big for the star (10 of 16 mm): made to fit inside it.
+    expect(elements[1].sizeMm).toBe(7)
+    await act(async () => {
+      tree.update(<StudioElementPanel {...props} elements={elements} selected={1} />)
+    })
+    const texts = tree.root.findAllByType(Text).map((node) => [node.props.children].flat().join(''))
+    expect(texts).toContain('במרכז מגן דוד')
+    expect(() => slider(tree, 'הזזה לאורך התכשיט')).toThrow()
+    expect(() => slider(tree, 'סיבוב על הציר')).not.toThrow()
+    // And back on its own.
+    await press(pressableWithText(tree, 'בנפרד'))
+    expect(elements[1].placement.onElement).toBeUndefined()
+  })
+  it('on a stud with no stone, the element left standing is the face: when the first one is put on it, the second gets no sliders to move it', async () => {
+    const heart = addElement('EARRINGS', [], { elementCode: 'HEART' }, 3)[0]
+    const flower = addElement('EARRINGS', [], { elementCode: 'FLOWER' }, 3)[0]
+    const elements: StudioElement[] = [{ ...heart, placement: { ...heart.placement, onElement: 1 } }, flower]
+    const props = {
+      itemType: 'EARRINGS' as const,
+      onChange: jest.fn(),
+      onAdd: jest.fn(),
+      onUpload: jest.fn(),
+      offered: [],
+      parameters: { size: { earringStyleCode: 'stud' } },
+      bandWidthMm: 3,
+      onSelect: jest.fn(),
+      moving: false,
+      onToggleMove: jest.fn(),
+    }
+    const tree = await render(<StudioElementPanel {...props} elements={elements} selected={1} />)
+    expect(() => slider(tree, 'הזזה לאורך התכשיט')).toThrow()
+    expect(() => slider(tree, 'מרחק מהמרכז')).toThrow()
+    expect(() => slider(tree, 'סיבוב על הציר')).not.toThrow()
+  })
+})
