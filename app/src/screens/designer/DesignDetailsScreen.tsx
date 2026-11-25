@@ -13,6 +13,7 @@ import { ErrorState } from '@/src/components/ui/ErrorState'
 import { PublishSuccessModal } from '@/src/components/ui/PublishSuccessModal'
 import { ChatImageViewer } from '@/src/components/chats/ChatImageViewer'
 import {
+  deleteDesign,
   duplicateDesign,
   getDesign,
   listDesignQuotes,
@@ -193,6 +194,31 @@ export function DesignDetailsScreen() {
     }
   }
 
+  // Client notes of 25.11: a design started by mistake, or on the wrong piece, can be deleted.
+  const onDelete = () => {
+    if (!design) return
+    Alert.alert(t('designDeleteConfirmTitle'), t('designDeleteConfirmBody'), [
+      { text: t('cancel'), style: 'cancel' },
+      {
+        text: t('designDeleteCta'),
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setBusy(true)
+            try {
+              await deleteDesign(design.id)
+              navigation.goBack()
+            } catch (err) {
+              showError(designErrorMessage(err, 'delete', locale))
+            } finally {
+              setBusy(false)
+            }
+          })()
+        },
+      },
+    ])
+  }
+
   const openStudio = () => {
     if (!design) return
     tabNavigation?.navigate('Home', { screen: 'DesignStudio', initial: false, params: { designId: design.id } })
@@ -365,6 +391,15 @@ export function DesignDetailsScreen() {
                     disabled={busy}
                     onPress={() => void onDuplicate()}
                   />
+                  {actions.remove ? (
+                    <BrandButton
+                      label={t('designDeleteCta')}
+                      variant="outline"
+                      flex={false}
+                      disabled={busy}
+                      onPress={onDelete}
+                    />
+                  ) : null}
                 </View>
               )}
 

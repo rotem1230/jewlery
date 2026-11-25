@@ -24,6 +24,7 @@ describe('what a designer can do with a design', () => {
       orderJewelers: true,
       moveToDrafts: false,
       duplicate: true,
+      remove: true,
     })
   })
 
@@ -40,6 +41,7 @@ describe('what a designer can do with a design', () => {
       moveToDrafts: false,
       archive: true,
       duplicate: true,
+      remove: false,
     })
   })
 
@@ -126,5 +128,22 @@ describe('a design without a name', () => {
     expect(designDisplayTitle({ title: 'Solitaire', itemType: null }, 'he')).toBe('Solitaire')
     expect(designDisplayTitle({ title: null, itemType: null }, 'he')).toBe('עיצוב ללא שם')
     expect(designDisplayTitle({ title: null }, 'en')).toBe('Untitled design')
+  })
+})
+
+describe('deleting a design (client notes of 25.11)', () => {
+  it('a draft, a published or an archived design can be deleted; a completed one cannot', () => {
+    expect(designActions({ status: 'DRAFT' }).remove).toBe(true)
+    expect(designActions({ status: 'PUBLISHED' }).remove).toBe(true)
+    expect(designActions({ status: 'ARCHIVED' }).remove).toBe(true)
+    expect(designActions({ status: 'COMPLETED', completedBy: { id: 'j1', name: 'x' } }).remove).toBe(false)
+  })
+
+  it('the server refusing because a jeweler works on it says so and offers the archive', () => {
+    const err = new ApiError(409, '/designs/d1', JSON.stringify({ success: false, code: 'DESIGN_IN_WORK' }))
+    const message = designErrorMessage(err, 'delete', 'he')
+    expect(message.title).toBe('לא ניתן למחוק את העיצוב')
+    expect(message.body).toContain('ארכיון')
+    expect(designErrorMessage(new Error('x'), 'delete', 'en').title).toBe('Could not delete')
   })
 })

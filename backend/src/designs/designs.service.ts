@@ -5,7 +5,15 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Design, DesignStatus, FeasibilityStatus, Prisma, User, UserRole } from '@prisma/client';
+import {
+  Design,
+  DesignRequestStatus,
+  DesignStatus,
+  FeasibilityStatus,
+  Prisma,
+  User,
+  UserRole,
+} from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { toJsonValue } from '../audit/json.util';
 import { AppConfigService } from '../cms/app-config.service';
@@ -28,6 +36,14 @@ const COMPLETED_BY_SELECT = {
 
 const PAGE_SIZE = 20;
 const DEFAULT_PUBLISH_TTL_DAYS = 30;
+
+/** Request states in which a jeweler is (or was) making the piece: the design stays. */
+const DESIGN_IN_WORK_REQUEST_STATUSES: DesignRequestStatus[] = [
+  DesignRequestStatus.OPEN,
+  DesignRequestStatus.QUOTE_SUBMITTED,
+  DesignRequestStatus.NEGOTIATING,
+  DesignRequestStatus.COMPLETED,
+];
 
 @Injectable()
 export class DesignsService {
@@ -419,6 +435,51 @@ export class DesignsService {
     });
 
     return copy;
+  }
+
+  /**
+   * The owner deletes a design they no longer want (client notes of 25.11: a design started by
+   * mistake, or on the wrong piece). Soft delete: every read already skips deletedAt rows.
+   * Refused while a jeweler works on it: an accepted quote, any quote, or a request that is
+   * open, quoted, negotiating or completed.
+   */
+  async remove(id: string, user: User): Promise<{ id: string; deleted: true }> {
+    await this.getOwned(id, user);
+
+    const removed = await this.prisma.$transaction(async (tx) => {
+      // Under the row lock: a request or quote arriving meanwhile waits, then sees it deleted.
+      await tx.$queryRaw`SELECT id FROM 'designs' WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.design.findFirst({ where: { id, deletedAt: null } });
+      if (!current) {
+        throw new NotFoundException({ success: false, message: 'Design not found' });
+      }
+      const [liveRequests, quotes] = await Promise.all([
+        tx.designRequest.count({ where: { designId: id, status: { in: DESIGN_IN_WORK_REQUEST_STATUSES } } }),
+        tx.quote.count({ where: { designId: id } }),
+      ]);
+      if (current.acceptedQuoteId || liveRequests > 0 || quotes > 0) {
+        throw new ConflictException({
+          success: false,
+          message: 'A jeweler is working on this design, so it cannot be deleted',
+          code: 'DESIGN_IN_WORK',
+        });
+      }
+      return tx.design.update({
+        where: { id },
+        data: { deletedAt: new Date(), version: { increment: 1 } },
+      });
+    });
+
+    await this.audit.log({
+      actorUserId: user.id,
+      action: 'design.delete',
+      entityType: 'Design',
+      entityId: id,
+      before: { status: removed.status, title: removed.title },
+      after: { deletedAt: removed.deletedAt },
+    });
+
+    return { id, deleted: true };
   }
 
   async transition(id: string, user: User, toStatus: DesignStatus): Promise<Design> {

@@ -24,6 +24,8 @@ export type DesignActionSet = {
   moveToDrafts: boolean
   orderJewelers: boolean
   duplicate: boolean
+  /** Delete it (soft). The server still refuses while a jeweler works on it (409 DESIGN_IN_WORK). */
+  remove: boolean
 }
 
 /** Completed, or archived after a quote was accepted (the completing jeweler stays recorded). */
@@ -43,6 +45,7 @@ export function designActions(design: DesignState): DesignActionSet {
     moveToDrafts: false,
     orderJewelers: false,
     duplicate: true,
+    remove: !readOnly,
   }
   if (readOnly) {
     return { ...none, viewInStudio: true, archive: design.status !== 'ARCHIVED' }
@@ -112,13 +115,18 @@ export function listingExpiryLabel(expiresAt: string | null | undefined, locale:
 export type DesignErrorMessage = { title: string; body: string }
 
 /** Why the server refused to publish or save a design, in the app language. */
-export function designErrorMessage(err: unknown, action: 'publish' | 'save', locale: Locale): DesignErrorMessage {
+export function designErrorMessage(err: unknown, action: 'publish' | 'save' | 'delete', locale: Locale): DesignErrorMessage {
   const en = locale === 'en'
   const code = apiErrorCode(err)
   if (code === 'DESIGN_COMPLETED') {
     return en
       ? { title: 'This design is completed', body: 'A quote was accepted for this design, so it can no longer change. Duplicate it to start a new one.' }
       : { title: 'העיצוב הושלם', body: 'לעיצוב זה כבר אושרה הצעת מחיר ולכן לא ניתן לשנות אותו. אפשר לשכפל אותו ולהתחיל עיצוב חדש.' }
+  }
+  if (code === 'DESIGN_IN_WORK') {
+    return en
+      ? { title: 'The design cannot be deleted', body: 'A jeweler is working on this design (a request or a quote is open). You can move it to the archive instead.' }
+      : { title: 'לא ניתן למחוק את העיצוב', body: 'צורף עובד על העיצוב הזה (יש בקשה או הצעת מחיר פתוחה). אפשר להעביר אותו לארכיון במקום.' }
   }
   if (code === 'STALE_VERSION') {
     return en
@@ -137,7 +145,9 @@ export function designErrorMessage(err: unknown, action: 'publish' | 'save', loc
     }
   }
   return {
-    title: en ? (action === 'publish' ? 'Could not publish' : 'Could not save') : action === 'publish' ? 'הפרסום נכשל' : 'השמירה נכשלה',
+    title: en
+      ? { publish: 'Could not publish', save: 'Could not save', delete: 'Could not delete' }[action]
+      : { publish: 'הפרסום נכשל', save: 'השמירה נכשלה', delete: 'המחיקה נכשלה' }[action],
     body: parseApiError(err),
   }
 }

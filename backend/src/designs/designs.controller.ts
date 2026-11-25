@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Request } from 'express';
@@ -38,6 +38,11 @@ export class DesignsController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateDesignDto, @Req() req: AuthedRequest) {
     return this.designs.update(id, req.user, dto);
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: AuthedRequest) {
+    return this.designs.remove(id, req.user);
   }
 
   @Post(':id/duplicate')

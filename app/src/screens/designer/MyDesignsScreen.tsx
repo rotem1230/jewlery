@@ -11,7 +11,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native'
-import { useNavigation } from '@react-navigation/native'
+import { useFocusEffect, useNavigation } from '@react-navigation/native'
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs'
 import { HomeHeader } from '@/src/components/home/HomeHeader'
@@ -97,6 +97,21 @@ export function MyDesignsScreen() {
   const { data, loading, refreshing, error, refresh, retry } = useAsyncData(load, {
     deps: [accessToken, filter],
   })
+
+  // Coming back from a design (deleted, archived, published there): the list shows it as it is now.
+  // Through a ref: a tab change gives a new refresh, which must not reload the list again.
+  const focusedOnce = useRef(false)
+  const refreshRef = useRef(refresh)
+  refreshRef.current = refresh
+  useFocusEffect(
+    useCallback(() => {
+      if (!focusedOnce.current) {
+        focusedOnce.current = true
+        return
+      }
+      void refreshRef.current()
+    }, []),
+  )
 
   useEffect(() => {
     if (!data) return

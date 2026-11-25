@@ -1,5 +1,5 @@
 /** Designs endpoints (authenticated). */
-import { apiGet, apiPatch, apiPost, buildQuery } from '@/src/lib/api'
+import { apiDelete, apiGet, apiPatch, apiPost, buildQuery } from '@/src/lib/api'
 import type { DesignDetail, DesignListResponse, DesignStatus } from '@/src/types/api'
 
 export type DesignSort = 'newest' | 'oldest' | 'updated' | 'title'
@@ -84,6 +84,11 @@ export function unlockDesign(id: string, payload: { fields: string[] }): Promise
 
 export function transitionDesign(id: string, toStatus: DesignStatus): Promise<DesignDetail> {
   return apiPost<DesignDetail>(`/designs/${id}/transition`, { toStatus })
+}
+
+/** Soft-deletes one of the owner's designs; 409 DESIGN_IN_WORK while a jeweler works on it. */
+export function deleteDesign(id: string): Promise<{ id: string; deleted: true }> {
+  return apiDelete<{ id: string; deleted: true }>(`/designs/${id}`)
 }
 
 export function duplicateDesign(id: string): Promise<DesignDetail> {
