@@ -448,15 +448,16 @@ export class DesignsService {
 
     const removed = await this.prisma.$transaction(async (tx) => {
       // Under the row lock: a request or quote arriving meanwhile waits, then sees it deleted.
-      await tx.$queryRaw`SELECT id FROM 'designs' WHERE id = ${id}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM "designs" WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.design.findFirst({ where: { id, deletedAt: null } });
       if (!current) {
         throw new NotFoundException({ success: false, message: 'Design not found' });
       }
-      const [liveRequests, quotes] = await Promise.all([
-        tx.designRequest.count({ where: { designId: id, status: { in: DESIGN_IN_WORK_REQUEST_STATUSES } } }),
-        tx.quote.count({ where: { designId: id } }),
-      ]);
+      // One after the other: an interactive transaction runs its queries on one connection.
+      const liveRequests = await tx.designRequest.count({
+        where: { designId: id, status: { in: DESIGN_IN_WORK_REQUEST_STATUSES } },
+      });
+      const quotes = await tx.quote.count({ where: { designId: id } });
       if (current.acceptedQuoteId || liveRequests > 0 || quotes > 0) {
         throw new ConflictException({
           success: false,
