@@ -24,7 +24,8 @@ module.exports = (api) => {
     assertReleaseApiUrl()
   }
   return {
-    presets: ['module:@react-native/babel-preset', 'nativewind/babel'],
+    // nativewind/babel already adds the JSX import source and the worklets plugin.
+    presets: [['babel-preset-expo', { worklets: false, reanimated: false }], 'nativewind/babel'],
     plugins: [
       [
         'module-resolver',

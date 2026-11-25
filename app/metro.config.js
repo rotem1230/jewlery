@@ -1,16 +1,11 @@
-const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config')
+// Expo's Metro config: release bundles (`expo export:embed`, run by the native builds) and OTA
+// bundles (`eas update`) both go through it.
+const { getDefaultConfig } = require('expo/metro-config')
 const { withNativeWind } = require('nativewind/metro')
 
-const defaults = getDefaultConfig(__dirname)
+const config = getDefaultConfig(__dirname)
 
-/**
- * @type {import('@react-native/metro-config').MetroConfig}
- */
-const config = mergeConfig(defaults, {
-  resolver: {
-    assetExts: Array.from(new Set([...(defaults.resolver.assetExts || []), 'glb', 'gltf'])),
-    sourceExts: (defaults.resolver.sourceExts || []).filter((ext) => ext !== 'glb' && ext !== 'gltf'),
-  },
-})
+config.resolver.assetExts = Array.from(new Set([...(config.resolver.assetExts || []), 'glb', 'gltf']))
+config.resolver.sourceExts = (config.resolver.sourceExts || []).filter((ext) => ext !== 'glb' && ext !== 'gltf')
 
 module.exports = withNativeWind(config, { input: './global.css' })
