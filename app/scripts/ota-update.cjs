@@ -34,7 +34,10 @@ for (const channel of channels) {
 const env = { ...process.env, API_BASE_URL: eas.build.base.env.API_BASE_URL }
 for (const channel of channels) {
   console.log(`\n=== eas update --channel ${channel} ===`)
-  const result = spawnSync('eas', ['update', '--channel', channel, '--message', message, '--non-interactive'], {
+  const args = ['update', '--channel', channel, '--environment', channel, '--message', message, '--non-interactive']
+  // On Windows eas is a .cmd run through the shell, which splits an unquoted message at its spaces.
+  const shellArgs = process.platform === 'win32' ? args.map((arg) => `"${arg.replace(/"/g, '')}"`) : args
+  const result = spawnSync('eas', shellArgs, {
     cwd: appDir,
     env,
     stdio: 'inherit',
